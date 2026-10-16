@@ -38,7 +38,11 @@ async function main() {
     ...(proxy ? { proxy: { server: proxy } } : {}),
   });
   try {
-    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    // Service workers answer requests without entering context.route, so block them.
+    const context = await browser.newContext({
+      viewport: { width: 1280, height: 800 },
+      serviceWorkers: 'block',
+    });
 
     // SSRF guard on every request, proxy or not. Chromium follows redirects without
     // re-entering route handlers, so the handler fetches each request itself with
@@ -93,6 +97,13 @@ async function main() {
         return route.fulfill({ response });
       }
       return route.abort('failed');
+    });
+
+    // context.route does not see WebSockets; apply the same verdict to them.
+    await context.routeWebSocket('**/*', async (ws) => {
+      const verdict = await verdictFor(ws.url().replace(/^ws/i, 'http'));
+      if (!verdict.ok) return ws.close({ code: 1008, reason: 'blocked' });
+      ws.connectToServer();
     });
 
     async function navigate(page, start) {
