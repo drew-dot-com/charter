@@ -178,6 +178,23 @@ after every `toon up`) or `--network host`.
   `charter-echo` was removed and the echo server killed.
 - Spend: one zero-amount probe, `paid` 0. Edison's watermark stayed 18000. **Total 0.**
 
+## Can Drew's edge dial an onion node? (read 2026-10-16 ~22:30 UTC, no writes)
+
+- The edge (`deploy-connector-rust-1`, `rust-2026.09.29.1`) has **no `socks_proxy`** in
+  `rust/config/connector-rust.toml`. In the connector, a peer whose host ends in `.onion` or
+  `.anyone` is dialed only through `socks_proxy` (ADR 0070). `POST /peers` fetches the
+  counterparty's self-description **before** it opens any channel, so a peering toward
+  `http://ev2ocvzg...anyone/ilp` should fail at that fetch and spend nothing. Not attempted:
+  `toon2` was never funded, so it was never up.
+- The only Anyone client on the box is inside `anonfetch` (`SOCKSPort 9050`, which binds
+  loopback inside that container by default), so the edge cannot use it as is.
+- For the edge to peer toward a hidden node, it needs an Anyone SOCKS proxy it can reach (for
+  example an `anon` sidecar on `relay_deploy_net` with `SocksPort 0.0.0.0:9050` and a
+  `SocksPolicy` limited to that network), plus `socks_proxy = "socks5h://<host>:9050"` in the edge
+  TOML and an edge restart. That is a change to the live edge, and Drew has to decide on it.
+- Edge balances for the authorized 1 USDC deposit: `4s2J...` holds 5 USDC and 0.0258 SOL. Edge peers
+  today: `drew-store` only. Its inbound channels include `8oBnwH4u...` from `toon2` (watermark 1000).
+
 ## What unblocks Steps 3 and 4 (each moves money, so it is Drew's call)
 
 1. Fund `toon2`'s Solana key `J6UrAZpsnCJREvdp4V4JojfNP5TgCsv5Qkq6oURGo1mM` to at least 1 USDC
