@@ -1,0 +1,25 @@
+{
+  "name": "charter",
+  "version": "0.1.0",
+  "description": "Compute leases on the TOON payment network. A host posts an offer, a buyer pays per interval, and a container runs the job for as long as the ticks keep arriving.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test --import tsx 'src/**/*.test.ts' 'web/**/*.test.ts'",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/drew-dot-com/charter.git"
+  },
+  "homepage": "https://github.com/drew-dot-com/charter#readme",
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
