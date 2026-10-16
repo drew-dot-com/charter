@@ -38,7 +38,7 @@ are in `~/status-pre-0.3.0.json`, `~/routes-pre-0.3.0.json`, `~/peers-pre-0.3.0.
 | reach | hidden | hidden |
 | onion endpoint | `http://u72ggcqupz3elxa4at24wgeozfonmghaoivwecqfkpu4so3ffasz3yid.anyone/ilp` | `http://ev2ocvzg6ubobqh7mnoskk2boxuo3l5grqbro6wvj4hq2ecnacaqttyd.anyone/ilp` |
 | connector identity (x) | `c50e6a019916b7cb...` | `69b2a212547e7a9c089e06cececdc52eb468209a5735cf98a3eb68ed281287e5` |
-| seal key (`GET <connector>/ilp/identity` `publicKey`) | `0x04c50e6a019916b7cbcbf6427cf5034923b65058b3f38e7a4990cfe64455eab05d89187d512d5b9ca127c68c18d44cd0b3aa3da5747066ca97c53c3688ada36a7d` | not read: the node did not start. It is `0x04` + the identity x above + y; read it from `/ilp/identity` once running |
+| seal key (`GET <connector>/ilp/identity` `publicKey`) | `0x04c50e6a019916b7cbcbf6427cf5034923b65058b3f38e7a4990cfe64455eab05d89187d512d5b9ca127c68c18d44cd0b3aa3da5747066ca97c53c3688ada36a7d` | `0x0469b2a212547e7a9c089e06cececdc52eb468209a5735cf98a3eb68ed281287e59c0097dfcb29a8b10cc9aedf22de77d4df1d5b5d5cef3502a8c47329e79e5e1b` (read live 23:21 UTC) |
 | peering to the edge | `drew`, made by hand | `mainnet`, made by `toon join mainnet` |
 | channel to the edge | Solana, `121CYE4waJ1777GJE8QTnn82Sr29m1saPf175N75wRFv`, outbound, collateral 982000, watermark 18000, landed 18000 | Solana, `8oBnwH4uFQNuuGH5tRKB36jCQ86MFgyvJwNfYpAPoJg5`, outbound, last voucher 1000 (its channel log) |
 | inbound channel from the edge | none | none |
@@ -194,6 +194,40 @@ after every `toon up`) or `--network host`.
   TOML and an edge restart. That is a change to the live edge, and Drew has to decide on it.
 - Edge balances for the authorized 1 USDC deposit: `4s2J...` holds 5 USDC and 0.0258 SOL. Edge peers
   today: `drew-store` only. Its inbound channels include `8oBnwH4u...` from `toon2` (watermark 1000).
+
+## Round 3 (2026-10-16 ~23:20 UTC): toon2 up, the edge still cannot deliver to it
+
+- `toon2` funded by Drew (1.02 USDC on its Solana key, verified on chain by the coordinator).
+  `sudo chown 501:1000 .../apps/relay/data/events.db`, then `toon up`: supervisor running,
+  connector `127.0.0.1:27941` on 18da529a, relay app running, `Connected to mainnet`. Its self-
+  description: `ilpAddresses ["g.toon.69b2a212547e7a9c"]`, `httpEndpoint`
+  `http://ev2ocvzg6ubobqh7mnoskk2boxuo3l5grqbro6wvj4hq2ecnacaqttyd.anyone/ilp`, `peerCarriages ["http"]`.
+  Anyone SOCKS this run: `127.0.0.1:61704`.
+- `toon2` already dials out to the edge: peering `mainnet` (fee 0, cap 1000000), routes
+  `g.drew` and `g.toon` to it, outbound Solana channel `8oBnwH4u...` (collateral 999000,
+  watermark 1000). No new deposit was needed or made.
+- **The edge has no peer for `toon2`, so it has nothing to route `g.toon.69b2a212547e7a9c` to.**
+  Edge `GET /peers` (operator surface) lists only `drew-store`. No route was added on the edge.
+  The edge is unchanged (19 TOML routes plus 2 runtime routes, so `GET /ilp` publishes 21).
+- Why, from connector source (18da529a; the edge runs `rust-2026.09.29.1`):
+  - An inbound peer BTP session "binds nothing" (`connector-peer-btp/src/accept.rs`). Every
+    frame is judged on its own voucher, and nothing records the socket for forwarding back.
+  - The edge reaches a peer only through a peering it established itself with `POST /peers`,
+    which fetches the peer's `/ilp` URL first. For `toon2` that is an onion URL, and the edge
+    has no `socks_proxy`.
+  - The client session registry (`connector-client-edge/src/session_registry.rs`,
+    `session_route.rs`) does deliver to a socket that dialed in. But it binds only a client BTP
+    session that declares `peerId` in its `auth` entry. It matches the packet destination
+    **exactly**, and pays the client only on an outbound x402 channel toward it. A `toon`
+    connector's peer dial does not bind there. Its connector log shows no session at startup:
+    peer dials are lazy.
+- Live check (free): Edison `route add g.toon.69b2a212547e7a9c --peer drew`, then
+  `toon probe g.toon.69b2a212547e7a9c.relay --seal-to http://ev2ocvzg...anyone/ilp --json`:
+  `{"amount":0,"outcome":"rejected","paid":0,"reject":{"code":"F02","message":"no route to destination 'g.toon.69b2a212547e7a9c.relay'"}}`,
+  with packet history `sent ... to: drew`. The route was removed afterwards.
+  **`--seal-to` with an onion URL worked from Edison's hidden node**: the identity fetch
+  through the overlay succeeded, because the probe reached the edge instead of failing with
+  `send_failed`. So Edison's node can reach `toon2`'s onion endpoint directly.
 
 ## What unblocks Steps 3 and 4 (each moves money, so it is Drew's call)
 
