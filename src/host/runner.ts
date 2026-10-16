@@ -1,9 +1,10 @@
-import { chmod, mkdir, readFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { chmod, lstat, mkdir, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Exec } from '../exec.js';
 import type { JobSpec } from '../types.js';
 
-export type RunnerErrorCode = 'image_not_allowed' | 'bad_input' | 'boot_failed';
+export type RunnerErrorCode = 'image_not_allowed' | 'arg_not_allowed' | 'bad_input' | 'bad_output' | 'boot_failed';
 
 export class RunnerError extends Error {
   constructor(
@@ -27,6 +28,8 @@ export interface Runner {
 }
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+/** Largest result.json the host will read back from a job. */
+const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 function name(leaseId: string): string {
@@ -49,8 +52,11 @@ export function dockerRunner(opts: {
   outRoot: string;
   allow: string[];
   proxy?: string;
+  /** Job arg names a tenant may set. Anything else is refused, so a tenant cannot reach the host's env. */
+  allowArgs?: string[];
 }): Runner {
   const { exec, outRoot, allow, proxy } = opts;
+  const allowArgs = opts.allowArgs ?? ['URLS'];
   const docker = (args: string[]) => exec(args, {});
 
   return {
@@ -59,6 +65,7 @@ export function dockerRunner(opts: {
       const cname = name(leaseId);
       const env: string[] = [];
       for (const [k, v] of Object.entries(job.args)) {
+        if (!allowArgs.includes(k)) throw new RunnerError('arg_not_allowed', k);
         if (!ENV_NAME.test(k)) throw new RunnerError('bad_input', 'arg name');
         env.push('-e', `${k}=${v}`);
       }
@@ -102,7 +109,24 @@ export function dockerRunner(opts: {
 
     async output(leaseId) {
       name(leaseId);
-      return readFile(join(outRoot, leaseId, 'result.json'));
+      const file = join(outRoot, leaseId, 'result.json');
+      // The container controls this directory: refuse symlinks and anything oversize.
+      let handle;
+      try {
+        const l = await lstat(file);
+        if (!l.isFile()) throw new RunnerError('bad_output', 'not a regular file');
+        handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+        const st = await handle.stat();
+        if (!st.isFile()) throw new RunnerError('bad_output', 'not a regular file');
+        if (st.size > MAX_OUTPUT_BYTES) throw new RunnerError('bad_output', 'too large');
+        return await handle.readFile();
+      } catch (e) {
+        if (e instanceof RunnerError) throw e;
+        if ((e as NodeJS.ErrnoException).code === 'ELOOP') throw new RunnerError('bad_output', 'symlink');
+        throw e;
+      } finally {
+        await handle?.close();
+      }
     },
 
     async alive(leaseId) {

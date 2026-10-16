@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Exec } from '../exec.js';
@@ -98,11 +98,39 @@ test('start rejects a lease id or arg name that could escape', async () => {
   const { exec, calls } = fake();
   const r = dockerRunner({ exec, outRoot: await outRoot(), allow: ['charter-job-fetch'] });
   await assert.rejects(r.start('../x', JOB), (e: unknown) => e instanceof RunnerError && e.code === 'bad_input');
+  const r2 = dockerRunner({ exec, outRoot: await outRoot(), allow: ['charter-job-fetch'], allowArgs: ['A=B'] });
   await assert.rejects(
-    r.start('l1', { image: 'charter-job-fetch', args: { 'A=B': 'x' } }),
+    r2.start('l1', { image: 'charter-job-fetch', args: { 'A=B': 'x' } }),
     (e: unknown) => e instanceof RunnerError && e.code === 'bad_input',
   );
   assert.equal(calls.length, 0);
+});
+
+test('start refuses tenant args outside the allow list, before any docker call', async () => {
+  const { exec, calls } = fake();
+  const r = dockerRunner({
+    exec,
+    outRoot: await outRoot(),
+    allow: ['charter-job-fetch'],
+    proxy: 'socks5://proxy.internal:1080',
+  });
+  for (const k of ['CHARTER_PROXY', 'NODE_OPTIONS', 'LD_PRELOAD', 'PLAYWRIGHT_BROWSERS_PATH']) {
+    await assert.rejects(
+      r.start('l1', { image: 'charter-job-fetch', args: { URLS: 'https://example.com', [k]: 'x' } }),
+      (e: unknown) => e instanceof RunnerError && e.code === 'arg_not_allowed',
+      k,
+    );
+  }
+  assert.equal(calls.length, 0);
+  await r.start('l1', JOB);
+  assert.equal(calls.length, 1);
+});
+
+test('allowArgs widens what a tenant may set', async () => {
+  const { exec, calls } = fake();
+  const r = dockerRunner({ exec, outRoot: await outRoot(), allow: ['charter-job-fetch'], allowArgs: ['URLS', 'MODE'] });
+  await r.start('l1', { image: 'charter-job-fetch', args: { URLS: 'https://example.com', MODE: 'fast' } });
+  assert.ok(calls[0]!.args.includes('MODE=fast'));
 });
 
 test('stop emits docker rm -f charter-<id>', async () => {
@@ -138,4 +166,34 @@ test('output reads result.json from the lease out dir', async () => {
   await writeFile(join(root, 'l1', 'result.json'), '{"pages":[]}');
   const r = dockerRunner({ exec, outRoot: root, allow: [] });
   assert.equal((await r.output('l1')).toString(), '{"pages":[]}');
+});
+
+test('output refuses a symlinked result.json', async () => {
+  const { exec } = fake();
+  const root = await outRoot();
+  await mkdir(join(root, 'l1'), { recursive: true });
+  const secret = join(root, 'secret.txt');
+  await writeFile(secret, 'host secret');
+  await symlink(secret, join(root, 'l1', 'result.json'));
+  const r = dockerRunner({ exec, outRoot: root, allow: [] });
+  await assert.rejects(r.output('l1'), (e: unknown) => e instanceof RunnerError && e.code === 'bad_output');
+});
+
+test('output refuses an oversize result.json and accepts one at the cap', async () => {
+  const { exec } = fake();
+  const root = await outRoot();
+  await mkdir(join(root, 'l1'), { recursive: true });
+  const r = dockerRunner({ exec, outRoot: root, allow: [] });
+  await writeFile(join(root, 'l1', 'result.json'), Buffer.alloc(8 * 1024 * 1024 + 1, 0x20));
+  await assert.rejects(r.output('l1'), (e: unknown) => e instanceof RunnerError && e.code === 'bad_output');
+  await writeFile(join(root, 'l1', 'result.json'), Buffer.alloc(8 * 1024 * 1024, 0x20));
+  assert.equal((await r.output('l1')).length, 8 * 1024 * 1024);
+});
+
+test('output refuses a result.json that is a directory', async () => {
+  const { exec } = fake();
+  const root = await outRoot();
+  await mkdir(join(root, 'l1', 'result.json'), { recursive: true });
+  const r = dockerRunner({ exec, outRoot: root, allow: [] });
+  await assert.rejects(r.output('l1'), (e: unknown) => e instanceof RunnerError && e.code === 'bad_output');
 });

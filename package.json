@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --test --import tsx 'src/**/*.test.ts' 'web/**/*.test.ts'",
+    "test": "node --test --import tsx 'src/**/*.test.ts' 'web/**/*.test.ts' 'jobs/**/*.test.mjs'",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "repository": {
