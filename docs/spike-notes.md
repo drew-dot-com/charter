@@ -1,9 +1,14 @@
 # Task 1 spike notes: the TOON mainnet path and the `toon` CLI facts
 
-Run 2026-10-16, 21:50 to 23:45 UTC, over `ssh air` (Lima VMs `toon` = Edison's node and `toon2`)
-and the Hetzner box (Drew's edge). Mainnet only. Later tasks read their `toon` flags and JSON
-shapes from this file. Shapes marked **live** were seen on mainnet. Shapes marked **source** were
-read from toon 0.3.0 or connector code.
+Run 2026-10-16 21:50 UTC to 2026-10-17 00:30 UTC, over `ssh air` (Lima VMs `toon` = Edison's
+node and `toon2`) and the Hetzner box (Drew's edge). The read-only checks for the review fixes ran
+about 01:00 UTC. Mainnet only. Later tasks read their `toon` flags and JSON shapes from this file.
+
+- Shapes marked **live** were seen on mainnet. Shapes marked **source** were read from toon 0.3.0
+  or connector code.
+- Long values in some shapes are shortened with `...`; the field names and types are exact.
+- **Amounts** are always USDC base units (micro-USDC, 6 decimals): `--price 100` and `paid: 100`
+  mean 0.0001 USDC, and `1000000` is 1 USDC.
 
 ## Outcome
 
@@ -91,6 +96,43 @@ payer (Edison, hidden)  --peering "drew"-->  edge (connector.mainnet.toonprotoco
   It was applied on both VMs.
 - `toon up` refuses to start unless each settlement key holds 1 whole token
   (`A settlement key is not funded ... 1 token`).
+- **The brief's Step 1 check ("`toon status` in `toon2` shows its peering to `drew`") does not
+  apply as written.** `toon2`'s peering is named `mainnet`, because `toon join mainnet` made it;
+  `drew` is only the name on Edison's hand-made peering. Also, `toon2` could not start at all
+  until Drew funded its Solana key (it was up at 23:20 UTC). Once up, `toon status` showed
+  `Connected to mainnet` and `peerings[0].id = "mainnet"`.
+
+## Reading a node's own address, seal key and URLs (live, read-only, `toon2`)
+
+`toon status --json` (needs no passphrase; it shows `supervisor.running: false` and `null`
+addresses when the node is stopped):
+
+| what | field |
+| --- | --- |
+| node ILP address = **Charter `ilpBase`** | `.agent_node.toon_apps[0].connector.ilp_address` (`"g.toon.69b2a212547e7a9c"`) |
+| an app's address | `.agent_node.toon_apps[0].apps[i].prefix` (`ilpBase` + `.` + app name) |
+| local connector address | `.agent_node.toon_apps[0].connector.address` (`"127.0.0.1:27941"`, only while running) |
+| peerings | `.agent_node.peerings[]` = `{id, toon_app}` (`[{"id":"mainnet","toon_app":"relay"}]`); `toon peer list --json` adds `fee`, `max_packet_amount` |
+| is it up | `.agent_node.supervisor.running`, `.agent_node.toon_apps[0].connector.running` |
+
+`toon status --json` carries **no seal key and no onion URL**. Read them from `toon describe --json`.
+It is free, describes this node's own connector, and needs the node running:
+
+| what | field |
+| --- | --- |
+| **seal key** (Charter `sealKey`) | `.description.edgeIdentity.publicKey` (`"0x0469b2a2...9e5e1b"`, 65 bytes) |
+| onion `/ilp` URL (what others `--seal-to` and peer toward) | `.description.httpEndpoint` (`"http://ev2ocvzg...anyone/ilp"`) |
+| BTP URL | `.description.btpEndpoint` |
+| addresses | `.description.ilpAddresses` (`["g.toon.69b2a212547e7a9c"]`) |
+
+- The same key is at the local connector: `curl http://<connector.address>/ilp/identity` gives
+  `{"keyId":"connector-signer","publicKey":"0x04..."}`. The local `/ilp` gives the full
+  self-description.
+- Both answer **only while the node is running**. The local port is chosen at `toon init` and
+  stored in `state.json` (`toon_apps[0].listen`).
+- Stopped fallback: `TOON_PASSPHRASE_FILE=... toon wallet show --json` gives
+  `.wallet.connector_identities[0].public_key` = the 32-byte x of the seal key, not the 65-byte key.
+  The onion hostname is in `~/.toon/agent-node/overlay/0/hostname`.
 
 ## The nodes
 
@@ -142,7 +184,13 @@ toon send [--json] [--seal-to <URL>] [--method <M>] [--path <P>] [--body <FILE>]
   **ToonClient callers:** connector source refuses with `F00` any envelope target that starts
   with `/` unless it is the handler's own path, so send relative targets (`echo`).
 
-Live outputs (Edison to `toon2`, 23:36 to 23:37 UTC):
+Live outputs, Edison to `toon2`, 23:36 to 23:37 UTC. The lines are, in order:
+
+1. Fulfilled: the app answered 200.
+2. Fulfilled: the app answered 503.
+3. Rejected `T01`: the app was stopped.
+4. Rejected `F02`, seen earlier at 23:21 before the edge had a peering or route to `toon2`; the
+   edge answered it.
 
 ```json
 {"amount":100,"destination":"g.toon.69b2a212547e7a9c.charter-echo","outcome":"fulfilled","paid":100,"response":{"body":"{\"method\": \"POST\", \"path\": \"/echo\", \"body\": \"{\\\"hi\\\":1}\"}","status":200}}
@@ -195,6 +243,9 @@ The test was ephemeral kind 21390 to Drew's relay, so it is not stored for reade
 - With `--relay`, the amount defaults to the relay's NIP-11 price (Drew's relay: 1000).
 - Source-only outcomes: `"refused"` (non-2xx, exit 1, still paid) and `"rejected"`.
 - `toon event sign` prints a signed event and pays nothing.
+- **Unverified:** a stored kind-31390 event with `["L","charter"]` on Drew's relay. Only the
+  ephemeral kind 21390 was published. Whether the relay accepts and serves a 31390 addressable
+  event (and its `d`/`L` tags) is for Task 6 to check.
 
 ## `toon channel list --json` (live)
 
@@ -210,14 +261,32 @@ The test was ephemeral kind 21390 to Drew's relay, so it is not stored for reade
 
 - Each transaction is `{chain, network, hash}`: map `hash` to Charter's `tx`. The channel also
   carries `transaction`.
+- Neither `channel list` nor `channel land` has a `--yes` flag.
+- `channel list` ran live with no passphrase.
+- `channel land` is a write signed with the operator key in the node home (source: `channel_write`),
+  not the wallet. The live run had `TOON_PASSPHRASE_FILE` set, so "no passphrase needed" is from
+  source only. It needs the node running.
 - The tx was finalized on chain with no error. It needs gas on the settlement key.
 
 ## Anyone SOCKS proxy for host-side containers
 
-- A `toon` node's own `anon` daemon serves `socks5h://127.0.0.1:<port>` on **loopback only**, on
-  a port chosen at each `toon up`. A container on the default Docker bridge (`172.17.0.1`)
-  **cannot reach it**.
-- Answer for Task 5/11: **none reachable from a bridge container as the node ships**.
+- A `toon` node's own `anon` daemon serves `socks5h://127.0.0.1:<port>` on **loopback only**.
+- The current port is in `~/.toon/agent-node/overlay/anonrc` (`SocksPort 127.0.0.1:<port>`) and in
+  `~/.toon/agent-node/connectors/0/connector.toml` (`socks_proxy`).
+- **It changes at each `toon up`**. Edison: 64425 on 10-05, 62258 on 10-16. `toon2`: the
+  rendered config read 3100 while stopped, and 61704 once up.
+- Tested read-only in `toon2` (port 61704), from throwaway containers of the local relay image
+  (`nc -zv -w 5`):
+
+  | container network | target | result |
+  | --- | --- | --- |
+  | default bridge | `172.17.0.1:61704` (`docker0`) | **refused** (exit 1) |
+  | default bridge | `host.docker.internal:61704` (`host-gateway`) | **refused** (exit 1) |
+  | default bridge | `127.0.0.1:61704` (its own loopback) | **refused** (exit 1) |
+  | `--network host` | `127.0.0.1:61704` | **open** (exit 0) |
+
+- Answer for Task 5/11: **none reachable from a bridge container as the node ships**. A
+  `--network host` container can reach it, but only at a port that moves with every `toon up`.
 - To give a host's jobs hidden egress, run a separate `anon` 0.4.10.2 SOCKS container on the
   job network. That is the `edge-anon` pattern above, with `SocksPolicy` limited to that network.
 
