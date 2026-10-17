@@ -60,7 +60,7 @@ const HALTS: Record<string, { message: string; retry: boolean; final?: boolean }
   busy: { message: 'A payment for this lease is already being processed. Is it open in another tab?', retry: true },
   rate_limited: { message: 'Too many requests from this network. Wait a minute, then try again.', retry: true },
   authorization_window: {
-    message: 'The signature expired before it reached the door. Approve the wallet prompt within ten seconds, and check that this device’s clock is right.',
+    message: 'The signature expired before it reached the door. Approve the wallet prompt sooner, and check that this device’s clock is right.',
     retry: true,
   },
   settlement_failed: { message: 'The payment did not go through. Try again.', retry: true },
@@ -70,6 +70,8 @@ const HALTS: Record<string, { message: string; retry: boolean; final?: boolean }
   not_running: { message: 'This lease is closed. No further payment is needed.', retry: false, final: true },
   stopped: { message: 'The door stopped this lease. No further payment will be taken.', retry: false, final: true },
   payer_blocked: { message: 'This wallet is blocked after an earlier failed payment. Nothing was charged.', retry: false },
+  capacity: { message: 'The door has reached its limit for today. Nothing was charged. Try again later.', retry: true },
+  duplicate: { message: 'The host had already counted this payment, so the door stopped this lease. You were not charged for it.', retry: false, final: true },
   not_found: { message: 'The door does not know this lease.', retry: false },
 };
 

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { ToonClientPayer, serialized } from '../payer.js';
 import { hostApi } from '../tenant/host-api.js';
 import { fetchOffers } from '../tenant/offers.js';
+import { parseDoorHosts, parseTrustProxy } from './config.js';
 import { DoorLedger, LEDGER_FILE } from './ledger.js';
 import { doorApp } from './server.js';
 import { unblockCommand } from './unblock.js';
@@ -21,7 +22,8 @@ async function main(): Promise<void> {
   const chain = need(env, 'CHARTER_TOON_CHAIN');
   if (chain !== 'evm' && chain !== 'solana') throw new Error('CHARTER_TOON_CHAIN must be evm or solana');
   const dataDir = need(env, 'CHARTER_DATA_DIR');
-  const trustProxy = env.CHARTER_DOOR_TRUST_PROXY?.trim();
+  const trustProxy = parseTrustProxy(env.CHARTER_DOOR_TRUST_PROXY);
+  const hosts = parseDoorHosts(env.CHARTER_DOOR_HOSTS);
 
   // The door's own TOON wallet pays hosts. The key stays in the file the env names. A bad key file
   // fails with KeyFileError's fixed message; other startup errors carry no key material and print as they are.
@@ -31,11 +33,22 @@ async function main(): Promise<void> {
     channelStore: need(env, 'CHARTER_TOON_CHANNEL_STORE'),
     chain,
   };
-  const payer = serialized(await ToonClientPayer.create(payerConfig));
+  const client = await ToonClientPayer.create(payerConfig);
+  // The channel is opened (or found) now, at boot, not inside the first tick's payment window.
+  try {
+    await client.warm();
+    const left = await client.headroom();
+    console.log(`charter-door channel ready, headroom ${left === undefined ? 'unknown' : left.toString()} micro-USDC`);
+  } catch (e) {
+    console.error(`charter-door could not open its channel at boot (ticks wait until one is open): ${String(e instanceof Error ? e.message : e).slice(0, 200)}`);
+  }
+  const payer = serialized(client);
 
   const app = doorApp({
     offers: () => fetchOffers(relayUrl, Date.now()),
     api: (o) => hostApi(payer, o),
+    hosts,
+    headroom: () => client.headroom(),
     ledger: new DoorLedger(join(dataDir, LEDGER_FILE)),
     dataDir,
     x402: {
@@ -43,7 +56,7 @@ async function main(): Promise<void> {
       network: 'eip155:8453',
       facilitatorUrl: env.X402_FACILITATOR_URL?.trim() || 'https://facilitator.payai.network',
     },
-    ...(trustProxy ? { trustProxy: Number(trustProxy) } : {}),
+    ...(trustProxy === undefined ? {} : { trustProxy }),
   });
   const host = env.CHARTER_DOOR_HOST?.trim() || '127.0.0.1';
   const server = app.listen(port, host);

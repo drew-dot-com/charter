@@ -14,6 +14,17 @@ export interface DoorDeps {
   /** Live offers. The door caches the answer for 60 s. */
   offers: () => Promise<Offer[]>;
   api: (o: Offer) => HostApi;
+  /**
+   * CHARTER_DOOR_HOSTS: the hosts the door pays, host pubkey to its ILP address. An offer is listed and
+   * opened only when its signer and its ilpBase are both on this list.
+   */
+  hosts: ReadonlyMap<string, string>;
+  /**
+   * What the door's open x402 channel can still pay, in micro-USDC, as its TOON client records it;
+   * undefined when no channel is open. A tick is refused while it is under tickPrice + HEADROOM_MARGIN,
+   * so a tick never waits on a channel open inside its payment window. Left out: no check.
+   */
+  headroom?: () => Promise<Micro | undefined>;
   ledger: DoorLedger;
   x402: X402Config | 'free-for-tests';
   /** Epoch ms. */
@@ -42,6 +53,16 @@ const TICKS_PER_MINUTE = 30;
 const MINUTE_MS = 60_000;
 const OPENS_PER_HOUR = 10;
 const HOUR_MS = 3_600_000;
+/** Opens across every IP in an hour. */
+export const DOOR_OPENS_PER_HOUR = 30;
+/** Door spend no renter paid for (opens, free reads, losses) in one UTC day, in micro-USDC. Past it: 503 capacity. */
+export const DAILY_UNPAID_CAP: Micro = 500_000n;
+/** The most the door pays for an offer's open, status read and tick, in micro-USDC. A pricier offer is not listed. */
+export const MAX_OPEN_PRICE: Micro = 10_000n;
+export const MAX_STATUS_PRICE: Micro = 1_000n;
+export const MAX_TICK_PRICE: Micro = 50_000n;
+/** Channel headroom a tick needs beyond its own price. */
+export const HEADROOM_MARGIN: Micro = 10_000n;
 const LEASE_ID = /^[0-9a-f]{32}$/;
 const NON_NEG_INT = /^\d+$/;
 
@@ -81,6 +102,9 @@ function publicOffer(o: Offer) {
 
 /** The lease's free-read budget is spent. */
 class BudgetError extends Error {}
+
+/** The door's daily cap on spend no renter paid for is reached. */
+class CapacityError extends Error {}
 
 function final(l: Lease): boolean {
   return l.state === 'done' || l.state === 'closed';
@@ -124,7 +148,25 @@ export function doorApp(deps: DoorDeps): express.Express {
     return entry.p;
   };
 
+  /** An offer from a host on CHARTER_DOOR_HOSTS, at its ILP address there, within the door's price maxima. */
+  const trusted = (o: Offer): boolean =>
+    deps.hosts.get(o.hostPubkey) === o.ilpBase &&
+    o.openPrice <= MAX_OPEN_PRICE &&
+    o.statusPrice <= MAX_STATUS_PRICE &&
+    o.tickPrice <= MAX_TICK_PRICE;
+  const overCap = (): boolean => ledger.unpaidToday(now()) >= DAILY_UNPAID_CAP;
+  /** Runs a host call and books whatever it cost the door as spend no renter paid for. */
+  const unpaid = async <T>(api: HostApi, fn: () => Promise<T>): Promise<T> => {
+    const before = api.spent();
+    try {
+      return await fn();
+    } finally {
+      ledger.addUnpaid(api.spent() - before, now());
+    }
+  };
+
   const allowOpen = slidingLimit(now, OPENS_PER_HOUR, HOUR_MS);
+  const allowDoorOpen = slidingLimit(now, DOOR_OPENS_PER_HOUR, HOUR_MS);
   const allowGet = slidingLimit(now, GETS_PER_MINUTE, MINUTE_MS);
   const allowTick = slidingLimit(now, TICKS_PER_MINUTE, MINUTE_MS);
 
@@ -136,11 +178,14 @@ export function doorApp(deps: DoorDeps): express.Express {
   const ticking = new Set<string>();
   /** Payment keys claimed by a request that has not finished verifying. */
   const claimed = new Set<string>();
+  /** When the operator was last told the channel is too low for ticks (epoch ms). */
+  let lowHeadroomWarnedAt = -Infinity;
 
   const partFile = (id: string, part: number): string => join(deps.dataDir, 'output', id, `${part}.json`);
 
-  /** Spends one of the lease's paid host reads, or throws BudgetError. */
+  /** Spends one of the lease's paid host reads, or throws BudgetError (or CapacityError past the daily cap). */
   const spendRead = (id: string): void => {
+    if (overCap()) throw new CapacityError();
     const rec = ledger.get(id)!;
     if (rec.hostReads >= READS_BASE + READS_PER_TICK * rec.ticksPaidByRenter) throw new BudgetError();
     ledger.read(id);
@@ -166,7 +211,8 @@ export function doorApp(deps: DoorDeps): express.Express {
     }
     const p = (async () => {
       try {
-        const lease = await deps.api(leaseOffer(id)).status(id);
+        const api = deps.api(leaseOffer(id));
+        const lease = await unpaid(api, () => api.status(id));
         statuses.set(id, { lease, at: now() });
         return lease;
       } catch (e) {
@@ -197,8 +243,10 @@ export function doorApp(deps: DoorDeps): express.Express {
   app.disable('x-powered-by');
   if (deps.trustProxy !== undefined) app.set('trust proxy', deps.trustProxy);
 
-  // A browser on another origin calls every /v1 route. The payment headers go both ways.
+  // A browser on another origin may read offers and leases and pay ticks. The payment headers go both ways.
+  // Opening a lease is same-origin only (the page is served from here): no CORS on POST /v1/leases.
   app.use('/v1', (req, res, next) => {
+    if (/^\/leases\/?$/.test(req.path)) return next();
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Access-Control-Expose-Headers', EXPOSED);
     if (req.method === 'OPTIONS') {
@@ -207,6 +255,11 @@ export function doorApp(deps: DoorDeps): express.Express {
       res.set('Access-Control-Max-Age', '600');
       return void res.status(204).end();
     }
+    next();
+  });
+  // A POST must say it is JSON. A cross-origin form or a text/plain fetch cannot, without a preflight.
+  app.use((req, res, next) => {
+    if (req.method === 'POST' && !req.is('application/json')) return void res.status(415).json({ error: 'unsupported_media_type' });
     next();
   });
   app.use(express.json({ limit: '16kb', type: () => true }));
@@ -229,7 +282,7 @@ export function doorApp(deps: DoorDeps): express.Express {
     }
     res.json(
       list
-        .filter((o) => o.images.includes(JOB_IMAGE) && o.expiresAt > now())
+        .filter((o) => trusted(o) && o.images.includes(JOB_IMAGE) && o.expiresAt > now())
         .map(publicOffer),
     );
   });
@@ -242,15 +295,19 @@ export function doorApp(deps: DoorDeps): express.Express {
     }
     let offer: Offer | undefined;
     try {
-      offer = findOfferExact(await offers(), offerId);
+      offer = findOfferExact((await offers()).filter(trusted), offerId);
     } catch {
       return void res.status(502).json({ error: 'offers_unavailable' });
     }
     if (!offer || offer.expiresAt <= now()) return void res.status(404).json({ error: 'not_found' });
     if (!offer.images.includes(JOB_IMAGE)) return void res.status(400).json({ error: 'image_not_offered' });
+    // Door-wide: an open costs the door and no renter pays for it.
+    if (overCap() || !allowDoorOpen('door')) return void res.status(503).json({ error: 'capacity' });
 
     try {
-      const r = await deps.api(offer).open({ image: JOB_IMAGE, args: { URLS: (urls as string[]).join(',') } });
+      const api = deps.api(offer);
+      const job = { image: JOB_IMAGE, args: { URLS: (urls as string[]).join(',') } };
+      const r = await unpaid(api, () => api.open(job));
       if (!LEASE_ID.test(r.leaseId) || ledger.get(r.leaseId)) return void res.status(502).json({ error: 'bad_host_answer' });
       ledger.open({ leaseId: r.leaseId, offerId, createdAt: now(), offer: snapshotOffer(offer) });
       res.json({
@@ -267,6 +324,8 @@ export function doorApp(deps: DoorDeps): express.Express {
   /** Everything that can be refused before the renter is asked to pay. */
   const tickGuard: express.RequestHandler = (req, res, next) => {
     if (!allowTick(req.ip ?? 'unknown')) return void res.status(429).json({ error: 'rate_limited' });
+    // A tick costs the door a status read no renter pays for, and may cost it a loss.
+    if (overCap()) return void res.status(503).json({ error: 'capacity' });
     const id = req.params.id as string;
     const rec = LEASE_ID.test(id) ? ledger.get(id) : undefined;
     if (!rec) return void res.status(404).json({ error: 'not_found' });
@@ -339,11 +398,48 @@ export function doorApp(deps: DoorDeps): express.Express {
     if (res.locals.paymentKey) ledger.addPayment(res.locals.paymentKey as string);
     // The payment has verified, so the payer is known. One that cost the door before does not cost it again.
     if (payer && ledger.payerHasLoss(payer, now())) return void res.status(403).json({ error: 'payer_blocked' });
+    // A channel too low for this tick would be replaced inside the tick's send, past its payment window.
+    // Nothing is sent and the renter's payment does not settle: the renter signs again.
+    if (deps.headroom) {
+      let left: Micro | undefined;
+      try {
+        left = await deps.headroom();
+      } catch {
+        left = undefined;
+      }
+      if (left === undefined || left < offer.tickPrice + HEADROOM_MARGIN) {
+        if (now() - lowHeadroomWarnedAt >= MINUTE_MS) {
+          lowHeadroomWarnedAt = now();
+          console.error(`charter-door: channel headroom ${left === undefined ? 'unknown (no open channel?)' : left.toString()} is under tick ${offer.tickPrice} + ${HEADROOM_MARGIN}; ticks wait until the channel is replaced`);
+        }
+        return void res.status(503).json({ error: 'retry_later' });
+      }
+    }
     const api = deps.api(offer);
-    const before = api.spent();
     const deadline = res.locals.deadline as number | undefined;
+    const sendOpts = deadline === undefined ? {} : { deadline };
+    // The cached status may be up to 5 s old. One fresh read, just before paying, so a lease that has just
+    // finished or closed is not paid a tick: the renter's payment then does not settle either.
+    let fresh: Lease;
     try {
-      const t = await api.tick(id, res.locals.index as number, deadline === undefined ? undefined : { deadline });
+      fresh = await unpaid(api, () => api.status(id, { priority: 'high', ...sendOpts }));
+    } catch (e) {
+      if (e instanceof DeadlinePassedError) return void res.status(503).json({ error: 'retry_later' });
+      return void res.status(502).json({ error: hostMessage(e) });
+    }
+    statuses.set(id, { lease: fresh, at: now() });
+    if (fresh.state === 'done') return void res.status(409).json({ error: 'lease_done' });
+    if (fresh.state === 'closed') return void res.status(409).json({ error: 'not_running' });
+    const before = api.spent();
+    try {
+      const t = await api.tick(id, res.locals.index as number, sendOpts);
+      if (t.duplicate) {
+        // The host already counted this index: it was paid for nothing, and the renter is not charged.
+        const lost = api.spent() - before;
+        if (lost > 0n) ledger.loss(id, lost, 'host_refused', now(), payer);
+        ledger.stop(id);
+        return void res.status(409).json({ error: 'duplicate' });
+      }
       ledger.hostTick(id);
       res.locals.hostPaid = { leaseId: id, price: offer.tickPrice };
       res.status(200).json(t);
@@ -377,6 +473,7 @@ export function doorApp(deps: DoorDeps): express.Express {
 
   const failRead = (res: express.Response, e: unknown): void => {
     if (e instanceof BudgetError) return void res.status(429).json({ error: 'rate_limited' });
+    if (e instanceof CapacityError) return void res.status(503).json({ error: 'capacity' });
     readFailure(res, e);
   };
 
@@ -417,7 +514,8 @@ export function doorApp(deps: DoorDeps): express.Express {
       if (!fetching) {
         spendRead(id);
         fetching = (async () => {
-          const answer = await deps.api(leaseOffer(id)).outputPart(id, part);
+          const api = deps.api(leaseOffer(id));
+          const answer = await unpaid(api, () => api.outputPart(id, part));
           mkdirSync(join(deps.dataDir, 'output', id), { recursive: true, mode: 0o700 });
           const file = partFile(id, part);
           writeFileSync(`${file}.tmp`, JSON.stringify(answer), { mode: 0o600 });

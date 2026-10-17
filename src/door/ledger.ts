@@ -79,6 +79,11 @@ interface Stored extends Omit<DoorLease, 'losses'> {
   losses: string;
 }
 
+/** The UTC day of an epoch ms, as YYYY-MM-DD. */
+export function utcDay(at: number): string {
+  return new Date(at).toISOString().slice(0, 10);
+}
+
 /** The door's books: a JSON file, rewritten whole through a temp file and a rename. */
 export class DoorLedger {
   private readonly leases = new Map<string, DoorLease>();
@@ -91,7 +96,10 @@ export class DoorLedger {
   private readonly payments = new Set<string>();
   private readonly paymentsFile: string;
   private readonly unblocksFile: string;
+  private readonly unpaidFile: string;
   private paymentLines = 0;
+  /** Door spend no renter paid for (opens, free reads, losses) in one UTC day. */
+  private unpaid: { day: string; micro: Micro } = { day: '', micro: 0n };
 
   constructor(
     private readonly file: string,
@@ -99,6 +107,12 @@ export class DoorLedger {
   ) {
     this.paymentsFile = `${file}.payments`;
     this.unblocksFile = `${file}.unblocks`;
+    this.unpaidFile = `${file}.unpaid`;
+    const unpaid = readIfThere(this.unpaidFile);
+    if (unpaid !== undefined) {
+      const u = JSON.parse(unpaid) as { day?: unknown; micro?: unknown };
+      if (typeof u.day === 'string' && typeof u.micro === 'string' && /^\d+$/.test(u.micro)) this.unpaid = { day: u.day, micro: BigInt(u.micro) };
+    }
     const raw = readIfThere(file);
     if (raw !== undefined) {
       for (const s of JSON.parse(raw) as Array<Stored & Partial<Pick<DoorLease, 'nextIndex' | 'hostReads'>>>) {
@@ -151,6 +165,7 @@ export class DoorLedger {
    * failed for the payer's own reason blocks them from new ticks, and only for BLOCK_MS.
    */
   loss(leaseId: string, amount: Micro, kind: LossKind, at: number, payer?: string): void {
+    this.addUnpaid(amount, at);
     this.update(leaseId, (l) => {
       l.losses += amount;
       l.lossKind = kind;
@@ -197,6 +212,22 @@ export class DoorLedger {
       if (who && /^\d+$/.test(at ?? '')) m.set(who, Math.max(m.get(who) ?? 0, Number(at)));
     }
     this.unblocked = m;
+  }
+
+  /** Micro-USDC the door spent that no renter paid for, in the UTC day of `at` (epoch ms). */
+  unpaidToday(at: number): Micro {
+    return this.unpaid.day === utcDay(at) ? this.unpaid.micro : 0n;
+  }
+
+  /** Adds door spend no renter paid for (an open, a free read, a loss) to the UTC day of `at`. Kept across a restart. */
+  addUnpaid(amount: Micro, at: number): void {
+    if (amount <= 0n) return;
+    const day = utcDay(at);
+    this.unpaid = { day, micro: (this.unpaid.day === day ? this.unpaid.micro : 0n) + amount };
+    mkdirSync(dirname(this.unpaidFile), { recursive: true, mode: 0o700 });
+    const tmp = `${this.unpaidFile}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ day, micro: this.unpaid.micro.toString() }), { mode: 0o600 });
+    renameSync(tmp, this.unpaidFile);
   }
 
   /** One paid host status or output call for a free read. */

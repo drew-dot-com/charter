@@ -99,3 +99,13 @@ test('decodeOutput tolerates a page without a screenshot, and drops a malformed 
   assert.deepEqual(out.pages[0], { url: 'u', text: 't', jpegBase64: undefined });
   assert.equal(out.pages[1]!.jpegBase64, undefined);
 });
+
+test('final review: the authorization_window message no longer says ten seconds, and capacity and duplicate have their own words', () => {
+  const w = tickOutcome(400, { error: 'authorization_window' });
+  assert.equal(w.kind, 'halt');
+  assert.ok(w.kind === 'halt' && !/ten seconds/i.test(w.message), w.kind === 'halt' ? w.message : '');
+  const c = tickOutcome(503, { error: 'capacity' });
+  assert.ok(c.kind === 'halt' && c.retry && /limit/i.test(c.message), JSON.stringify(c));
+  const d = tickOutcome(409, { error: 'duplicate' });
+  assert.ok(d.kind === 'halt' && !d.retry && d.final && /not charged/i.test(d.message), JSON.stringify(d));
+});

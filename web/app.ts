@@ -198,6 +198,7 @@ const OPEN_FAILURES: Record<number, string> = {
   400: 'The door refused those addresses.',
   404: 'That machine is no longer offered. Reload the list.',
   429: 'Too many leases were started from this network. Try again later.',
+  503: 'The door has reached its limit for now. Try again later.',
 };
 
 function rentForm(o: PublicOffer, close: () => void): HTMLElement {

@@ -107,6 +107,7 @@ const dir = mkdtempSync(join(tmpdir(), 'charter-dev-door-'));
 const app = doorApp({
   offers: async () => OFFERS,
   api: apiFor,
+  hosts: new Map(OFFERS.map((o) => [o.hostPubkey, o.ilpBase])),
   ledger: new DoorLedger(join(dir, 'ledger.json')),
   dataDir: dir,
   x402: 'free-for-tests',

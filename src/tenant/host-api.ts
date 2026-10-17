@@ -30,7 +30,8 @@ export interface HostApi {
   open(job: JobSpec): Promise<OpenResult>;
   /** `deadline` (epoch ms): the packet must not be in flight after it; see SendOpts. */
   tick(leaseId: string, index: number, opts?: { deadline?: number }): Promise<TickResult>;
-  status(leaseId: string): Promise<Lease>;
+  /** `priority` and `deadline` as for a tick: the door's read just before a tick uses both. */
+  status(leaseId: string, opts?: { priority?: 'high'; deadline?: number }): Promise<Lease>;
   /** Every part of result.json, joined. Each part is one paid status call. */
   output(leaseId: string): Promise<Buffer>;
   /** One part of result.json as the host answers it (base64 `data`). One paid status call. */
@@ -49,13 +50,18 @@ export interface OutputPart {
 export function hostApi(p: Payer, o: Offer): HostApi {
   let spent: Micro = 0n;
 
-  async function call(app: 'open' | 'tick' | 'status', amount: Micro, req: PacketRequest, deadline?: number): Promise<unknown> {
+  async function call(
+    app: 'open' | 'tick' | 'status',
+    amount: Micro,
+    req: PacketRequest,
+    opts: { priority?: 'high'; deadline?: number } = {},
+  ): Promise<unknown> {
     const a: PacketAnswer = await p.send(`${o.ilpBase}.charter-${app}`, req, {
       sealKey: o.sealKey,
       sealUrl: o.sealUrl,
       amount,
-      ...(app === 'tick' ? { priority: 'high' as const } : {}),
-      ...(deadline === undefined ? {} : { deadline }),
+      ...(app === 'tick' || opts.priority === 'high' ? { priority: 'high' as const } : {}),
+      ...(opts.deadline === undefined ? {} : { deadline: opts.deadline }),
     });
     spent += a.paid;
     if (a.status < 200 || a.status >= 300) {
@@ -65,8 +71,8 @@ export function hostApi(p: Payer, o: Offer): HostApi {
     return a.body;
   }
 
-  const status = async (leaseId: string): Promise<Lease> =>
-    ((await call('status', o.statusPrice, { method: 'GET', path: `/leases/${leaseId}` })) as { lease: Lease }).lease;
+  const status = async (leaseId: string, opts?: { priority?: 'high'; deadline?: number }): Promise<Lease> =>
+    ((await call('status', o.statusPrice, { method: 'GET', path: `/leases/${leaseId}` }, opts)) as { lease: Lease }).lease;
 
   const part = async (leaseId: string, n: number): Promise<OutputPart> =>
     (await call('status', o.statusPrice, { method: 'GET', path: `/leases/${leaseId}/output/${n}` })) as OutputPart;
@@ -74,7 +80,7 @@ export function hostApi(p: Payer, o: Offer): HostApi {
   return {
     open: async (job) => (await call('open', o.openPrice, { method: 'POST', path: '/open', body: { job } })) as OpenResult,
     tick: async (leaseId, index, opts) =>
-      (await call('tick', o.tickPrice, { method: 'POST', path: '/tick', body: { leaseId, index } }, opts?.deadline)) as TickResult,
+      (await call('tick', o.tickPrice, { method: 'POST', path: '/tick', body: { leaseId, index } }, opts?.deadline === undefined ? {} : { deadline: opts.deadline })) as TickResult,
     status,
     outputPart: part,
     output: async (leaseId) => {

@@ -43,13 +43,22 @@ function lease(over: Partial<Lease> = {}): Lease {
 }
 
 /** A scripted HostApi. Each method can be overridden; calls are recorded. */
-function fakeHost(over: Partial<HostApi> = {}, tickFailure?: Error | ((n: number) => Error | undefined)) {
+function fakeHost(
+  over: Partial<HostApi> = {},
+  tickFailure?: Error | ((n: number) => Error | undefined),
+  prices: { open?: Micro; status?: Micro } = {},
+) {
   let tickCount = 0;
   const calls: string[] = [];
   let spent: Micro = 0n;
   const opened: Array<{ image: string; args: Record<string, string> }> = [];
+  // A status read made for a tick (priority high) is recorded apart from the free reads the GET routes cause.
+  const statusCall = (opts?: { priority?: 'high' }) => {
+    calls.push(opts?.priority === 'high' ? 'status:tick' : 'status');
+    spent += prices.status ?? 0n;
+  };
   const api: HostApi = {
-    open: async (job): Promise<OpenResult> => (calls.push('open'), opened.push(job), { leaseId: LEASE, state: 'awaiting_first_tick' }),
+    open: async (job): Promise<OpenResult> => (calls.push('open'), opened.push(job), (spent += prices.open ?? 0n), { leaseId: LEASE, state: 'awaiting_first_tick' }),
     tick: async (_id, index): Promise<TickResult> => {
       calls.push(`tick:${index}`);
       const tickFail = typeof tickFailure === 'function' ? tickFailure(++tickCount) : tickFailure;
@@ -59,7 +68,7 @@ function fakeHost(over: Partial<HostApi> = {}, tickFailure?: Error | ((n: number
       spent += 5000n;
       return { paidIntervals: index + 1, paidThrough: 31_000, duplicate: false };
     },
-    status: async () => (calls.push('status'), lease()),
+    status: async (_id, opts) => (statusCall(opts), lease()),
     output: async () => Buffer.alloc(0),
     outputPart: async (_id, part): Promise<OutputPart> => (calls.push(`part:${part}`), { part, parts: 2, data: Buffer.from(`p${part}`).toString('base64') }),
     spent: (): Micro => spent,
@@ -67,7 +76,7 @@ function fakeHost(over: Partial<HostApi> = {}, tickFailure?: Error | ((n: number
   };
   // Overridden reads are counted too.
   const { status, outputPart } = api;
-  if (over.status) api.status = async (id) => (calls.push('status'), status(id));
+  if (over.status) api.status = async (id, opts) => (statusCall(opts), status(id, opts));
   if (over.outputPart) api.outputPart = async (id, n) => (calls.push(`part:${n}`), outputPart(id, n));
   return { api, calls, opened };
 }
@@ -82,6 +91,7 @@ async function start(host: ReturnType<typeof fakeHost>, over: Partial<DoorDeps> 
   const deps: DoorDeps = {
     offers: async () => (offerCalls++, [OFFER]),
     api: () => host.api,
+    hosts: new Map([[OFFER.hostPubkey, OFFER.ilpBase]]),
     ledger,
     x402: 'free-for-tests',
     now: () => clock.t,
@@ -96,8 +106,12 @@ async function start(host: ReturnType<typeof fakeHost>, over: Partial<DoorDeps> 
   return {
     base, ledger, gate, settled, clock, dir, offerCalls: () => offerCalls,
     close: () => void server.close(),
-    post: (path: string, body: unknown, headers: Record<string, string> = {}) =>
-      fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) }),
+    post: (path: string, body: unknown, headers: Record<string, string | undefined> = {}) =>
+      fetch(base + path, {
+        method: 'POST',
+        headers: Object.fromEntries(Object.entries({ 'content-type': 'application/json', ...headers }).filter(([, v]) => v !== undefined)) as Record<string, string>,
+        body: JSON.stringify(body),
+      }),
     get: (path: string) => fetch(base + path),
   };
 }
@@ -319,7 +333,6 @@ test('the 11th POST /v1/leases from one IP within an hour answers 429, and the w
     for (let i = 0; i < 10; i++) assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS })).status, 200);
     const r = await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
     assert.equal(r.status, 429);
-    assert.equal(r.headers.get('access-control-allow-origin'), '*');
     d.clock.t += 3_600_001;
     assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS })).status, 200);
   } finally {
@@ -604,6 +617,7 @@ test('C1: host reads per lease are capped at 40 + 8 per renter tick; past it the
       await d.get(`/v1/leases/${LEASE}`);
     }
     assert.equal(host.calls.filter((c) => c === 'status').length, 48);
+    assert.equal(host.calls.filter((c) => c === 'status:tick').length, 1, 'the tick read is paid by the tick, not the read budget');
     assert.equal(d.ledger.get(LEASE)!.hostReads, 48);
   } finally {
     d.close();
@@ -796,7 +810,7 @@ test('I4: a settlement failure records the payer, and that payer is refused on a
   }
 });
 
-test('CORS: GETs and POST /v1/leases* are open and the x402 headers are exposed; preflight answers 204', async () => {
+test('CORS: GETs and the tick route are open with the x402 headers exposed; POST /v1/leases is same-origin only (F-I1)', async () => {
   const d = await start(fakeHost());
   try {
     const pre = await fetch(`${d.base}/v1/leases/${LEASE}/ticks`, { method: 'OPTIONS', headers: { origin: 'https://x.example', 'access-control-request-method': 'POST', 'access-control-request-headers': 'payment-signature,content-type' } });
@@ -807,11 +821,16 @@ test('CORS: GETs and POST /v1/leases* are open and the x402 headers are exposed;
     assert.match((pre.headers.get('access-control-allow-headers') ?? '').toLowerCase(), /x-payment/);
     const expose = (pre.headers.get('access-control-expose-headers') ?? '').toLowerCase();
     for (const h of ['payment-required', 'payment-response', 'x-payment-response']) assert.ok(expose.includes(h), h);
+    // The page is served by the door itself, so opening a lease needs no CORS: another origin cannot open one.
+    const preOpen = await fetch(`${d.base}/v1/leases`, { method: 'OPTIONS', headers: { origin: 'https://x.example', 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type' } });
+    assert.equal(preOpen.headers.get('access-control-allow-origin'), null);
+    assert.equal(preOpen.headers.get('access-control-allow-methods'), null);
     const open = await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
-    assert.equal(open.headers.get('access-control-allow-origin'), '*');
-    assert.ok((open.headers.get('access-control-expose-headers') ?? '').toLowerCase().includes('payment-required'));
+    assert.equal(open.status, 200);
+    assert.equal(open.headers.get('access-control-allow-origin'), null);
     const tick = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 });
     assert.equal(tick.headers.get('access-control-allow-origin'), '*');
+    assert.equal((await d.get(`/v1/leases/${LEASE}`)).headers.get('access-control-allow-origin'), '*');
   } finally {
     d.close();
   }
@@ -916,7 +935,8 @@ test('DoorLedger: JSON file, bigint losses, atomic writes, reload', () => {
   l.hostTick(LEASE);
   l.loss(LEASE, 5000n, 'settle_failed', 7);
   l.stop(LEASE);
-  assert.deepEqual(readdirSync(join(dir, 'sub')), ['ledger.json'], 'no temp file left behind');
+  // The loss is also the day's unpaid spend, kept beside the ledger.
+  assert.deepEqual(readdirSync(join(dir, 'sub')).sort(), ['ledger.json', 'ledger.json.unpaid'], 'no temp file left behind');
   const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
   assert.ok(JSON.stringify(raw).includes('"5000"'), 'bigint stored as a string');
   const again = new DoorLedger(file);
@@ -1217,6 +1237,10 @@ async function queuedDoor() {
       if (dest.endsWith('.charter-open')) {
         return { status: 200, body: { leaseId: (++opens).toString(16).padStart(32, '0'), state: 'awaiting_first_tick' }, paid: 1000n };
       }
+      if (dest.endsWith('.charter-status')) {
+        const id = req.path.split('/')[2]!;
+        return { status: 200, body: { lease: { ...lease(), id } }, paid: 100n };
+      }
       const { leaseId, index } = req.body as { leaseId: string; index: number };
       if (leaseId === LEASE_1 && index === 0) await new Promise<void>((r) => held.set(leaseId, r));
       return { status: 200, body: { paidIntervals: index + 1, paidThrough: 31_000, duplicate: false }, paid: 5000n };
@@ -1227,7 +1251,8 @@ async function queuedDoor() {
     now: () => clock.t,
     api: (o) => {
       const a = hostApi(queue, o);
-      return { ...a, tick: (...args) => (queuedTicks++, a.tick(...args)) };
+      // Each tick is a status read for the tick, then the tick: both are counted as they reach the queue.
+      return { ...a, status: (...args) => (args[1]?.priority === 'high' && queuedTicks++, a.status(...args)), tick: (...args) => (queuedTicks++, a.tick(...args)) };
     },
   });
   return { d, clock, sends, held, queuedTicks: () => queuedTicks };
@@ -1242,9 +1267,9 @@ test('R4: a tick whose deadline passes while queued behind another send is skipp
     const t = clock.t / 1000;
     const first = d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'payment-signature': pay('0xd1', '0xd1', 0, { validBefore: String(t + 600) }) });
     while (!q.held.has(LEASE_1)) await new Promise((r) => setTimeout(r, 2));
-    // Lease 2's authorization is good for 110 s: its send must start by 95 s from now.
+    // Lease 2's authorization is good for 110 s: its sends must start by 95 s from now.
     const second = d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': pay('0xd2', '0xd2', 0, { validBefore: String(t + 110) }) });
-    while (q.queuedTicks() < 2) await new Promise((r) => setTimeout(r, 2));
+    while (q.queuedTicks() < 3) await new Promise((r) => setTimeout(r, 2));
     clock.t += 95_000;
     q.held.get(LEASE_1)!();
     assert.equal((await first).status, 200);
@@ -1290,5 +1315,237 @@ test('R4: the 31st tick POST in a minute from one IP answers 429 before the gate
     assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 1 })).status, 200);
   } finally {
     d.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Final review fixes
+
+test('F-C1: only offers from CHARTER_DOOR_HOSTS (pubkey and ilpBase both) are listed or opened', async () => {
+  const otherHost: Offer = { ...OFFER, hostPubkey: 'cd'.repeat(32) };
+  const otherBase: Offer = { ...OFFER, id: 'o2', ilpBase: 'g.elsewhere' };
+  const host = fakeHost();
+  const d = await start(host, { offers: async () => [OFFER, otherHost, otherBase] });
+  try {
+    const list = (await (await d.get('/v1/offers')).json()) as Array<{ offerId: string }>;
+    assert.deepEqual(list.map((o) => o.offerId), [OFFER_ID]);
+    for (const offerId of [`${otherHost.hostPubkey}:${otherHost.id}`, `${OFFER.hostPubkey}:o2`]) {
+      const r = await d.post('/v1/leases', { offerId, urls: URLS });
+      assert.equal(r.status, 404, offerId);
+    }
+    assert.deepEqual(host.calls, [], 'an offer the door does not trust is never paid');
+  } finally {
+    d.close();
+  }
+});
+
+test('F-C1: an offer priced over the door maxima (open 10000, status 1000, tick 50000) is neither listed nor opened', async () => {
+  for (const over of [{ openPrice: 10_001n }, { statusPrice: 1_001n }, { tickPrice: 50_001n }]) {
+    const host = fakeHost();
+    const d = await start(host, { offers: async () => [{ ...OFFER, ...over }] });
+    try {
+      assert.deepEqual(await (await d.get('/v1/offers')).json(), [], JSON.stringify(over, (_k, v) => (typeof v === 'bigint' ? String(v) : v)));
+      assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS })).status, 404);
+      assert.deepEqual(host.calls, []);
+    } finally {
+      d.close();
+    }
+  }
+  const atMax = await start(fakeHost(), { offers: async () => [{ ...OFFER, openPrice: 10_000n, statusPrice: 1_000n, tickPrice: 50_000n }] });
+  try {
+    assert.equal(((await (await atMax.get('/v1/offers')).json()) as unknown[]).length, 1);
+    assert.equal((await atMax.post('/v1/leases', { offerId: OFFER_ID, urls: URLS })).status, 200);
+  } finally {
+    atMax.close();
+  }
+});
+
+test('F-I1: POST routes refuse any content-type but application/json with 415, before any host call or gate', async () => {
+  const host = fakeHost();
+  const d = await start(host);
+  try {
+    for (const type of ['text/plain', 'application/x-www-form-urlencoded', undefined]) {
+      const r = await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS }, { 'content-type': type });
+      assert.equal(r.status, 415, String(type));
+      assert.deepEqual(await r.json(), { error: 'unsupported_media_type' });
+    }
+    assert.deepEqual(host.calls, []);
+    assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS }, { 'content-type': 'application/json; charset=utf-8' })).status, 200);
+    const t = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'content-type': 'text/plain' });
+    assert.equal(t.status, 415);
+    assert.deepEqual(d.gate, []);
+  } finally {
+    d.close();
+  }
+});
+
+test('F-I1: at most 30 opens an hour across all IPs; the 31st answers 503 capacity with no host call, and the window slides', async () => {
+  let n = 0;
+  const host = fakeHost({ open: async () => ({ leaseId: (++n).toString(16).padStart(32, '0'), state: 'awaiting_first_tick' }) });
+  const d = await start(host, { trustProxy: true });
+  try {
+    for (let i = 0; i < 30; i++) {
+      const r = await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS }, { 'x-forwarded-for': `10.0.${i % 5}.1` });
+      assert.equal(r.status, 200, `open ${i}`);
+    }
+    const r = await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS }, { 'x-forwarded-for': '10.9.9.9' });
+    assert.equal(r.status, 503);
+    assert.deepEqual(await r.json(), { error: 'capacity' });
+    assert.equal(n, 30);
+    d.clock.t += 3_600_001;
+    assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS }, { 'x-forwarded-for': '10.9.9.9' })).status, 200);
+  } finally {
+    d.close();
+  }
+});
+
+test('F-I1: door spend no renter paid for (opens, reads, losses) is counted per UTC day and kept across a restart', async () => {
+  const host = fakeHost({}, new HostError(500, 'internal'), { open: 1000n, status: 100n });
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal(d.ledger.unpaidToday(d.clock.t), 1000n, 'the open');
+    await d.get(`/v1/leases/${LEASE}`);
+    assert.equal(d.ledger.unpaidToday(d.clock.t), 1100n, 'a free read');
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 })).status, 502);
+    assert.equal(d.ledger.unpaidToday(d.clock.t), 1100n + 100n + 5000n, 'the read before the tick, and the lost tick');
+    assert.equal(new DoorLedger(join(d.dir, 'ledger.json')).unpaidToday(d.clock.t), 6200n);
+    assert.equal(d.ledger.unpaidToday(d.clock.t + 86_400_000), 0n, 'a new UTC day starts at zero');
+  } finally {
+    d.close();
+  }
+});
+
+test('F-I1: past 500000 micro-USDC of unpaid spend in a UTC day, opens, ticks and uncached reads answer 503 capacity', async () => {
+  const host = fakeHost();
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.get(`/v1/leases/${LEASE}`);
+    d.ledger.addUnpaid(500_000n, d.clock.t);
+    host.calls.length = 0;
+    const open = await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal(open.status, 503);
+    assert.deepEqual(await open.json(), { error: 'capacity' });
+    const tick = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 });
+    assert.equal(tick.status, 503);
+    assert.deepEqual(await tick.json(), { error: 'capacity' });
+    assert.deepEqual(d.gate, [], 'refused before the payment gate');
+    d.clock.t += 6_000;
+    const st = await d.get(`/v1/leases/${LEASE}`);
+    assert.equal(st.status, 200, 'a cached status is still served');
+    assert.equal((await d.get(`/v1/leases/${LEASE}/output/0`)).status, 404);
+    assert.deepEqual(host.calls, [], 'no host call past the cap');
+    // The next UTC day.
+    d.clock.t += 86_400_000;
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 })).status, 200);
+  } finally {
+    d.close();
+  }
+  const fresh = await start(fakeHost());
+  try {
+    await fresh.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    fresh.ledger.addUnpaid(500_000n, fresh.clock.t);
+    const r = await fresh.get(`/v1/leases/${LEASE}`);
+    assert.equal(r.status, 503, 'nothing cached to serve');
+    assert.deepEqual(await r.json(), { error: 'capacity' });
+  } finally {
+    fresh.close();
+  }
+});
+
+test('F-I3: after the payment verifies the door reads the status fresh; a lease that just finished gets 409 and no host tick, no settle, no loss', async () => {
+  for (const [state, error] of [['done', 'lease_done'], ['closed', 'not_running']] as const) {
+    let now: 'running' | typeof state = 'running';
+    const host = fakeHost({ status: async () => lease({ state: now }) });
+    const d = await start(host);
+    try {
+      await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+      await d.get(`/v1/leases/${LEASE}`);
+      now = state; // the job finished inside the door's 5 s status cache
+      host.calls.length = 0;
+      const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': pay('0xf1', `0x${state === 'done' ? 'f1' : 'f2'}`) });
+      assert.equal(r.status, 409, state);
+      assert.deepEqual(await r.json(), { error });
+      assert.equal(d.gate.length, 1, 'the payment verified');
+      assert.deepEqual(host.calls, ['status:tick'], 'one fresh read, no host tick');
+      assert.deepEqual(d.settled, []);
+      const rec = d.ledger.get(LEASE)!;
+      assert.equal(rec.losses, 0n);
+      assert.equal(rec.stopped, false);
+      assert.equal(rec.ticksPaidToHost, 0);
+    } finally {
+      d.close();
+    }
+  }
+});
+
+test('F-I3: a tick reads the status once, fresh, even with a fresh cached status, then pays the host; a failed read pays no tick', async () => {
+  const host = fakeHost();
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.get(`/v1/leases/${LEASE}`);
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 })).status, 200);
+    assert.deepEqual(host.calls, ['open', 'status', 'status:tick', 'tick:0']);
+  } finally {
+    d.close();
+  }
+  const broken = fakeHost({ status: async () => { throw new HostError(500, 'internal'); } });
+  const d2 = await start(broken);
+  try {
+    await d2.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    const r = await d2.post(`/v1/leases/${LEASE}/ticks`, { index: 0 });
+    assert.equal(r.status, 502);
+    assert.ok(!broken.calls.some((c) => c.startsWith('tick:')));
+    assert.deepEqual(d2.settled, []);
+    assert.equal(d2.ledger.get(LEASE)!.losses, 0n);
+  } finally {
+    d2.close();
+  }
+});
+
+test('minor: a host tick answer with duplicate: true is 409 duplicate, nothing settles, and the door books the loss and stops the lease', async () => {
+  const host = fakeHost({ tick: async (_id, index) => (host.calls.push(`tick:${index}`), { paidIntervals: 1, paidThrough: 31_000, duplicate: true }) });
+  const d = await start(host, { api: () => ({ ...host.api, spent: (() => { let n = 0n; return () => (n += 5000n) - 5000n; })() }) });
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 });
+    assert.equal(r.status, 409);
+    assert.deepEqual(await r.json(), { error: 'duplicate' });
+    assert.deepEqual(d.settled, []);
+    const rec = d.ledger.get(LEASE)!;
+    assert.equal(rec.ticksPaidByRenter, 0);
+    assert.equal(rec.stopped, true);
+    assert.equal(rec.lossKind, 'host_refused');
+  } finally {
+    d.close();
+  }
+});
+
+test('F-I4: a tick is refused 503 retry_later after verify, with no host call, when the channel headroom is under tickPrice + 10000', async () => {
+  for (const [headroom, status] of [[14_999n, 503], [undefined, 503], ['throws', 503], [15_000n, 200]] as const) {
+    const host = fakeHost();
+    const d = await start(host, {
+      headroom: async () => {
+        if (headroom === 'throws') throw new Error('describe failed');
+        return headroom;
+      },
+    });
+    try {
+      await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+      host.calls.length = 0;
+      const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 });
+      assert.equal(r.status, status, String(headroom));
+      if (status === 503) {
+        assert.deepEqual(await r.json(), { error: 'retry_later' });
+        assert.deepEqual(host.calls, []);
+        assert.deepEqual(d.settled, []);
+        assert.equal(d.ledger.get(LEASE)!.losses, 0n);
+        assert.equal(d.ledger.get(LEASE)!.stopped, false);
+      }
+    } finally {
+      d.close();
+    }
   }
 });
