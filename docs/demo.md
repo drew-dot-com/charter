@@ -90,24 +90,32 @@ the host. Until the edge prices each app route, anyone can make the edge pay `to
 
 On the Hetzner box (`ssh -i ~/.ssh/toon_node root@167.233.221.236`):
 
-- [ ] Copy the repo to `/opt/charter` (rsync from the Mac, no `node_modules`, `dist`, `.superpowers`).
-- [ ] `install -d -m 700 -o 1000 -g 1000 /root/charter-door /root/charter-door/data /root/charter-door/secrets`
-- [ ] The payer key, printed address only:
+- [x] Copy the repo to `/opt/charter` (rsync from the Mac, no `node_modules`, `dist`, `.superpowers`).
+- [x] `install -d -m 700 -o 1000 -g 1000 /root/charter-door /root/charter-door/data /root/charter-door/secrets`
+- [x] The payer key, printed address only:
   `docker run --rm -v /root/charter-door/secrets:/s -v /opt/charter/deploy/door:/x:ro node:22-bookworm-slim node /x/new-payer-key.mjs /s/toon-payer.json`,
   then `chown 1000:1000` it (it is already mode 400). Back it up beside the other keys.
-- [ ] `secrets/rpc-url`: the Helius URL, copied from `node-artifacts/helius.key` on the Mac with `scp`,
+- [x] `secrets/rpc-url`: the Helius URL, copied from `node-artifacts/helius.key` on the Mac with `scp`,
   never echoed. Mode 400, owner 1000.
-- [ ] **Drew funds the printed address:** 2.1 USDC and about 0.01 SOL on Solana (the channel deposit
+- [x] **Drew funds the printed address:** 2.1 USDC and about 0.01 SOL on Solana (the channel deposit
   is 2 USDC; SOL pays a later close and settle). Verify the balances on Solscan.
-- [ ] `/root/charter-door/door.env` from `deploy/door/door.env.example`: `CHARTER_PAY_TO` = Drew's Base
+- [x] `/root/charter-door/door.env` from `deploy/door/door.env.example`: `CHARTER_PAY_TO` = Drew's Base
   address (**needed from Drew**), `CHARTER_DOOR_HOSTS` = `<toon2 offer pubkey>=g.toon.69b2a212547e7a9c`.
-- [ ] `cd /opt/charter && docker compose -f deploy/door/docker-compose.yml up -d --build`.
+- [x] `cd /opt/charter && docker compose -f deploy/door/docker-compose.yml up -d --build`.
   Check: `docker logs charter-door` says `channel ready, headroom 2000000` (the boot opens the channel).
-- [ ] Caddy: back up `/opt/toon-relay/deploy/Caddyfile`, append `deploy/door/Caddy.snippet` by writing
+- [x] Caddy: back up `/opt/toon-relay/deploy/Caddyfile`, append `deploy/door/Caddy.snippet` by writing
   the file in place (never `sed -i`), `docker cp` it to `deploy-caddy-1:/tmp/Caddyfile`, then
   `docker exec deploy-caddy-1 caddy reload --config /tmp/Caddyfile`.
-- [ ] Check: `curl https://charter.167-233-221-236.sslip.io/v1/offers` lists the offer, and `/v1/door`
+- [x] Check: `curl https://charter.167-233-221-236.sslip.io/v1/offers` lists the offer, and `/v1/door`
   shows Drew's `payTo` on `eip155:8453`.
+
+Done 2026-10-17: payer `DRSB3XhJxzDmtcVmPNZv9J1KnkgRXXM2aeaFPE7QEHUn` funded 2.11 USDC + 0.01 SOL
+(finalized); boot opened channel `5akKFS2L9Wx3jMJtwVUW768xmEfy5e71cEzyb7W1M2Wm` (2 USDC, open tx
+`3WGTDPaYeafv5HeC8snoKQxs6yr6mL7hPy3WXQTu34cZ3qiLJWCpETRFWyH7Hn5sY8rtmbNVr8iDN3PciYMaDY9g`, finalized,
+owner `CHNLxYvV...`). `CHARTER_PAY_TO` = `0xbD87E8Ff0691f0A924e5ce2A06821db818B62385` (an EOA on Base).
+Caddy backup `Caddyfile.bak-20261017-precharter`; relay, connector, l402 and lading still answer 200.
+The key's backup is `/root/keys-charter/toon-payer.json.bak-20261017`. On this box there is no uid 1000
+user, so make the dirs with `install -d -m 700` then `chown -R 1000:1000`.
 
 ## 5. Browser lease (Drew clicks Rent)
 
