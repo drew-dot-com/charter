@@ -132,7 +132,7 @@ async function showHome(token: number): Promise<void> {
   const list = el('ul', 'rows');
   mount(
     el('h1', undefined, 'Machines for rent'),
-    el('p', 'lede', 'Rent a machine by the hour. It fetches the pages you name and sends back a screenshot and the text.'),
+    el('p', 'lede', 'Rent a container on a hidden host, paid in USDC on Base every 30 seconds while it runs. In v1 it runs one job: it fetches the pages you name and sends back a screenshot and the text of each.'),
     list,
     el('p', 'note', 'No account. Pay from any funded channel.'),
     dev ? el('p', 'note', 'Local test mode: payments are skipped.') : null,
@@ -171,7 +171,7 @@ function offerRow(o: PublicOffer): HTMLElement {
     }));
   }, true);
   rent.setAttribute('aria-label', `Rent ${sizeLabel(o.cpu, o.memoryMiB)}`);
-  main.append(el('span', 'buy', el('span', 'price', `${formatUsdc(pricePerHour(o.tickPrice, o.intervalSeconds))}/hr`), rent));
+  main.append(el('span', 'buy', el('span', 'price', `${formatUsdc(BigInt(o.tickPrice))} per ${o.intervalSeconds} s (${formatUsdc(pricePerHour(o.tickPrice, o.intervalSeconds))}/hr)`), rent));
   row.append(main);
   return row;
 }
