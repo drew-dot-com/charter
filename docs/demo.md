@@ -219,5 +219,10 @@ each publish is a paid relay write of 1000, so a running host costs about 0.14 U
   `~/.config/charter/env.bak-*-prepython`; env now `CHARTER_ALLOW_IMAGES=charter-job-fetch,charter-job-python`
   and `CHARTER_RUNTIME=runsc`. Restarted `charter-host`: offer event `b3c9e90a...` lists both images.
 - [x] Door: backup `/opt/charter.bak-20261017-2108`, rsync, `compose up -d --build`; `channel ready, headroom 1993400`.
-- [ ] Drew: one paid python lease from the browser (Run Python, the example script). Check: `done`, the
+- [x] Drew: one paid python lease from the browser (Run Python, the example script). Check: `done`, the
   result shows, 0 losses in the door ledger, then `charter-host land` in `toon2` and the tx on Solscan.
+
+Done 2026-10-17: lease `ad14ba77f60adba4374e264e0410a4e6`, `charter-job-python` under `runsc`, network `none`,
+exit 0 in 1.2 s (pi 3.1413, eigenvalue 749.8), 1 interval paid by the renter (`0xa95483d2...6a45`) and to the
+host, 0 losses. Land tx `4vVwtjimF88jfpb8a7KStXewh9id3mew1YFEMViH6uKNuNY2i5c7fSDdkWwmWTSqpxZhjHsmKzZqMs8N5BTwr2ci`
+finalized, no error. First renter-supplied code run on Charter (first-party: Drew on both sides).
