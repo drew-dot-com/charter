@@ -26,6 +26,11 @@ export interface DoorDeps {
    * openPrice + tickPrice + HEADROOM_MARGIN, so a new lease can pay its open and its first tick. Left out: no check.
    */
   headroom?: () => Promise<Micro | undefined>;
+  /**
+   * Opens the door's channel when `headroom` finds none (a boot-time open that failed). Started at most
+   * once a minute and never awaited by a request. Left out: only a restart opens one.
+   */
+  reopen?: () => Promise<void>;
   ledger: DoorLedger;
   x402: X402Config | 'free-for-tests';
   /** Epoch ms. */
@@ -181,6 +186,7 @@ export function doorApp(deps: DoorDeps): express.Express {
   const claimed = new Set<string>();
   /** When the operator was last told the channel is too low for ticks (epoch ms). */
   let lowHeadroomWarnedAt = -Infinity;
+  let reopenTriedAt = -Infinity;
   /**
    * True when the door's channel cannot pay `need` (or its headroom is unknown). Logs at most once a minute,
    * so the operator sees the channel needs replacing (docs/demo.md, channel rotation).
@@ -194,6 +200,10 @@ export function doorApp(deps: DoorDeps): express.Express {
       left = undefined;
     }
     if (left !== undefined && left >= need) return false;
+    if (left === undefined && deps.reopen && now() - reopenTriedAt >= MINUTE_MS) {
+      reopenTriedAt = now();
+      deps.reopen().catch((e) => console.error(`charter-door: could not open its channel: ${String(e instanceof Error ? e.message : e).slice(0, 200)}`));
+    }
     if (now() - lowHeadroomWarnedAt >= MINUTE_MS) {
       lowHeadroomWarnedAt = now();
       console.error(`charter-door: channel headroom ${left === undefined ? 'unknown (no open channel?)' : left.toString()} is under ${need}; ${what} wait until the channel is replaced`);

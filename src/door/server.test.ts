@@ -1576,3 +1576,26 @@ test('Task 11: an open is refused 503 capacity, with no host call, when the chan
     }
   }
 });
+
+test('Task 11: with no open channel, a refused open starts reopen at most once a minute, unawaited; low but known headroom never does', async () => {
+  const clock = { t: 1_000_000 };
+  let reopens = 0;
+  let headroom: bigint | undefined;
+  const host = fakeHost();
+  const d = await start(host, { now: () => clock.t, headroom: async () => headroom, reopen: () => (reopens++, new Promise<void>(() => undefined)) });
+  try {
+    assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS })).status, 503);
+    assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS })).status, 503);
+    assert.equal(reopens, 1, 'one reopen a minute, and the hung one did not hold the request');
+    clock.t += 60_000;
+    headroom = 100n;
+    assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS })).status, 503);
+    assert.equal(reopens, 1, 'a channel that is open but low is rotated by hand, not reopened');
+    headroom = undefined;
+    assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS })).status, 503);
+    assert.equal(reopens, 2);
+    assert.deepEqual(host.calls, []);
+  } finally {
+    d.close();
+  }
+});

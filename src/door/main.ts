@@ -54,7 +54,7 @@ async function main(): Promise<void> {
     const left = await client.headroom();
     console.log(`charter-door channel ready, headroom ${left === undefined ? 'unknown' : left.toString()} micro-USDC`);
   } catch (e) {
-    console.error(`charter-door could not open its channel at boot (ticks wait until one is open): ${String(e instanceof Error ? e.message : e).slice(0, 200)}`);
+    console.error(`charter-door could not open its channel at boot (opens and ticks retry it at most once a minute): ${String(e instanceof Error ? e.message : e).slice(0, 200)}`);
   }
   const payer = serialized(client);
 
@@ -63,6 +63,7 @@ async function main(): Promise<void> {
     api: (o) => hostApi(payer, o),
     hosts,
     headroom: () => client.headroom(),
+    reopen: () => client.warm(),
     ledger: new DoorLedger(join(dataDir, LEDGER_FILE)),
     dataDir,
     x402: {

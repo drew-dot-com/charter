@@ -23,8 +23,8 @@ function exits(rs: ChannelExit[], out: (m: string) => void): boolean {
 }
 
 /**
- * `charter-door channel status | rotate | settle`. `rotate` starts closing the door's channels and opens a
- * fresh one, for when the headroom gate refuses opens and ticks: a Solana channel cannot be topped up.
+ * `charter-door channel status | rotate | settle`. `rotate` starts closing the door's open channel and opens a
+ * fresh one (re-runnable: with none open it only opens), for when the headroom gate refuses opens and ticks: a Solana channel cannot be topped up.
  * `settle` later takes back the old deposits once their exit window has passed. Run with the door stopped,
  * since two clients on one channel store would race the voucher total.
  */
@@ -43,9 +43,14 @@ export async function channelCommand(args: string[], payer: ChannelPayer, out: (
     return 0;
   }
   if (cmd === 'settle') return exits(await payer.settleChannels(), out) ? 0 : 1;
-  if (!exits(await payer.closeChannels(), out)) {
-    out('a close failed; not opening a fresh channel');
-    return 1;
+  // With no open channel (a rotate whose close went through and whose open did not), only open.
+  if (payer.channels().some((c) => c.closedAt === undefined && c.settledAt === undefined)) {
+    if (!exits(await payer.closeChannels(), out)) {
+      out('a close failed; not opening a fresh channel');
+      return 1;
+    }
+  } else {
+    out('no open channel to close');
   }
   await payer.warm();
   const left = await payer.headroom();

@@ -146,15 +146,21 @@ docker compose -f deploy/door/docker-compose.yml run --rm charter-door node dist
 docker compose -f deploy/door/docker-compose.yml start charter-door
 ```
 
-`rotate` sends `request_close` on the old channel (SOL gas) and opens a fresh 2 USDC one, so the
-payer address needs that much USDC first. Once the old channel's exit window has passed,
+`rotate` sends `request_close` on the old channel (SOL gas) and opens a fresh 2 USDC one. The old
+deposit stays locked until `settle`, so **Drew sends 2 USDC more to the payer address first** and
+verifies it on Solscan. If the open fails after the close went through, fund it and run `rotate`
+again: with no open channel it only opens. Once the old channel's exit window has passed,
 `channel settle` takes its unspent deposit back. Rotation is unproven on mainnet: check
 `channel status` shows the new channel open and the old one closing, and verify both on Solscan.
 Back up `data/channels.json` before and after; losing it strands a live deposit.
 
 **Other.** The door spends at most 0.5 USDC a UTC day that no renter paid for (opens, free reads,
 losses), then answers 503 `capacity` until the next UTC day. A payer who cost the door a loss is
-blocked; `node dist/door/main.js unblock <0x address>` clears one.
+blocked; `docker compose -f deploy/door/docker-compose.yml run --rm charter-door node dist/door/main.js unblock <0x address>`
+clears one (a running door picks it up).
+
+If the boot could not open the channel (`could not open its channel at boot` in the logs), the door
+retries the open at most once a minute while opens and ticks come in; `docker compose ... restart charter-door` also retries it.
 
 ## What to say
 
