@@ -10,7 +10,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "node --test --import tsx 'src/**/*.test.ts' 'web/**/*.test.ts' 'jobs/**/*.test.mjs'",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit",
+    "build:web": "node scripts/build-web.mjs",
+    "dev:door": "tsx scripts/dev-door.ts"
   },
   "repository": {
     "type": "git",
@@ -20,6 +22,7 @@
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.5",
+    "esbuild": "^0.28.2",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },
@@ -28,8 +31,10 @@
     "@x402/core": "^2.25.0",
     "@x402/evm": "^2.25.0",
     "@x402/express": "^2.25.0",
+    "@x402/fetch": "^2.25.0",
     "express": "^5.3.0",
-    "nostr-tools": "^2.10.4"
+    "nostr-tools": "^2.10.4",
+    "viem": "^2.57.7"
   },
   "bin": {
     "charter": "dist/cli.js",

@@ -191,6 +191,9 @@ export function doorApp(deps: DoorDeps): express.Express {
   });
   app.use(express.json({ limit: '16kb', type: () => true }));
 
+  // Only a door with no payment gate (local development) answers this, so the page knows to skip x402.
+  if (deps.x402 === 'free-for-tests') app.get('/v1/dev', (_req, res) => void res.json({ dev: true }));
+
   app.get('/v1/offers', async (_req, res) => {
     let list: Offer[];
     try {

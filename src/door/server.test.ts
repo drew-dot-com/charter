@@ -721,6 +721,23 @@ test('GET / answers a plain "Charter door" when web/dist is missing, and serves 
   }
 });
 
+test('GET /v1/dev answers 200 only in free-for-tests mode, so the page can skip x402', async () => {
+  const d = await start(fakeHost());
+  try {
+    const r = await d.get('/v1/dev');
+    assert.equal(r.status, 200);
+    assert.deepEqual(await r.json(), { dev: true });
+  } finally {
+    d.close();
+  }
+  const real = await start(fakeHost(), { x402: { payTo: '0x' + '2'.repeat(40), network: 'eip155:8453', facilitatorUrl: 'http://127.0.0.1:1' } });
+  try {
+    assert.equal((await real.get('/v1/dev')).status, 404);
+  } finally {
+    real.close();
+  }
+});
+
 test('DoorLedger: JSON file, bigint losses, atomic writes, reload', () => {
   const dir = mkdtempSync(join(tmpdir(), 'ledger-'));
   const file = join(dir, 'sub', 'ledger.json');
