@@ -27,17 +27,17 @@ Nothing below a gate runs until Drew says go on that gate in chat.
 
 In both Lima VMs (`ssh air`, then `limactl shell toon` and `limactl shell toon2`):
 
-- [ ] Node 22 or later: `node --version`.
-- [ ] Copy the repo in, then `npm ci && npm run build && npm install -g --prefix ~/.local .`.
+- [x] Node 22 or later: `node --version`.
+- [x] Copy the repo in, then `npm ci && npm run build && npm install -g --prefix ~/.local .`.
   Check: `~/.local/bin/charter` prints its usage.
-- [ ] Clock: `timedatectl` says `System clock synchronized: yes` (the door's x402 windows need it too).
+- [x] Clock: `timedatectl` says `System clock synchronized: yes` (the door's x402 windows need it too).
 
 In `toon2` only:
 
-- [ ] `docker build -t charter-job-fetch jobs/fetch`.
-- [ ] `apt install socat`, then copy `deploy/host/charter-socks-connect` to `~/.local/bin/` and both
+- [x] `docker build -t charter-job-fetch jobs/fetch`.
+- [x] `apt install socat`, then copy `deploy/host/charter-socks-connect` to `~/.local/bin/` and both
   units in `deploy/host/` to `~/.config/systemd/user/`. `loginctl enable-linger "$USER"`.
-- [ ] `systemctl --user enable --now charter-socks`. Check from a container:
+- [x] `systemctl --user enable --now charter-socks`. Check from a container:
   `docker run --rm --add-host host.docker.internal:host-gateway curlimages/curl -s --socks5-hostname 172.17.0.1:9150 https://api.ipify.org`
   prints an IP that is **not** Drew's home IP (`curl -s https://api.ipify.org` on the Mac). The
   connect script reads the node's SOCKS port at each connection, so nothing needs refreshing after `toon up`.
@@ -58,33 +58,33 @@ the host. Until the edge prices each app route, anyone can make the edge pay `to
   Edison to all three apps: `F06` from peer `drew` ("quotes 1000/5000/100 for this packet, which carried
   only 0"), `paid` 0; `toon2`'s inbound channel `E63r...` watermark stayed 400, so the edge paid nothing.
   Edison's node got the route `g.toon.69b2a212547e7a9c -> drew` back (step 3 needs it too).
-- [ ] Drew's call: file the zero-amount forwarding bug as a connector issue for Jonathan.
+- [x] Drew's call: file the zero-amount forwarding bug as a connector issue for Jonathan.
 
 ## 2. Host up (`toon2`), offer publish (gate 2)
 
-- [ ] `~/.config/charter/env` from `deploy/host/env.example`, mode 600. Fill `CHARTER_SEAL_KEY` and
+- [x] `~/.config/charter/env` from `deploy/host/env.example`, mode 600. Fill `CHARTER_SEAL_KEY` and
   `CHARTER_SEAL_URL` from `toon describe --json`, `CHARTER_ILP_BASE` from `toon status --json`.
-- [ ] The three apps, each on the `relay` TOON app:
+- [x] The three apps, each on the `relay` TOON app:
   - `toon add charter-open --to relay --url http://127.0.0.1:7401/ --price 1000 --yes`
   - `toon add charter-tick --to relay --url http://127.0.0.1:7402/ --price 5000 --yes`
   - `toon add charter-status --to relay --url http://127.0.0.1:7403/ --price 100 --yes`
-- [ ] `charter-host offer --print` and read it: prices, `images: [charter-job-fetch]`, `hiddenHost`,
+- [x] `charter-host offer --print` and read it: prices, `images: [charter-job-fetch]`, `hiddenHost`,
   `hiddenEgress`, `firstTickGraceSeconds: 90`.
-- [ ] **Go-ahead (paid relay write):** `systemctl --user enable --now charter-host`. It publishes
+- [x] **Go-ahead (paid relay write):** `systemctl --user enable --now charter-host`. It publishes
   the offer and republishes it every 10 minutes.
-- [ ] Check: `charter offers --relay wss://relay.mainnet.toonprotocol.dev` from the `toon` VM lists the
+- [x] Check: `charter offers --relay wss://relay.mainnet.toonprotocol.dev` from the `toon` VM lists the
   offer. That read filters kind 31390 by `#L charter`, so it also proves Drew's relay stores the tag.
   Note the offer's `<pubkey>:<id>`: the door's `CHARTER_DOOR_HOSTS` and Edison's bridge need it.
 
 ## 3. Edison's first lease (gate 2, under 0.10 USDC)
 
 - [x] In the `toon` VM: `toon route add g.toon.69b2a212547e7a9c --peer drew` (re-added 10-17 for gate 1).
-- [ ] `charter rent --offer <pubkey>:<id> --urls https://api.ipify.org?format=json,https://browserleaks.com/webrtc,https://example.com --max-intervals 6 --relay wss://relay.mainnet.toonprotocol.dev --json`
-- [ ] Check: state `done`, `paidIntervals >= 3`, output present. The ipify output and the WebRTC page
+- [x] `charter rent --offer <pubkey>:<id> --urls https://api.ipify.org?format=json,https://browserleaks.com/webrtc,https://example.com --max-intervals 6 --relay wss://relay.mainnet.toonprotocol.dev --json`
+- [x] Check: state `done`, `paidIntervals >= 3`, output present. The ipify output and the WebRTC page
   show an exit IP and no candidate that is Drew's home IP.
-- [ ] In `toon2`: `charter-host land`. Verify the printed tx on Solscan (finalized, no error).
+- [x] In `toon2`: `charter-host land`. Verify the printed tx on Solscan (finalized, no error).
   Never trust the tool output alone.
-- [ ] Record below: lease id, paid intervals, spent, land tx.
+- [x] Record below: lease id, paid intervals, spent, land tx.
 
 ## 4. The door (gate 3)
 
@@ -174,7 +174,14 @@ token, or that Charter has outside users.
 
 ## Proof
 
+Step 0 to 3 notes (10-17): Node 22.23.3 installed in both VMs (`~/.local/node`, checksum verified).
+Job egress through the relay was `82.22.174.135`, not the home IP; the lease's WebRTC page showed no
+public IP. Offer `cde9138b...:toon2-fetch-1`, event `886a16d4...`. Edison's channel `121CYE4w...`
+moved 19200 to 25700 (6500); `toon2`'s inbound `E63r...` watermark and landed 6900. The land tx moves
+no USDC: a Solana channel pays out at settle. The host republishes the offer every 10 minutes, and
+each publish is a paid relay write of 1000, so a running host costs about 0.14 USDC a day.
+
 | | lease id | intervals paid | spent (micro-USDC) | txs |
 | --- | --- | --- | --- | --- |
-| Edison, step 3 | | | | land: |
+| Edison, step 3 (10-17 18:17 UTC) | `c73ccd97ab6987023b37c99281f12a34` | 1 (the job finished inside it) | 6500 (open 1000, tick 5000, 5 reads) | land (Solana, finalized): `E6C5MaGtD5PyTURWSM5GYufXdE9boBZGkYiyhyHtFaNBVX2Wbjgk4EFBfDSQreFbcyuDJajkUfVdDsMsKxt535k` |
 | browser, step 5 | | | | x402: , land: |
