@@ -16,12 +16,13 @@ const OFFER: Offer = {
 };
 
 function lease(over: Partial<Lease> & { id: string }): Lease {
-  return { offerId: 'o1', job: JOB, state: 'running', createdAt: T0, paidIntervals: 1, ...over };
+  return { offerId: 'o1', job: JOB, state: 'running', createdAt: T0, paidIntervals: 1, startedAt: T0, ...over };
 }
 
 function fakeRunner(over: Partial<Runner> = {}) {
   const stops: string[] = [];
   const r: Runner = {
+    create: async () => undefined,
     start: async () => undefined,
     exited: () => new Promise<number>(() => undefined),
     stop: async (id) => void stops.push(id),
@@ -53,13 +54,30 @@ test('windowTick closes a running lease past paidThrough + grace and stops the c
   assert.deepEqual(stops, ['a']);
 });
 
-test('windowTick closes a lease that never sent its first tick', async () => {
+test('F-C3: windowTick gives the first tick 90 s after the container is created, then closes the lease', async () => {
   const store = new LeaseStore();
-  store.put(lease({ id: 'a', state: 'awaiting_first_tick', paidIntervals: 0, bootedAt: T0 }));
+  store.put(lease({ id: 'a', state: 'awaiting_first_tick', paidIntervals: 0, bootedAt: T0, startedAt: undefined }));
   const { r, stops } = fakeRunner();
-  await windowTick({ store, runner: r, now: () => T0 + 10_001 });
+  const deps = { store, runner: r, now: () => T0 + 10_001 };
+  await windowTick(deps);
+  assert.equal(store.get('a')!.state, 'awaiting_first_tick', 'ten seconds is too short for a wallet prompt');
+  deps.now = () => T0 + 90_001;
+  await windowTick(deps);
   assert.equal(store.get('a')!.closedReason, 'missed_tick');
   assert.deepEqual(stops, ['a']);
+});
+
+test('F-C3: windowTick never waits on a container that has not started (docker wait returns at once on a created one)', async () => {
+  const store = new LeaseStore();
+  store.put(lease({ id: 'created', state: 'awaiting_first_tick', paidIntervals: 0, bootedAt: T0, startedAt: undefined }));
+  store.put(lease({ id: 'starting', paidThrough: T0 + 30_000, bootedAt: T0, startedAt: undefined }));
+  store.put(lease({ id: 'started', paidThrough: T0 + 30_000, bootedAt: T0 }));
+  const waited: string[] = [];
+  const { r } = fakeRunner({ exited: (id) => { waited.push(id); return new Promise<number>(() => undefined); } });
+  await windowTick({ store, runner: r, now: () => T0 + 1000 });
+  assert.deepEqual(waited, ['started']);
+  assert.equal(store.get('created')!.state, 'awaiting_first_tick');
+  assert.equal(store.get('starting')!.state, 'running');
 });
 
 test('windowTick closes a lease stuck booting past the boot timeout as boot_failed', async () => {
@@ -141,7 +159,11 @@ test('reconcile closes a stored running lease whose container is gone as host_re
   store.put(lease({ id: 'fin', state: 'done', outputParts: 1 }));
   const asked: string[] = [];
   const { r } = fakeRunner({ alive: async (id) => { asked.push(id); return id === 'alive'; } });
+  const { stops } = (() => ({ stops: [] as string[] }))();
+  r.stop = async (id) => void stops.push(id);
   await reconcile({ store, runner: r, now: () => T0 });
+  // A created container that never started is not running: it is closed and removed.
+  assert.deepEqual(stops.sort(), ['boot', 'gone', 'wait']);
   assert.equal(store.get('gone')!.state, 'closed');
   assert.equal(store.get('gone')!.closedReason, 'host_restart');
   assert.equal(store.get('boot')!.closedReason, 'host_restart');

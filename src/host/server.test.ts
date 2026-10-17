@@ -19,6 +19,7 @@ const T0 = 1_000_000;
 function fakeRunner(over: Partial<Runner> = {}) {
   const calls: string[] = [];
   const r: Runner = {
+    create: async (id) => void calls.push(`create ${id}`),
     start: async (id) => void calls.push(`start ${id}`),
     exited: async () => 0,
     stop: async (id) => void calls.push(`stop ${id}`),
@@ -58,7 +59,7 @@ async function opened(t: Awaited<ReturnType<typeof setup>>): Promise<string> {
   return r.body.leaseId as string;
 }
 
-test('POST /open boots the job and answers awaiting_first_tick with a 32 hex lease id', async () => {
+test('F-C3: POST /open creates the container without starting it and answers awaiting_first_tick with a 32 hex lease id', async () => {
   const t = await setup();
   try {
     const r = await t.post(t.urls.open, '/open', { job: JOB });
@@ -68,13 +69,15 @@ test('POST /open boots the job and answers awaiting_first_tick with a 32 hex lea
     const lease = t.store.get(r.body.leaseId)!;
     assert.equal(lease.state, 'awaiting_first_tick');
     assert.equal(lease.bootedAt, T0);
+    assert.equal(lease.startedAt, undefined);
+    assert.deepEqual(t.calls, [`create ${r.body.leaseId}`], 'no job work runs before interval 0 is paid');
   } finally {
     t.done();
   }
 });
 
 test('POST /open answers 200 closed/boot_failed when the runner rejects', async () => {
-  const t = await setup({ start: async () => { throw new RunnerError('boot_failed', 'no docker'); } });
+  const t = await setup({ create: async () => { throw new RunnerError('boot_failed', 'no docker'); } });
   try {
     const r = await t.post(t.urls.open, '/open', { job: JOB });
     assert.equal(r.status, 200);
@@ -88,7 +91,7 @@ test('POST /open answers 200 closed/boot_failed when the runner rejects', async 
 });
 
 test('POST /open reports a runner refusal by code, and does not stop a container that never existed', async () => {
-  const t = await setup({ start: async () => { throw new RunnerError('image_not_allowed', 'evil'); } });
+  const t = await setup({ create: async () => { throw new RunnerError('image_not_allowed', 'evil'); } });
   try {
     const r = await t.post(t.urls.open, '/open', { job: { image: 'evil', args: {} } });
     assert.equal(r.status, 200);
@@ -139,6 +142,38 @@ test('POST /tick: index 0 pays one interval, a repeat is a duplicate, index 3 is
     assert.equal(skip.status, 409);
     assert.equal(skip.body.error, 'out_of_order');
     assert.equal(t.store.get(leaseId)!.paidIntervals, 1);
+  } finally {
+    t.done();
+  }
+});
+
+test('F-C3: the paid tick 0 starts the container, once; later and duplicate ticks never start it again', async () => {
+  const t = await setup();
+  try {
+    const leaseId = await opened(t);
+    assert.deepEqual(t.calls, [`create ${leaseId}`]);
+    assert.equal((await t.post(t.urls.tick, '/tick', { leaseId, index: 0 })).status, 200);
+    assert.deepEqual(t.calls, [`create ${leaseId}`, `start ${leaseId}`]);
+    assert.equal(t.store.get(leaseId)!.startedAt, T0);
+    assert.equal((await t.post(t.urls.tick, '/tick', { leaseId, index: 0 })).body.duplicate, true);
+    assert.equal((await t.post(t.urls.tick, '/tick', { leaseId, index: 1 })).status, 200);
+    assert.deepEqual(t.calls, [`create ${leaseId}`, `start ${leaseId}`]);
+  } finally {
+    t.done();
+  }
+});
+
+test('F-C3: a container that fails to start on tick 0 closes the lease boot_failed, is removed, and the tick answers 409 not_running', async () => {
+  const t = await setup({ start: async () => { throw new RunnerError('boot_failed', 'start'); } });
+  try {
+    const leaseId = await opened(t);
+    const r = await t.post(t.urls.tick, '/tick', { leaseId, index: 0 });
+    assert.equal(r.status, 409);
+    assert.equal(r.body.error, 'not_running');
+    const l = t.store.get(leaseId)!;
+    assert.equal(l.state, 'closed');
+    assert.equal(l.closedReason, 'boot_failed');
+    assert.ok(t.calls.includes(`stop ${leaseId}`));
   } finally {
     t.done();
   }
@@ -277,31 +312,18 @@ test('GET output is 409 unpaid while the lease has no paid tick', async () => {
   }
 });
 
-test('tick 0 on a done lease with nothing paid records it and unlocks the output; tick 1 stays lease_done', async () => {
+test('F-C3: a done lease answers 409 lease_done to every tick, index 0 included, and records nothing', async () => {
   const t = await setup({ output: async () => Buffer.from('hello') });
   try {
     const leaseId = await opened(t);
     t.store.put(onJobExit(t.store.get(leaseId)!, 1));
-    const late = await t.post(t.urls.tick, '/tick', { leaseId, index: 1 });
-    assert.equal(late.status, 409);
-    assert.equal(late.body.error, 'lease_done');
+    for (const index of [0, 1]) {
+      const r = await t.post(t.urls.tick, '/tick', { leaseId, index });
+      assert.equal(r.status, 409);
+      assert.equal(r.body.error, 'lease_done');
+    }
     assert.equal(t.store.get(leaseId)!.paidIntervals, 0);
-
-    const r = await t.post(t.urls.tick, '/tick', { leaseId, index: 0 });
-    assert.equal(r.status, 200);
-    assert.equal(r.body.paidIntervals, 1);
-    assert.equal(r.body.duplicate, false);
-    assert.equal(t.store.get(leaseId)!.state, 'done');
-    assert.equal(t.store.get(leaseId)!.paidIntervals, 1);
-
-    const out = await t.get(t.urls.status, `/leases/${leaseId}/output/0`);
-    assert.equal(out.status, 200);
-    assert.equal(Buffer.from(out.body.data, 'base64').toString(), 'hello');
-
-    const again = await t.post(t.urls.tick, '/tick', { leaseId, index: 0 });
-    assert.equal(again.status, 409);
-    assert.equal(again.body.error, 'lease_done');
-    assert.equal(t.store.get(leaseId)!.paidIntervals, 1);
+    assert.deepEqual(t.calls, [`create ${leaseId}`]);
   } finally {
     t.done();
   }

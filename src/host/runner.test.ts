@@ -24,24 +24,25 @@ async function outRoot() {
 
 const JOB = { image: 'charter-job-fetch', args: { URLS: 'https://example.com,https://example.org' } };
 
-test('start refuses an image not on the allow list and never calls docker', async () => {
+test('create refuses an image not on the allow list and never calls docker', async () => {
   const { exec, calls } = fake();
   const r = dockerRunner({ exec, outRoot: await outRoot(), allow: ['charter-job-fetch'] });
   await assert.rejects(
-    r.start('l1', { image: 'evil:latest', args: {} }),
+    r.create('l1', { image: 'evil:latest', args: {} }),
     (e: unknown) => e instanceof RunnerError && e.code === 'image_not_allowed',
   );
   assert.equal(calls.length, 0);
 });
 
-test('start emits docker run -d with the limits, the out mount, and the job args as env', async () => {
+test('F-C3: create emits docker create (nothing runs yet) with the limits, the out mount, and the job args as env', async () => {
   const { exec, calls } = fake(() => ({ code: 0, stdout: 'abc123\n' }));
   const root = await outRoot();
   const r = dockerRunner({ exec, outRoot: root, allow: ['charter-job-fetch'] });
-  await r.start('l1', JOB);
+  await r.create('l1', JOB);
   assert.equal(calls.length, 1);
   const a = calls[0]!.args;
-  assert.deepEqual(a.slice(0, 2), ['run', '-d']);
+  assert.equal(a[0], 'create');
+  assert.ok(!a.includes('run') && !a.includes('-d'));
   const has = (...seq: string[]) =>
     assert.ok(
       a.some((_, i) => seq.every((s, j) => a[i + j] === s)),
@@ -61,6 +62,17 @@ test('start emits docker run -d with the limits, the out mount, and the job args
   assert.ok((await stat(join(root, 'l1'))).isDirectory());
 });
 
+test('F-C3: start emits docker start charter-<id>, and a failure rejects boot_failed', async () => {
+  let code = 0;
+  const { exec, calls } = fake(() => ({ code, stderr: 'oops' }));
+  const r = dockerRunner({ exec, outRoot: await outRoot(), allow: ['charter-job-fetch'] });
+  await r.start('l1');
+  assert.deepEqual(calls[0]!.args, ['start', 'charter-l1']);
+  code = 1;
+  await assert.rejects(r.start('l1'), (e: unknown) => e instanceof RunnerError && e.code === 'boot_failed');
+  await assert.rejects(r.start('../x'), (e: unknown) => e instanceof RunnerError && e.code === 'bad_input');
+});
+
 test('start with a proxy adds host-gateway and rewrites a loopback proxy host', async () => {
   const { exec, calls } = fake();
   const r = dockerRunner({
@@ -69,7 +81,7 @@ test('start with a proxy adds host-gateway and rewrites a loopback proxy host', 
     allow: ['charter-job-fetch'],
     proxy: 'socks5://127.0.0.1:9050',
   });
-  await r.start('l1', JOB);
+  await r.create('l1', JOB);
   const a = calls[0]!.args;
   const i = a.indexOf('--add-host');
   assert.equal(a[i + 1], 'host.docker.internal:host-gateway');
@@ -84,29 +96,29 @@ test('start with a non-loopback proxy passes it through unchanged', async () => 
     allow: ['charter-job-fetch'],
     proxy: 'socks5://proxy.internal:1080',
   });
-  await r.start('l1', JOB);
+  await r.create('l1', JOB);
   assert.ok(calls[0]!.args.includes('CHARTER_PROXY=socks5://proxy.internal:1080'));
 });
 
-test('a docker failure rejects start', async () => {
+test('a docker failure rejects create', async () => {
   const { exec } = fake(() => ({ code: 125, stderr: 'no such image' }));
   const r = dockerRunner({ exec, outRoot: await outRoot(), allow: ['charter-job-fetch'] });
-  await assert.rejects(r.start('l1', JOB), (e: unknown) => e instanceof RunnerError && e.code === 'boot_failed');
+  await assert.rejects(r.create('l1', JOB), (e: unknown) => e instanceof RunnerError && e.code === 'boot_failed');
 });
 
-test('start rejects a lease id or arg name that could escape', async () => {
+test('create rejects a lease id or arg name that could escape', async () => {
   const { exec, calls } = fake();
   const r = dockerRunner({ exec, outRoot: await outRoot(), allow: ['charter-job-fetch'] });
-  await assert.rejects(r.start('../x', JOB), (e: unknown) => e instanceof RunnerError && e.code === 'bad_input');
+  await assert.rejects(r.create('../x', JOB), (e: unknown) => e instanceof RunnerError && e.code === 'bad_input');
   const r2 = dockerRunner({ exec, outRoot: await outRoot(), allow: ['charter-job-fetch'], allowArgs: ['A=B'] });
   await assert.rejects(
-    r2.start('l1', { image: 'charter-job-fetch', args: { 'A=B': 'x' } }),
+    r2.create('l1', { image: 'charter-job-fetch', args: { 'A=B': 'x' } }),
     (e: unknown) => e instanceof RunnerError && e.code === 'bad_input',
   );
   assert.equal(calls.length, 0);
 });
 
-test('start refuses tenant args outside the allow list, before any docker call', async () => {
+test('create refuses tenant args outside the allow list, before any docker call', async () => {
   const { exec, calls } = fake();
   const r = dockerRunner({
     exec,
@@ -116,20 +128,20 @@ test('start refuses tenant args outside the allow list, before any docker call',
   });
   for (const k of ['CHARTER_PROXY', 'NODE_OPTIONS', 'LD_PRELOAD', 'PLAYWRIGHT_BROWSERS_PATH']) {
     await assert.rejects(
-      r.start('l1', { image: 'charter-job-fetch', args: { URLS: 'https://example.com', [k]: 'x' } }),
+      r.create('l1', { image: 'charter-job-fetch', args: { URLS: 'https://example.com', [k]: 'x' } }),
       (e: unknown) => e instanceof RunnerError && e.code === 'arg_not_allowed',
       k,
     );
   }
   assert.equal(calls.length, 0);
-  await r.start('l1', JOB);
+  await r.create('l1', JOB);
   assert.equal(calls.length, 1);
 });
 
 test('allowArgs widens what a tenant may set', async () => {
   const { exec, calls } = fake();
   const r = dockerRunner({ exec, outRoot: await outRoot(), allow: ['charter-job-fetch'], allowArgs: ['URLS', 'MODE'] });
-  await r.start('l1', { image: 'charter-job-fetch', args: { URLS: 'https://example.com', MODE: 'fast' } });
+  await r.create('l1', { image: 'charter-job-fetch', args: { URLS: 'https://example.com', MODE: 'fast' } });
   assert.ok(calls[0]!.args.includes('MODE=fast'));
 });
 

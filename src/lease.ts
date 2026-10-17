@@ -22,7 +22,7 @@ export function newLease(id: string, offer: Offer, job: JobSpec, now: number): L
   return { id, offerId: offer.id, job, state: 'booting', createdAt: now, paidIntervals: 0 };
 }
 
-/** Only a booting lease can finish booting; anything else is returned unchanged. */
+/** The container is created (not started). Only a booting lease can finish booting; anything else is returned unchanged. */
 export function onBooted(l: Lease, now: number): Lease {
   if (l.state !== 'booting') return l;
   return { ...l, state: 'awaiting_first_tick', bootedAt: now };
@@ -64,12 +64,15 @@ export function onJobExit(l: Lease, outputParts: number): Lease {
   return { ...l, state: 'done', outputParts };
 }
 
-/** Whether the lease must be closed now, and why. */
-export function due(l: Lease, now: number, graceMs: number): CloseReason | null {
-  if (l.state === 'awaiting_first_tick' && l.bootedAt !== undefined && now > l.bootedAt + graceMs) {
+/**
+ * Whether the lease must be closed now, and why. The first tick has FIRST_TICK_GRACE_MS from the
+ * container's creation; each later tick has GRACE_MS past the paid time.
+ */
+export function due(l: Lease, now: number): CloseReason | null {
+  if (l.state === 'awaiting_first_tick' && l.bootedAt !== undefined && now > l.bootedAt + FIRST_TICK_GRACE_MS) {
     return 'missed_tick';
   }
-  if (l.state === 'running' && l.paidThrough !== undefined && now > l.paidThrough + graceMs) {
+  if (l.state === 'running' && l.paidThrough !== undefined && now > l.paidThrough + GRACE_MS) {
     return 'missed_tick';
   }
   return null;

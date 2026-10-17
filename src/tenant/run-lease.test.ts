@@ -43,7 +43,7 @@ test('happy path: the job exits after the 3rd tick, output equals the runner byt
 });
 
 test('boot failure: boot_failed, no tick paid, spent is the open price only', async () => {
-  const h = await testHost({ runner: { start: async () => { throw new Error('no docker'); } } });
+  const h = await testHost({ runner: { create: async () => { throw new Error('no docker'); } } });
   try {
     const r = await runLease(hostApi(h.payer, OFFER), OFFER, JOB, { maxIntervals: 5, now: () => h.clock.t, sleep: h.sleep });
     assert.equal(r.lease.state, 'closed');
@@ -67,26 +67,6 @@ test('maxIntervals 2 with a job that never exits: exactly 2 ticks are paid', asy
     assert.equal(r.lease.state, 'running');
     assert.equal(r.output, undefined);
     assert.equal(r.spent, 1000n + 2n * 5000n + BigInt(h.sent['charter-status']) * 100n);
-  } finally {
-    h.close();
-  }
-});
-
-test('a job that finished before tick 0: tick 0 is paid and unlocks the output', async () => {
-  const h = await testHost({ runner: { output: async () => RESULT } });
-  try {
-    // The job exits while the open answer is on its way back.
-    const orig = h.payer.send.bind(h.payer);
-    h.payer.send = async (d, r, o) => {
-      const a = await orig(d, r, o);
-      if (d.endsWith('charter-open')) exitJob(h, (a.body as { leaseId: string }).leaseId, RESULT);
-      return a;
-    };
-    const r = await runLease(hostApi(h.payer, OFFER), OFFER, JOB, { maxIntervals: 5, now: () => h.clock.t, sleep: h.sleep });
-    assert.equal(r.lease.state, 'done');
-    assert.equal(h.sent['charter-tick'], 1);
-    assert.deepEqual(r.output, RESULT);
-    assert.deepEqual(h.sleeps, []);
   } finally {
     h.close();
   }
@@ -219,7 +199,7 @@ test('never more than maxIntervals ticks, whatever the host reports', async () =
   }
 });
 
-test('a tick answer without paidThrough on a lease that is not done: returns without a second tick', async () => {
+test('a host whose tick answer leaves out paidThrough is not paid again: runLease returns without a second tick', async () => {
   const h = await testHost();
   try {
     const orig = h.payer.send.bind(h.payer);

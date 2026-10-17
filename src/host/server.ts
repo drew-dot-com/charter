@@ -84,7 +84,8 @@ export function hostApps(deps: HostDeps): { open: express.Express; tick: express
     };
 
     try {
-      await runner.start(leaseId, job);
+      // Created, not started: nothing of the job runs until tick 0 is paid.
+      await runner.create(leaseId, job);
     } catch (e) {
       const refused =
         e instanceof RunnerError && (e.code === 'image_not_allowed' || e.code === 'arg_not_allowed' || e.code === 'bad_input');
@@ -101,27 +102,44 @@ export function hostApps(deps: HostDeps): { open: express.Express; tick: express
   });
 
   const tick = newApp();
-  tick.post('/tick', (req, res) => {
+  tick.post('/tick', async (req, res) => {
     const { leaseId, index } = (req.body ?? {}) as { leaseId?: unknown; index?: unknown };
     if (typeof leaseId !== 'string' || !LEASE_ID.test(leaseId) || !isNonNegInt(index)) {
       return void res.status(400).json({ error: 'bad_request' });
     }
     const lease = store.get(leaseId);
     if (!lease) return void res.status(404).json({ error: 'not_found' });
-    if (lease.state === 'done') {
-      // A job that finished before its first tick: tick 0 is what pays for reading its output.
-      if (index !== 0 || lease.paidIntervals !== 0) return void res.status(409).json({ error: 'lease_done' });
-      store.put({ ...lease, paidIntervals: 1 });
-      return void res.json({ paidIntervals: 1, duplicate: false });
-    }
+    // A job only runs once tick 0 is paid, so a done lease always has its ticks: nothing more is owed.
+    if (lease.state === 'done') return void res.status(409).json({ error: 'lease_done' });
+    let r: ReturnType<typeof onTick>;
     try {
-      const r = onTick(lease, index, now(), intervalMs);
-      if (!r.duplicate) store.put(r.lease);
-      res.json({ paidIntervals: r.lease.paidIntervals, paidThrough: r.lease.paidThrough, duplicate: r.duplicate });
+      r = onTick(lease, index, now(), intervalMs);
     } catch (e) {
       if (e instanceof LeaseError) return void res.status(409).json({ error: e.code });
       throw e;
     }
+    const answer = { paidIntervals: r.lease.paidIntervals, paidThrough: r.lease.paidThrough, duplicate: r.duplicate };
+    if (r.duplicate) return void res.json(answer);
+    // Written before the start, so a repeat of tick 0 meanwhile is a duplicate, not a second start.
+    store.put(r.lease);
+    if (lease.state === 'awaiting_first_tick') {
+      // Interval 0 is paid: only now does the job start.
+      try {
+        await runner.start(leaseId);
+      } catch {
+        const cur = store.get(leaseId)!;
+        store.put({ ...cur, state: 'closed', closedReason: 'boot_failed' });
+        await runner.stop(leaseId).catch(() => undefined);
+        return void res.status(409).json({ error: 'not_running' });
+      }
+      const cur = store.get(leaseId)!;
+      if (cur.state !== 'running') {
+        await runner.stop(leaseId).catch(() => undefined);
+        return void res.status(409).json({ error: 'not_running' });
+      }
+      store.put({ ...cur, startedAt: now() });
+    }
+    res.json(answer);
   });
 
   const status = newApp();

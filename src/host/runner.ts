@@ -17,8 +17,10 @@ export class RunnerError extends Error {
 }
 
 export interface Runner {
-  /** Resolves once the container is running, rejects on boot failure. */
-  start(leaseId: string, job: JobSpec): Promise<void>;
+  /** Creates the container without starting it: nothing of the job runs yet. Rejects on boot failure. */
+  create(leaseId: string, job: JobSpec): Promise<void>;
+  /** Starts a created container. Rejects with `boot_failed` when docker cannot. */
+  start(leaseId: string): Promise<void>;
   /** Resolves with the container's exit code. */
   exited(leaseId: string): Promise<number>;
   stop(leaseId: string): Promise<void>;
@@ -60,7 +62,7 @@ export function dockerRunner(opts: {
   const docker = (args: string[]) => exec(args, {});
 
   return {
-    async start(leaseId, job) {
+    async create(leaseId, job) {
       if (!allow.includes(job.image)) throw new RunnerError('image_not_allowed', job.image);
       const cname = name(leaseId);
       const env: string[] = [];
@@ -75,7 +77,7 @@ export function dockerRunner(opts: {
       await chmod(out, 0o777);
 
       const argv = [
-        'run', '-d',
+        'create',
         '--name', cname,
         '--cpus', '1',
         '--memory', '1g',
@@ -92,6 +94,11 @@ export function dockerRunner(opts: {
 
       const r = await docker(argv);
       if (r.code !== 0) throw new RunnerError('boot_failed', r.stderr.trim());
+    },
+
+    async start(leaseId) {
+      const r = await docker(['start', name(leaseId)]);
+      if (r.code !== 0) throw new RunnerError('boot_failed', `start: ${r.stderr.trim()}`);
     },
 
     async exited(leaseId) {

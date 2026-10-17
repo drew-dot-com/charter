@@ -40,8 +40,10 @@ export interface Lease {
   state: LeaseState;
   /** Epoch ms. */
   createdAt: number;
-  /** Epoch ms. */
+  /** Epoch ms the container was created: the first tick is due within the offer's first-tick grace of this. */
   bootedAt?: number;
+  /** Epoch ms the container was started, once tick 0 was paid. Until then no job work has run. */
+  startedAt?: number;
   paidIntervals: number;
   /** Epoch ms the paid time runs out. */
   paidThrough?: number;

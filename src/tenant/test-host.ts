@@ -40,6 +40,7 @@ export async function testHost(opts: TestHostOpts = {}): Promise<TestHost> {
   const store = new LeaseStore();
   const clock = { t: 1_000_000 };
   const runner: Runner = {
+    create: async () => undefined,
     start: async () => undefined,
     exited: async () => 0,
     stop: async () => undefined,

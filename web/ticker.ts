@@ -115,8 +115,8 @@ export async function runTick(s: TickState, deps: TickDeps): Promise<void> {
           s.resyncs = 0;
           s.nextIndex = index + 1;
           const l = s.lease!;
-          // The host gives no new paid time when the job has finished: nothing more is due, and the next
-          // status shows the lease done. (A running lease with no paid time is never scheduled.)
+          // An accepted tick names the new paid time. A running lease with no paid time is never scheduled,
+          // so an answer without one stops the ticks until the next status.
           s.lease = {
             ...l,
             paidIntervals: Math.max(l.paidIntervals, out.paidIntervals),

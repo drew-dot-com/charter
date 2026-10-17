@@ -1,4 +1,4 @@
-import { GRACE_MS, due, onBootFailed, onJobExit } from '../lease.js';
+import { due, onBootFailed, onJobExit } from '../lease.js';
 import { offerToEvent } from '../offer.js';
 import type { ToonCli } from '../toon-cli.js';
 import type { Lease, Offer } from '../types.js';
@@ -64,7 +64,7 @@ function watchExit(deps: LoopDeps, id: string): void {
 }
 
 /**
- * Runs every second: closes unpaid and stuck leases, and starts exit watches.
+ * Runs every second: closes unpaid and stuck leases, and starts exit watches on started containers.
  * Ticks arrive while this awaits `stop`, so each lease is re-read, and judged
  * against a fresh clock, right before it is decided; the write goes before the await.
  */
@@ -82,24 +82,31 @@ export async function windowTick(deps: LoopDeps): Promise<void> {
       continue;
     }
     if (l.state !== 'awaiting_first_tick' && l.state !== 'running') continue;
-    const reason = due(l, now, GRACE_MS);
+    const reason = due(l, now);
     if (reason !== null) {
       close(deps, l, reason);
       await stop(deps, id);
       continue;
     }
-    if (!watched.has(id)) {
+    // Only a started container is watched: `docker wait` on one that is only created returns at once.
+    if (l.state === 'running' && l.startedAt !== undefined && !watched.has(id)) {
       watched.add(id);
       watchExit(deps, id);
     }
   }
 }
 
-/** Once at boot: a lease whose container is gone after a restart is closed. */
+/**
+ * Once at boot: a lease whose container is not running after a restart is closed, and its container
+ * (one that was only created, or never made) is removed.
+ */
 export async function reconcile(deps: LoopDeps): Promise<void> {
   for (const l of deps.store.all()) {
     if (l.state !== 'booting' && l.state !== 'awaiting_first_tick' && l.state !== 'running') continue;
-    if (!(await deps.runner.alive(l.id))) close(deps, l, 'host_restart');
+    if (!(await deps.runner.alive(l.id))) {
+      close(deps, l, 'host_restart');
+      await stop(deps, l.id);
+    }
   }
 }
 

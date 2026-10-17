@@ -21,7 +21,7 @@ export interface OpenResult {
 
 export interface TickResult {
   paidIntervals: number;
-  /** Epoch ms. Absent when the job had already finished. */
+  /** Epoch ms. A host always sends it on an accepted tick; a tenant that gets none pays no further tick. */
   paidThrough?: number;
   duplicate: boolean;
 }

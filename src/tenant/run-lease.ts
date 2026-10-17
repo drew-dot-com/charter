@@ -30,8 +30,9 @@ export interface RunLeaseResult {
 const EARLY_MS = GRACE_MS;
 
 /**
- * Open a lease, pay tick 0 at once, then keep paying one tick per interval
- * until the job finishes, the lease closes, or `maxIntervals` ticks are paid.
+ * Open a lease, pay tick 0 at once (the host creates the container at open and starts it only when
+ * tick 0 is paid), then keep paying one tick per interval until the job finishes, the lease closes,
+ * or `maxIntervals` ticks are paid.
  */
 export async function runLease(api: HostApi, o: Offer, job: JobSpec, opts: RunLeaseOpts): Promise<RunLeaseResult> {
   if (!Number.isSafeInteger(opts.maxIntervals) || opts.maxIntervals < 1) throw new Error('maxIntervals must be a positive integer');
@@ -104,7 +105,7 @@ export async function runLease(api: HostApi, o: Offer, job: JobSpec, opts: RunLe
   for (;;) {
     if ('ended' in p) return p.ended;
     if (!p.hostPaidThrough) {
-      // A tick answer with no paid time is only right for a job that already finished: look once, never tick again.
+      // A host that accepts a tick but names no paid time is not paid again: look once and stop.
       const s = await settle();
       if (!s.finished) emit({ kind: 'stopped', reason: 'no_paid_through' });
       return result(s.lease, s.output ? { output: s.output } : {});
