@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
-import { HostError, type HostApi, type OpenResult, type OutputPart, type TickResult } from '../tenant/host-api.js';
+import { HostError, hostApi, type HostApi, type OpenResult, type OutputPart, type TickResult } from '../tenant/host-api.js';
 import { OFFER } from '../tenant/test-host.js';
 import type { Lease, Micro, Offer } from '../types.js';
 import { DoorLedger } from './ledger.js';
@@ -558,7 +558,7 @@ test('C2: one payment header cannot buy ticks on two leases; the hash survives a
     assert.deepEqual(await r.json(), { error: 'payment_reused' });
     assert.equal(d.gate.length, gated, 'refused before the gate');
     assert.deepEqual(host.calls, [], 'no host call');
-    // The x-payment spelling of the same header is the same payment only if its bytes are; a different one passes.
+    // Another authorization from the same payer is another payment, and passes.
     assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': pay('0xaaa', '0xe2') })).status, 200);
   } finally {
     d.close();
@@ -567,7 +567,7 @@ test('C2: one payment header cannot buy ticks on two leases; the hash survives a
   assert.equal(again.hasPayment(keyOf('0xaaa', '0xe1')), true);
 });
 
-test('C2: the hash is added on entering the gate, even when settlement then fails', async () => {
+test('C2: the hash is added on verify, even when settlement then fails', async () => {
   const host = fakeHost({ open: counterOpen() });
   const d = await start(host, { testHooks: { settle: () => { throw new Error('down'); } } });
   try {
@@ -826,7 +826,7 @@ test('R3-3: an authorization window that cannot outlast the verify-to-settle gap
     host.calls.length = 0;
     const now = nowSeconds();
     for (const window of [
-      { validBefore: String(now + 40) }, // under maxTimeoutSeconds (60) minus 10
+      { validBefore: String(now + 100) }, // under maxTimeoutSeconds (120) minus 10
       { validBefore: String(now - 1) },
       { validAfter: String(now + 100) }, // not valid yet
     ]) {
@@ -836,8 +836,8 @@ test('R3-3: an authorization window that cannot outlast the verify-to-settle gap
     }
     assert.deepEqual(d.gate, []);
     assert.deepEqual(host.calls, []);
-    // The boundary and the usual client shape (valid from 10 minutes ago, 60 s to run) pass.
-    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': pay('0xcc1', '0xf3', 0, { validBefore: String(now + 50), validAfter: String(now) }) })).status, 200);
+    // The boundary and the usual client shape (valid from 10 minutes ago, 120 s to run) pass.
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': pay('0xcc1', '0xf3', 0, { validBefore: String(now + 110), validAfter: String(now) }) })).status, 200);
   } finally {
     d.close();
   }
@@ -845,7 +845,7 @@ test('R3-3: an authorization window that cannot outlast the verify-to-settle gap
   try {
     await d2.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
     const now = nowSeconds();
-    assert.equal((await d2.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': pay('0xcc2', '0xf4', 0, { validAfter: String(now - 600), validBefore: String(now + 60) }) })).status, 200);
+    assert.equal((await d2.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': pay('0xcc2', '0xf4', 0, { validAfter: String(now - 600), validBefore: String(now + 120) }) })).status, 200);
   } finally {
     d2.close();
   }
@@ -1012,6 +1012,95 @@ test('N3: a tick whose send timed out answers 502 host_timeout, books host_refus
     assert.equal(rec.stopped, true);
     assert.deepEqual(d.settled, []);
     assert.equal(d.ledger.payerHasLoss('0xabc', d.clock.t), false);
+  } finally {
+    d.close();
+  }
+});
+
+/** A door whose host calls go through the real hostApi and serialized queue, onto a scripted payer. */
+async function queuedDoor() {
+  const clock = { t: 1_000_000 };
+  const sends: Array<{ dest: string; body: unknown; opts: { deadline?: number } }> = [];
+  const held = new Map<string, () => void>();
+  let opens = 0;
+  let queuedTicks = 0;
+  const inner: payerMod.Payer = {
+    async send(dest, req, opts) {
+      sends.push({ dest, body: req.body, opts });
+      if (dest.endsWith('.charter-open')) {
+        return { status: 200, body: { leaseId: (++opens).toString(16).padStart(32, '0'), state: 'awaiting_first_tick' }, paid: 1000n };
+      }
+      const { leaseId, index } = req.body as { leaseId: string; index: number };
+      if (leaseId === LEASE_1 && index === 0) await new Promise<void>((r) => held.set(leaseId, r));
+      return { status: 200, body: { paidIntervals: index + 1, paidThrough: 31_000, duplicate: false }, paid: 5000n };
+    },
+  };
+  const queue = payerMod.serialized(inner, { now: () => clock.t, setTimer: () => ({}), clearTimer: () => undefined });
+  const d = await start(fakeHost(), {
+    now: () => clock.t,
+    api: (o) => {
+      const a = hostApi(queue, o);
+      return { ...a, tick: (...args) => (queuedTicks++, a.tick(...args)) };
+    },
+  });
+  return { d, clock, sends, held, queuedTicks: () => queuedTicks };
+}
+
+test('R4: a tick whose deadline passes while queued behind another send is skipped: 503 retry_later, no host call, no loss, nothing settled', async () => {
+  const q = await queuedDoor();
+  const { d, clock } = q;
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    const t = clock.t / 1000;
+    const first = d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'payment-signature': pay('0xd1', '0xd1', 0, { validBefore: String(t + 600) }) });
+    while (!q.held.has(LEASE_1)) await new Promise((r) => setTimeout(r, 2));
+    // Lease 2's authorization is good for 110 s: its send must start by 95 s from now.
+    const second = d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': pay('0xd2', '0xd2', 0, { validBefore: String(t + 110) }) });
+    while (q.queuedTicks() < 2) await new Promise((r) => setTimeout(r, 2));
+    clock.t += 95_000;
+    q.held.get(LEASE_1)!();
+    assert.equal((await first).status, 200);
+    const r = await second;
+    assert.equal(r.status, 503);
+    assert.deepEqual(await r.json(), { error: 'retry_later' });
+
+    const ticks = q.sends.filter((s) => s.dest.endsWith('.charter-tick'));
+    assert.equal(ticks.length, 1, 'the skipped tick never reached the payer');
+    assert.equal(ticks[0]!.opts.deadline, (t + 600) * 1000 - 15_000, 'a tick send carries validBefore minus 15 s');
+    assert.deepEqual(d.settled.map((s) => s.leaseId), [LEASE_1], 'nothing settled for the skipped tick');
+    const rec = d.ledger.get(LEASE_2)!;
+    assert.equal(rec.losses, 0n);
+    assert.equal(rec.ticksPaidToHost, 0);
+    assert.equal(rec.ticksPaidByRenter, 0);
+    assert.equal(rec.stopped, false);
+
+    // The renter retries the same index with a fresh authorization.
+    const t2 = clock.t / 1000;
+    const retry = await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': pay('0xd2', '0xd3', 0, { validBefore: String(t2 + 120) }) });
+    assert.equal(retry.status, 200);
+    assert.equal(d.ledger.get(LEASE_2)!.ticksPaidByRenter, 1);
+  } finally {
+    d.close();
+  }
+});
+
+test('R4: the 31st tick POST in a minute from one IP answers 429 before the gate, and the window slides', async () => {
+  const host = fakeHost();
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 })).status, 200);
+    for (let i = 0; i < 29; i++) assert.equal((await d.post(`/v1/leases/${'b'.repeat(32)}/ticks`, { index: 0 })).status, 404);
+    const gated = d.gate.length;
+    host.calls.length = 0;
+    const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 1 });
+    assert.equal(r.status, 429);
+    assert.deepEqual(await r.json(), { error: 'rate_limited' });
+    assert.equal(d.gate.length, gated);
+    assert.deepEqual(host.calls, []);
+    d.clock.t += 60_001;
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 1 })).status, 200);
   } finally {
     d.close();
   }

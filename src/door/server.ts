@@ -6,9 +6,9 @@ import express from 'express';
 import { HostError, type HostApi } from '../tenant/host-api.js';
 import { findOfferExact } from '../tenant/offers.js';
 import type { Lease, Micro, Offer } from '../types.js';
-import { SendTimeoutError } from '../payer.js';
+import { DeadlinePassedError, SendTimeoutError } from '../payer.js';
 import type { DoorLedger, LossKind } from './ledger.js';
-import { MIN_WINDOW_SECONDS, isPayerFault, paymentIdOf, realGate, settleReasonOf, stubGate, type Gate, type TestHooks, type X402Config } from './x402.js';
+import { MIN_WINDOW_SECONDS, SETTLE_MARGIN_SECONDS, isPayerFault, paymentIdOf, realGate, settleReasonOf, stubGate, type Gate, type TestHooks, type X402Config } from './x402.js';
 
 export interface DoorDeps {
   /** Live offers. The door caches the answer for 60 s. */
@@ -36,6 +36,7 @@ const STATUS_TTL_MS = 5_000;
 const READS_BASE = 20;
 const READS_PER_TICK = 4;
 const GETS_PER_MINUTE = 120;
+const TICKS_PER_MINUTE = 30;
 const MINUTE_MS = 60_000;
 const OPENS_PER_HOUR = 10;
 const HOUR_MS = 3_600_000;
@@ -108,6 +109,7 @@ export function doorApp(deps: DoorDeps): express.Express {
 
   const allowOpen = slidingLimit(now, OPENS_PER_HOUR, HOUR_MS);
   const allowGet = slidingLimit(now, GETS_PER_MINUTE, MINUTE_MS);
+  const allowTick = slidingLimit(now, TICKS_PER_MINUTE, MINUTE_MS);
 
   /** What the door last read from the host for each lease, and any read in flight. */
   const statuses = new Map<string, { lease: Lease; at: number }>();
@@ -246,6 +248,7 @@ export function doorApp(deps: DoorDeps): express.Express {
 
   /** Everything that can be refused before the renter is asked to pay. */
   const tickGuard: express.RequestHandler = async (req, res, next) => {
+    if (!allowTick(req.ip ?? 'unknown')) return void res.status(429).json({ error: 'rate_limited' });
     const id = req.params.id as string;
     const first = LEASE_ID.test(id) ? ledger.get(id) : undefined;
     if (!first) return void res.status(404).json({ error: 'not_found' });
@@ -283,6 +286,8 @@ export function doorApp(deps: DoorDeps): express.Express {
       if (claimed.has(key) || ledger.hasPayment(key)) return void res.status(409).json({ error: 'payment_reused' });
       claimed.add(key);
       res.locals.paymentKey = key;
+      // The host tick must be over in time for the payment to settle before it lapses.
+      res.locals.deadline = (payment.validBefore - SETTLE_MARGIN_SECONDS) * 1000;
     }
     ticking.add(id);
     res.locals.offer = offer;
@@ -326,12 +331,16 @@ export function doorApp(deps: DoorDeps): express.Express {
     if (payer && ledger.payerHasLoss(payer, now())) return void res.status(403).json({ error: 'payer_blocked' });
     const api = deps.api(offer);
     const before = api.spent();
+    const deadline = res.locals.deadline as number | undefined;
     try {
-      const t = await api.tick(id, res.locals.index as number);
+      const t = await api.tick(id, res.locals.index as number, deadline === undefined ? undefined : { deadline });
       ledger.hostTick(id);
       res.locals.hostPaid = { leaseId: id, price: offer.tickPrice };
       res.status(200).json(t);
     } catch (e) {
+      // The send waited too long to start: nothing was sent, nothing is owed, and the renter's payment
+      // will not settle (non-2xx). The renter retries the same index with a fresh authorization.
+      if (e instanceof DeadlinePassedError) return void res.status(503).json({ error: 'retry_later' });
       // A host that answered, even with an error, took the door's money. It will not be paid again.
       // A send that timed out may have been paid, though nothing was counted.
       const lost = e instanceof SendTimeoutError ? offer.tickPrice : api.spent() - before;

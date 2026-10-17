@@ -28,7 +28,8 @@ export interface TickResult {
 
 export interface HostApi {
   open(job: JobSpec): Promise<OpenResult>;
-  tick(leaseId: string, index: number): Promise<TickResult>;
+  /** `deadline` (epoch ms): the packet must not be in flight after it; see SendOpts. */
+  tick(leaseId: string, index: number, opts?: { deadline?: number }): Promise<TickResult>;
   status(leaseId: string): Promise<Lease>;
   /** Every part of result.json, joined. Each part is one paid status call. */
   output(leaseId: string): Promise<Buffer>;
@@ -48,8 +49,13 @@ export interface OutputPart {
 export function hostApi(p: Payer, o: Offer): HostApi {
   let spent: Micro = 0n;
 
-  async function call(app: 'open' | 'tick' | 'status', amount: Micro, req: PacketRequest): Promise<unknown> {
-    const a: PacketAnswer = await p.send(`${o.ilpBase}.charter-${app}`, req, { sealKey: o.sealKey, amount, ...(app === 'tick' ? { priority: 'high' as const } : {}) });
+  async function call(app: 'open' | 'tick' | 'status', amount: Micro, req: PacketRequest, deadline?: number): Promise<unknown> {
+    const a: PacketAnswer = await p.send(`${o.ilpBase}.charter-${app}`, req, {
+      sealKey: o.sealKey,
+      amount,
+      ...(app === 'tick' ? { priority: 'high' as const } : {}),
+      ...(deadline === undefined ? {} : { deadline }),
+    });
     spent += a.paid;
     if (a.status < 200 || a.status >= 300) {
       const e = (a.body as { error?: unknown } | null)?.error;
@@ -66,8 +72,8 @@ export function hostApi(p: Payer, o: Offer): HostApi {
 
   return {
     open: async (job) => (await call('open', o.openPrice, { method: 'POST', path: '/open', body: { job } })) as OpenResult,
-    tick: async (leaseId, index) =>
-      (await call('tick', o.tickPrice, { method: 'POST', path: '/tick', body: { leaseId, index } })) as TickResult,
+    tick: async (leaseId, index, opts) =>
+      (await call('tick', o.tickPrice, { method: 'POST', path: '/tick', body: { leaseId, index } }, opts?.deadline)) as TickResult,
     status,
     outputPart: part,
     output: async (leaseId) => {

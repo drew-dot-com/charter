@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ToonClientPayer, PacketRefusedError, KeyFileError, SendTimeoutError, serialized, type Payer } from './payer.js';
+import { ToonClientPayer, PacketRefusedError, KeyFileError, SendTimeoutError, DeadlinePassedError, serialized, type Payer } from './payer.js';
 
 const SEAL = 'http://ev2ocvzg6ubobqh7mnoskk2boxuo3l5grqbro6wvj4hq2ecnacaqttyd.anyone/ilp';
 const DEST = 'g.toon.69b2a212547e7a9c.charter-echo';
@@ -229,4 +229,59 @@ test('serialized: a send that never answers is rejected after the timeout and th
   assert.equal((await next).body, 'next');
   assert.deepEqual(order, ['hung', 'next']);
   assert.equal(timers[1]!.live, false, 'a finished send clears its timer');
+});
+
+test('R4: a send with a deadline gives the client min(40 s, deadline - now) and refuses under 5 s without calling it', async () => {
+  const s = setup(fulfilled(200, '{}', 5000n));
+  try {
+    const clock = { t: 1_000_000 };
+    const payer = await ToonClientPayer.create(
+      { connectorUrl: 'https://c.example', keyFile: s.keyFile, channelStore: join(s.dir, 's.json'), chain: 'solana' },
+      { createClient: s.createClient, now: () => clock.t },
+    );
+    const send = (deadline: number) => payer.send(DEST, { method: 'POST', path: '/tick' }, { sealKey: SEAL, amount: 5000n, deadline });
+    await send(clock.t + 30_000);
+    await send(clock.t + 100_000);
+    await send(clock.t + 5_000);
+    assert.deepEqual(s.sent.map((x) => (x.opts as { timeoutMs: number }).timeoutMs), [30_000, 40_000, 5_000]);
+    await assert.rejects(send(clock.t + 4_999), (e: Error) => e instanceof DeadlinePassedError);
+    await assert.rejects(send(clock.t - 1), (e: Error) => e instanceof DeadlinePassedError);
+    assert.equal(s.sent.length, 3, 'a send too close to its deadline never reaches the client');
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true });
+  }
+});
+
+test('R4: serialized skips a send whose deadline passed while it waited, without calling the payer, and the queue moves on', async () => {
+  const clock = { t: 1_000_000 };
+  const order: string[] = [];
+  let releaseFirst!: () => void;
+  const firstHeld = new Promise<void>((r) => (releaseFirst = r));
+  const inner: Payer = {
+    async send(_dest, req) {
+      const n = (req.body as { n: string }).n;
+      order.push(n);
+      if (n === 'first') await firstHeld;
+      return { status: 200, body: n, paid: 1n };
+    },
+  };
+  const p = serialized(inner, { now: () => clock.t, setTimer: () => ({}), clearTimer: () => undefined });
+  const send = (n: string, deadline?: number) =>
+    p.send('d', { method: 'POST', path: '/x', body: { n } }, { sealKey: 's', amount: 1n, priority: 'high', ...(deadline === undefined ? {} : { deadline }) });
+  const first = send('first');
+  const late = send('late', clock.t + 20_000);
+  const close = send('close', clock.t + 24_999);
+  const fine = send('fine', clock.t + 60_000);
+  const after = send('after');
+  const lateResult = assert.rejects(late, (e: Error) => e instanceof DeadlinePassedError);
+  const closeResult = assert.rejects(close, (e: Error) => e instanceof DeadlinePassedError);
+  await new Promise((r) => setImmediate(r));
+  clock.t += 20_000;
+  releaseFirst();
+  await lateResult;
+  await closeResult;
+  assert.equal((await fine).body, 'fine');
+  assert.equal((await after).body, 'after');
+  await first;
+  assert.deepEqual(order, ['first', 'fine', 'after'], 'past its deadline, or under 5 s before it, a send is skipped');
 });

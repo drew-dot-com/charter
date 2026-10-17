@@ -25,7 +25,18 @@ export interface Payer {
    * compatibility). A packet the app never answers is a thrown error, not a
    * `PacketAnswer`.
    */
-  send(dest: string, req: PacketRequest, opts: { sealKey: string; amount: Micro; priority?: 'high' }): Promise<PacketAnswer>;
+  send(dest: string, req: PacketRequest, opts: SendOpts): Promise<PacketAnswer>;
+}
+
+export interface SendOpts {
+  sealKey: string;
+  amount: Micro;
+  priority?: 'high';
+  /**
+   * Epoch ms after which the packet must not be in flight. A send that cannot start with at least
+   * MIN_SEND_MS to spare is refused with DeadlinePassedError and never sent.
+   */
+  deadline?: number;
 }
 
 /** The path as a ToonClient envelope target: no leading slash. (The CLI takes it as given.) */
@@ -75,6 +86,8 @@ export interface SendClient {
 export interface ToonClientPayerDeps {
   /** Replace ToonClient.create, for tests. */
   createClient?: (config: ToonClientConfig) => Promise<SendClient>;
+  /** Epoch ms, for send deadlines. Default Date.now. */
+  now?: () => number;
 }
 
 /** A key file that does not parse as the chain's key. The message never carries any of the file. */
@@ -87,6 +100,24 @@ export class KeyFileError extends Error {
 
 /** Per-packet timeout handed to ToonClient. */
 export const CLIENT_SEND_TIMEOUT_MS = 40_000;
+
+/** The least time a send with a deadline is given. Closer to its deadline than this, it is not sent. */
+export const MIN_SEND_MS = 5_000;
+
+/** A send skipped because its deadline was too close: nothing was sent and nothing paid. */
+export class DeadlinePassedError extends Error {
+  constructor() {
+    super('send deadline passed');
+    this.name = 'DeadlinePassedError';
+  }
+}
+
+/** How long a send starting at `now` may take: the client timeout, capped by the deadline. Undefined: too late to send. */
+export function sendTimeoutMs(deadline: number | undefined, now: number): number | undefined {
+  if (deadline === undefined) return CLIENT_SEND_TIMEOUT_MS;
+  const left = deadline - now;
+  return left < MIN_SEND_MS ? undefined : Math.min(CLIENT_SEND_TIMEOUT_MS, left);
+}
 
 /** A send that got no answer in time. The packet may or may not have been paid. */
 export class SendTimeoutError extends Error {
@@ -102,18 +133,22 @@ export interface SerializedOpts {
   /** Timer functions, replaceable in tests. */
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
+  /** Epoch ms, for send deadlines. Default Date.now. */
+  now?: () => number;
 }
 
 /**
  * One `send` in flight at a time: a channel voucher names the running total, so two at once would race
  * it. Sends with `priority: 'high'` (ticks) go before any waiting normal send (reads); within a class it is
  * first in, first out. A send that does not answer within the timeout is rejected with SendTimeoutError
- * and the queue moves on.
+ * and the queue moves on. A send whose deadline came too close while it waited is rejected with
+ * DeadlinePassedError when its turn comes, without being sent.
  */
 export function serialized(p: Payer, o: SerializedOpts = {}): Payer {
   const timeoutMs = o.timeoutMs ?? 45_000;
   const setTimer = o.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
   const clearTimer = o.clearTimer ?? ((h) => clearTimeout(h as NodeJS.Timeout));
+  const now = o.now ?? Date.now;
   const high: Array<() => Promise<void>> = [];
   const normal: Array<() => Promise<void>> = [];
   let running = false;
@@ -132,6 +167,10 @@ export function serialized(p: Payer, o: SerializedOpts = {}): Payer {
       return new Promise((resolve, reject) => {
         const job = () =>
           new Promise<void>((done) => {
+            if (sendTimeoutMs(opts.deadline, now()) === undefined) {
+              reject(new DeadlinePassedError());
+              return done();
+            }
             let over = false;
             const end = (settle: () => void) => {
               if (over) return;
@@ -173,7 +212,10 @@ function solanaKey(raw: string): Uint8Array {
 }
 
 export class ToonClientPayer implements Payer {
-  private constructor(private readonly client: SendClient) {}
+  private constructor(
+    private readonly client: SendClient,
+    private readonly now: () => number,
+  ) {}
 
   static async create(cfg: ToonClientPayerConfig, deps: ToonClientPayerDeps = {}): Promise<ToonClientPayer> {
     mkdirSync(dirname(cfg.channelStore), { recursive: true });
@@ -198,14 +240,17 @@ export class ToonClientPayer implements Payer {
       facilitatorUrl: '',
     };
     const client = await (deps.createClient ?? ((c) => ToonClient.create(c)))(config);
-    return new ToonClientPayer(client);
+    return new ToonClientPayer(client, deps.now ?? Date.now);
   }
 
-  async send(dest: string, req: PacketRequest, opts: { sealKey: string; amount: Micro }): Promise<PacketAnswer> {
+  async send(dest: string, req: PacketRequest, opts: SendOpts): Promise<PacketAnswer> {
+    // The client ends its own send (and its claim state) before the wrapper's 45 s timeout gives up on it,
+    // and before the send's deadline.
+    const timeoutMs = sendTimeoutMs(opts.deadline, this.now());
+    if (timeoutMs === undefined) throw new DeadlinePassedError();
     const request: SendRequest = { method: req.method, target: relativeTarget(req.path) };
     if (req.body !== undefined) request.body = req.body as SendRequest['body'];
-    // The client ends its own send (and its claim state) before the wrapper's 45 s timeout gives up on it.
-    const res = await this.client.send(dest, request, { amount: opts.amount, sealTo: opts.sealKey, timeoutMs: CLIENT_SEND_TIMEOUT_MS });
+    const res = await this.client.send(dest, request, { amount: opts.amount, sealTo: opts.sealKey, timeoutMs });
     if (!res.fulfilled) throw new PacketRefusedError(res.code, res.refusedBy, res.message);
     return { status: res.status, body: decodeBody(res.text()), paid: res.claim?.amount ?? 0n };
   }
