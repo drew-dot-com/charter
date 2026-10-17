@@ -134,3 +134,12 @@ export function decodeOutput(parts: string[]): JobOutput {
     }),
   };
 }
+
+/** What the page says when the door's payment request is not the one it expected. */
+export const UNEXPECTED_PAYMENT = 'Unexpected payment request';
+
+/** The x402 client's own errors for a request none of its accepted options fits, and ours. */
+export function isUnexpectedPayment(e: unknown): boolean {
+  const m = e instanceof Error ? e.message : String(e);
+  return m.includes(UNEXPECTED_PAYMENT) || /filtered out by policies|rejected by spendControls|No network\/scheme registered|No payment requirements/.test(m);
+}

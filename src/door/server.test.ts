@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -450,9 +451,9 @@ test('C1: each output part is fetched once, kept on disk, and served from disk a
   }
 });
 
-test('C1: a done lease is served from its cached final status with no further host calls', async () => {
+test('C1: a done lease with its landing is served from its cached final status with no further host calls', async () => {
   for (const state of ['done', 'closed'] as const) {
-    const host = fakeHost({ status: async () => lease({ state }) });
+    const host = fakeHost({ status: async () => lease({ state, landing: { chain: 'solana', tx: '1'.repeat(88), shared: true } }) });
     const d = await start(host);
     try {
       await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
@@ -467,7 +468,70 @@ test('C1: a done lease is served from its cached final status with no further ho
   }
 });
 
-test('C1: host reads per lease are capped at 20 + 4 per renter tick; past it the last status is served and uncached output is 429', async () => {
+test('a done lease that has paid intervals and no landing is read again from the host, at most once per 10 minutes, on the read budget', async () => {
+  let landing: Lease['landing'];
+  const host = fakeHost({ status: async () => lease({ state: 'done', paidIntervals: 3, outputParts: 1, ...(landing ? { landing } : {}) }) });
+  const d = await start(host);
+  const statusCalls = () => host.calls.filter((c) => c === 'status').length;
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal(((await (await d.get(`/v1/leases/${LEASE}`)).json()) as { lease: Lease }).lease.landing, undefined);
+    assert.equal(statusCalls(), 1);
+    d.clock.t += 9 * 60_000;
+    await d.get(`/v1/leases/${LEASE}`);
+    assert.equal(statusCalls(), 1, 'not before 10 minutes');
+    landing = { chain: 'solana', tx: '2'.repeat(88), shared: true };
+    d.clock.t += 2 * 60_000;
+    const body = (await (await d.get(`/v1/leases/${LEASE}`)).json()) as { lease: Lease };
+    assert.equal(statusCalls(), 2, 'after 10 minutes it asks the host again');
+    assert.deepEqual(body.lease.landing, landing);
+    assert.equal(d.ledger.get(LEASE)!.hostReads, 2, 'charged to the read budget');
+    // With the landing in, the status is final for good.
+    d.clock.t += 24 * 3_600_000;
+    await d.get(`/v1/leases/${LEASE}`);
+    assert.equal(statusCalls(), 2);
+  } finally {
+    d.close();
+  }
+});
+
+test('the landing refresh never serves an error: a host that fails, or a spent budget, gives the last status; a lease that paid nothing is not refreshed', async () => {
+  let fail = false;
+  const host = fakeHost({
+    status: async () => {
+      if (fail) throw new HostError(500, 'boom');
+      return lease({ state: 'done', paidIntervals: 3 });
+    },
+  });
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.get(`/v1/leases/${LEASE}`);
+    fail = true;
+    d.clock.t += 11 * 60_000;
+    const r = await d.get(`/v1/leases/${LEASE}`);
+    assert.equal(r.status, 200);
+    assert.equal(((await r.json()) as { lease: Lease }).lease.state, 'done');
+    const calls = host.calls.filter((c) => c === 'status').length;
+    await d.get(`/v1/leases/${LEASE}`);
+    assert.equal(host.calls.filter((c) => c === 'status').length, calls, 'a failed refresh waits another 10 minutes');
+  } finally {
+    d.close();
+  }
+  const none = fakeHost({ status: async () => lease({ state: 'done', paidIntervals: 0 }) });
+  const d2 = await start(none);
+  try {
+    await d2.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d2.get(`/v1/leases/${LEASE}`);
+    d2.clock.t += 60 * 60_000;
+    await d2.get(`/v1/leases/${LEASE}`);
+    assert.equal(none.calls.filter((c) => c === 'status').length, 1);
+  } finally {
+    d2.close();
+  }
+});
+
+test('C1: host reads per lease are capped at 20 + 8 per renter tick; past it the last status is served and uncached output is 429', async () => {
   const host = fakeHost({ status: async () => lease({ outputParts: 2 }) });
   const d = await start(host);
   try {
@@ -480,12 +544,14 @@ test('C1: host reads per lease are capped at 20 + 4 per renter tick; past it the
     assert.equal(host.calls.filter((c) => c === 'status').length, 20);
     assert.equal((await d.get(`/v1/leases/${LEASE}/output/0`)).status, 429);
     assert.equal(host.calls.filter((c) => c.startsWith('part:')).length, 0);
-    // One renter tick settled buys four more reads.
+    // One renter tick settled buys eight more reads.
     assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 })).status, 200);
-    d.clock.t += 6_000;
-    await d.get(`/v1/leases/${LEASE}`);
-    assert.equal(host.calls.filter((c) => c === 'status').length, 21);
-    assert.equal(d.ledger.get(LEASE)!.hostReads, 21);
+    for (let i = 0; i < 12; i++) {
+      d.clock.t += 6_000;
+      await d.get(`/v1/leases/${LEASE}`);
+    }
+    assert.equal(host.calls.filter((c) => c === 'status').length, 28);
+    assert.equal(d.ledger.get(LEASE)!.hostReads, 28);
   } finally {
     d.close();
   }
@@ -738,6 +804,56 @@ test('GET /v1/dev answers 200 only in free-for-tests mode, so the page can skip 
   }
 });
 
+
+/** A facilitator that only answers /supported, enough for the real gate to build a 402 challenge. */
+async function withRealDoor(run: (d: Awaited<ReturnType<typeof start>>) => Promise<void>): Promise<void> {
+  const fac = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(req.url?.startsWith('/supported') ? { kinds: [{ x402Version: 2, scheme: 'exact', network: 'eip155:8453' }], extensions: [], signers: {} } : {}));
+  }).listen(0, '127.0.0.1');
+  await new Promise((r) => fac.once('listening', r));
+  const d = await start(fakeHost(), { x402: { payTo: PAY_TO, network: 'eip155:8453', facilitatorUrl: `http://127.0.0.1:${(fac.address() as AddressInfo).port}` } });
+  try {
+    await run(d);
+  } finally {
+    d.close();
+    fac.close();
+  }
+}
+const PAY_TO = '0x' + '2'.repeat(40);
+
+test('GET /v1/door tells the page where payments go: payTo and network, free and with CORS; absent in test mode', async () => {
+  await withRealDoor(async (d) => {
+    const r = await d.get('/v1/door');
+    assert.equal(r.status, 200);
+    assert.deepEqual(await r.json(), { payTo: PAY_TO, network: 'eip155:8453' });
+    assert.equal(r.headers.get('access-control-allow-origin'), '*');
+  });
+  const t = await start(fakeHost());
+  try {
+    assert.equal((await t.get('/v1/door')).status, 404);
+  } finally {
+    t.close();
+  }
+});
+
+test('the 402 challenge offers exact USDC on Base for the tick price, to payTo, valid for 300 s', async () => {
+  await withRealDoor(async (d) => {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 });
+    assert.equal(r.status, 402);
+    const required = JSON.parse(Buffer.from(r.headers.get('payment-required')!, 'base64').toString()) as { accepts: Array<Record<string, unknown>> };
+    assert.equal(required.accepts.length, 1);
+    const a = required.accepts[0]!;
+    assert.equal(a.scheme, 'exact');
+    assert.equal(a.network, 'eip155:8453');
+    assert.equal(a.asset, '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
+    assert.equal(a.amount, '5000');
+    assert.equal((a.payTo as string).toLowerCase(), PAY_TO);
+    assert.equal(a.maxTimeoutSeconds, 300);
+  });
+});
+
 test('DoorLedger: JSON file, bigint losses, atomic writes, reload', () => {
   const dir = mkdtempSync(join(tmpdir(), 'ledger-'));
   const file = join(dir, 'sub', 'ledger.json');
@@ -843,7 +959,7 @@ test('R3-3: an authorization window that cannot outlast the verify-to-settle gap
     host.calls.length = 0;
     const now = nowSeconds();
     for (const window of [
-      { validBefore: String(now + 100) }, // under maxTimeoutSeconds (120) minus 10
+      { validBefore: String(now + 100) }, // under the 110 s minimum
       { validBefore: String(now - 1) },
       { validAfter: String(now + 100) }, // not valid yet
     ]) {
@@ -853,7 +969,7 @@ test('R3-3: an authorization window that cannot outlast the verify-to-settle gap
     }
     assert.deepEqual(d.gate, []);
     assert.deepEqual(host.calls, []);
-    // The boundary and the usual client shape (valid from 10 minutes ago, 120 s to run) pass.
+    // The boundary and the usual client shape (valid from 10 minutes ago, 300 s to run) pass.
     assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': pay('0xcc1', '0xf3', 0, { validBefore: String(now + 110), validAfter: String(now) }) })).status, 200);
   } finally {
     d.close();
@@ -862,7 +978,7 @@ test('R3-3: an authorization window that cannot outlast the verify-to-settle gap
   try {
     await d2.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
     const now = nowSeconds();
-    assert.equal((await d2.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': pay('0xcc2', '0xf4', 0, { validAfter: String(now - 600), validBefore: String(now + 120) }) })).status, 200);
+    assert.equal((await d2.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': pay('0xcc2', '0xf4', 0, { validAfter: String(now - 600), validBefore: String(now + 300) }) })).status, 200);
   } finally {
     d2.close();
   }

@@ -35,12 +35,12 @@ export function microToUsdc(m: Micro): string {
 }
 
 /** What the route allows a payment to take: the middleware's `maxTimeoutSeconds`. */
-export const MAX_TIMEOUT_SECONDS = 120;
+export const MAX_TIMEOUT_SECONDS = 300;
 /**
  * A payment must stay valid this long after the door looks at it. Verify and settle are a tick apart,
  * and a payer whose authorization lapses between them gets a host tick without paying for it.
  */
-export const MIN_WINDOW_SECONDS = MAX_TIMEOUT_SECONDS - 10;
+export const MIN_WINDOW_SECONDS = 110;
 /**
  * The host tick's send must be over this long before the authorization's `validBefore`, so settlement
  * still has time. A tick whose send cannot start by then is skipped, unpaid on both sides.

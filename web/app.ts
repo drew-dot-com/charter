@@ -1,17 +1,15 @@
 import type { Lease } from '../src/types.js';
-import { decodeOutput, formatUsdc, landingLink, pricePerHour, sizeLabel, tickOutcome, type JobOutput } from './format.js';
+import { decodeOutput, formatUsdc, landingLink, pricePerHour, sizeLabel, UNEXPECTED_PAYMENT, type JobOutput } from './format.js';
 import { nextTickAt } from './schedule.js';
-import { BASE_CHAIN_ID_HEX, payFetchFor, type Eip1193 } from './wallet.js';
+import { applyStatus, clearHalt, newTickState, runTick, shouldTick, type TickState } from './ticker.js';
+import { BASE_CHAIN_ID_HEX, BASE_NETWORK, BASE_USDC, payFetchFor, type Eip1193 } from './wallet.js';
 
 // ---------------------------------------------------------------------------
 // Constants
 
-const POLL_MS = 3_000;
+const POLL_MS = 5_000;
 const POLL_FINAL_MS = 15_000;
 const STEP_MS = 1_000;
-const RETRY_LATER_MAX = 3;
-const RETRY_LATER_DELAY_MS = 2_000;
-const MAX_RESYNCS = 3;
 const MAX_URLS = 5;
 const MAX_OUTPUT_PARTS = 100;
 
@@ -105,13 +103,19 @@ function parseOffers(body: unknown): PublicOffer[] {
 
 interface Wallet {
   address: `0x${string}`;
-  /** fetch that answers a 402 by signing a fresh authorization and resending. */
-  payFetch: typeof fetch;
+  eth: Eip1193;
+}
+
+/** Where the door says payments go. Read once; a 402 naming any other payee is refused. */
+interface DoorInfo {
+  payTo: string;
+  network: string;
 }
 
 let wallet: Wallet | undefined;
 /** The door has no payment gate (local development): the page skips x402. */
 let dev = false;
+let doorInfo: DoorInfo | undefined;
 
 function provider(): Eip1193 | undefined {
   return (window as unknown as { ethereum?: Eip1193 }).ethereum;
@@ -139,7 +143,7 @@ async function connectWallet(silent = false): Promise<Wallet | undefined> {
     if (silent) return undefined;
     throw new Error('Switch your wallet to Base, then try again.');
   }
-  wallet = { address: address as `0x${string}`, payFetch: payFetchFor(address as `0x${string}`, eth) };
+  wallet = { address: address as `0x${string}`, eth };
   return wallet;
 }
 
@@ -293,27 +297,17 @@ function rentForm(o: PublicOffer, close: () => void): HTMLElement {
 // ---------------------------------------------------------------------------
 // The lease page
 
-interface Halt {
-  message: string;
-  retry: boolean;
-}
-
 interface LeasePage {
   id: string;
   alive: boolean;
   timer: number | undefined;
-  lease: Lease | undefined;
+  /** What the lease page knows of the lease and its ticks (see ticker.ts). */
+  t: TickState;
   offer: PublicOffer | undefined;
   offerTried: boolean;
-  nextIndex: number;
   lastPoll: number;
   /** The status read in flight, if any. */
   polling: Promise<void> | undefined;
-  ticking: boolean;
-  /** After an out-of-sync answer, wait for a fresh status before paying again. */
-  holdTicks: boolean;
-  resyncs: number;
-  halt: Halt | undefined;
   notice: string | undefined;
   output: { state: 'idle' | 'loading' | 'done' | 'error'; value?: JobOutput; error?: string };
   ui: {
@@ -353,8 +347,8 @@ async function showLease(id: string, token: number): Promise<void> {
     out: el('div'),
   };
   const page: LeasePage = {
-    id, alive: true, timer: undefined, lease: undefined, offer: undefined, offerTried: false, nextIndex: 0, lastPoll: 0, polling: undefined,
-    ticking: false, holdTicks: false, resyncs: 0, halt: undefined, notice: undefined, output: { state: 'idle' }, ui,
+    id, alive: true, timer: undefined, t: newTickState(), offer: undefined, offerTried: false, lastPoll: 0, polling: undefined,
+    notice: undefined, output: { state: 'idle' }, ui,
   };
   current = page;
   const back = el('a', undefined, 'Back to machines');
@@ -379,22 +373,26 @@ async function showLease(id: string, token: number): Promise<void> {
   step(page);
 }
 
-/** The offer's tick price turns paid intervals into dollars. The lease's offer id is the host's, the offers list's is `<pubkey>:<id>`. */
+/** The offer's tick price turns paid intervals into dollars, and is the one amount the page will pay. The lease's offer id is the host's, the offers list's is `<pubkey>:<id>`. */
 async function loadOffer(p: LeasePage): Promise<void> {
   try {
     const a = await call(fetch, '/v1/offers');
-    if (a.status !== 200 || !p.lease) return;
-    const hostId = p.lease.offerId;
+    if (a.status !== 200 || !p.t.lease) return;
+    const hostId = p.t.lease.offerId;
     p.offer = parseOffers(a.body).find((o) => o.offerId.endsWith(`:${hostId}`));
   } catch {
     // Spent stays unknown.
   }
 }
 
-/** A stale status (the door caches it for a few seconds) never takes back what this page has already seen. */
-function merge(local: Lease | undefined, polled: Lease): Lease {
-  if (!local || isFinal(polled) || polled.paidIntervals >= local.paidIntervals) return polled;
-  return { ...polled, state: local.state, paidIntervals: local.paidIntervals, paidThrough: local.paidThrough };
+async function loadDoor(): Promise<void> {
+  try {
+    const a = await call(fetch, '/v1/door');
+    const b = a.body as Partial<DoorInfo> | undefined;
+    if (a.status === 200 && typeof b?.payTo === 'string' && typeof b.network === 'string') doorInfo = { payTo: b.payTo, network: b.network };
+  } catch {
+    // The payment is refused below.
+  }
 }
 
 function poll(p: LeasePage): Promise<void> {
@@ -413,17 +411,15 @@ async function readStatus(p: LeasePage): Promise<void> {
     if (!p.alive) return;
     const lease = (a.body as { lease?: Lease } | undefined)?.lease;
     if (a.status === 200 && lease) {
-      p.lease = merge(p.lease, lease);
-      p.nextIndex = Math.max(p.nextIndex, p.lease.paidIntervals);
+      applyStatus(p.t, lease);
       p.notice = undefined;
-      p.holdTicks = false;
       if (!p.offerTried) {
         p.offerTried = true;
         void loadOffer(p);
       }
-      if (p.lease.state === 'done' && p.output.state === 'idle') void loadOutput(p);
+      if (lease.state === 'done' && p.output.state === 'idle') void loadOutput(p);
     } else if (a.status === 404) {
-      p.halt = { message: 'The door does not know this lease.', retry: false };
+      p.t.halt = { message: 'The door does not know this lease.', retry: false };
     } else if (a.status === 429) {
       p.notice = 'The door asked this page to slow down. Waiting a little.';
       p.lastPoll = Date.now() + 30_000;
@@ -438,91 +434,54 @@ async function readStatus(p: LeasePage): Promise<void> {
 function step(p: LeasePage): void {
   if (!p.alive) return;
   const now = Date.now();
-  const final = isFinal(p.lease);
-  const settled = final && !!p.lease?.landing && p.output.state !== 'loading' && p.output.state !== 'idle';
+  const final = isFinal(p.t.lease);
+  const settled = final && !!p.t.lease?.landing && p.output.state !== 'loading' && p.output.state !== 'idle';
   if (!p.polling && !settled && now - p.lastPoll >= (final ? POLL_FINAL_MS : POLL_MS)) void poll(p);
-  const canPay = dev || !!wallet;
-  if (p.lease && canPay && !p.halt && !p.ticking && !p.holdTicks) {
-    const due = nextTickAt(p.lease, now);
-    if (due !== null && now >= due) void payTick(p);
-  }
+  if ((dev || wallet) && shouldTick(p.t, now)) void payTick(p);
   render(p);
   p.timer = window.setTimeout(() => step(p), STEP_MS);
 }
 
-async function payTick(p: LeasePage): Promise<void> {
-  const pay = dev ? fetch : wallet!.payFetch;
-  p.ticking = true;
-  render(p);
-  try {
+/** The effects of one tick: the status refresh, the send (with the wallet when the door is gated), the sleep. */
+function payTick(p: LeasePage): Promise<void> {
+  return runTick(p.t, {
+    post: async (index) => {
+      let pay: typeof fetch = fetch;
+      if (!dev) {
+        // The page signs one payment only: this lease's tick price, to the door's payTo, in USDC on Base.
+        if (!doorInfo) await loadDoor();
+        if (!p.offer) await loadOffer(p);
+        if (!doorInfo || !p.offer || doorInfo.network !== BASE_NETWORK) throw new Error(UNEXPECTED_PAYMENT);
+        pay = payFetchFor(wallet!.address, wallet!.eth, {
+          network: BASE_NETWORK,
+          asset: BASE_USDC,
+          amount: BigInt(p.offer.tickPrice),
+          payTo: doorInfo.payTo,
+        });
+      }
+      return call(pay, `/v1/leases/${p.id}/ticks`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ index }),
+      });
+    },
     // A tick sent to a lease that finished since the last look is paid by the door for nothing:
     // look again first, unless the last look was within the poll interval.
-    if (p.polling) await p.polling;
-    else if (Date.now() - p.lastPoll >= POLL_MS) await poll(p);
-    if (!p.alive || p.halt || p.holdTicks || !p.lease || nextTickAt(p.lease, Date.now()) === null) return;
-    let retries = 0;
-    for (;;) {
-      const index = p.nextIndex;
-      let a: Answer;
-      try {
-        a = await call(pay, `/v1/leases/${p.id}/ticks`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ index }),
-        });
-      } catch (e) {
-        if (p.alive) p.halt = { message: `The payment was not sent: ${short(e)}`, retry: true };
-        return;
-      }
-      if (!p.alive) return;
-      const out = tickOutcome(a.status, a.body);
-      if (out.kind === 'paid') {
-        p.resyncs = 0;
-        p.nextIndex = index + 1;
-        const l = p.lease!;
-        // The host gives no new paid time when the job has finished: nothing more is due, and the next
-        // status shows the lease done. (A running lease with no paid time is never scheduled.)
-        p.lease = {
-          ...l,
-          paidIntervals: Math.max(l.paidIntervals, out.paidIntervals),
-          paidThrough: out.paidThrough,
-          state: l.state === 'awaiting_first_tick' ? 'running' : l.state,
-        };
-        p.lastPoll = 0;
-        return;
-      }
-      if (out.kind === 'retry_later') {
-        // Nothing settled. Wait a moment, then send the same index with a new authorization.
-        if (++retries > RETRY_LATER_MAX) {
-          p.halt = { message: 'The door is busy. Try again in a moment.', retry: true };
-          return;
-        }
-        await new Promise((r) => setTimeout(r, RETRY_LATER_DELAY_MS));
-        if (!p.alive) return;
-        continue;
-      }
-      if (out.kind === 'resync') {
-        if (++p.resyncs > MAX_RESYNCS) {
-          p.halt = { message: 'This page and the door disagree about the next payment. Reload the page.', retry: false };
-          return;
-        }
-        p.nextIndex = out.expected;
-        p.holdTicks = true;
-        p.lastPoll = 0;
-        return;
-      }
-      p.halt = { message: out.message, retry: out.retry };
-      if (out.final) p.lastPoll = 0;
-      return;
-    }
-  } finally {
-    p.ticking = false;
+    refresh: async () => {
+      if (p.polling) await p.polling;
+      else if (Date.now() - p.lastPoll >= POLL_MS) await poll(p);
+    },
+    requestPoll: () => void (p.lastPoll = 0),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    now: Date.now,
+    alive: () => p.alive,
+  }).finally(() => {
     if (p.alive) render(p);
-  }
+  });
 }
 
 async function loadOutput(p: LeasePage): Promise<void> {
-  const parts = p.lease?.outputParts;
+  const parts = p.t.lease?.outputParts;
   if (typeof parts !== 'number' || parts < 1) {
     p.output = { state: 'error', error: 'The job finished without output.' };
     return;
@@ -561,7 +520,8 @@ function setRegion(host: HTMLElement, key: string, build: () => Child[]): void {
 
 function render(p: LeasePage): void {
   if (!p.alive) return;
-  const { ui, lease } = p;
+  const { ui } = p;
+  const lease = p.t.lease;
   if (lease) {
     ui.state.textContent = STATE_LABEL[lease.state];
     ui.state.className = lease.state === 'done' ? 'value state-done' : 'value';
@@ -573,8 +533,8 @@ function render(p: LeasePage): void {
   let next = '';
   if (lease && !isFinal(lease)) {
     const due = nextTickAt(lease, now);
-    if (p.ticking) next = 'Paying now';
-    else if (p.halt) next = 'Payments are paused.';
+    if (p.t.ticking) next = 'Paying now';
+    else if (p.t.halt) next = 'Payments are paused.';
     else if (!dev && !wallet) next = 'Payments are waiting for your wallet.';
     else if (due !== null) next = due <= now ? 'Next payment is due.' : `Next payment in ${Math.ceil((due - now) / 1000)} s`;
     else if (lease.state === 'booting') next = 'The machine is starting.';
@@ -583,16 +543,15 @@ function render(p: LeasePage): void {
 
   const closed = lease?.state === 'closed' ? (lease.closedReason ? CLOSE_REASON[lease.closedReason] : undefined) ?? 'The lease closed.' : '';
   const needsWallet = !dev && !wallet && !!lease && !isFinal(lease);
-  setRegion(ui.msg, `${p.halt?.message}|${p.halt?.retry}|${p.notice}|${closed}|${needsWallet}`, () => {
+  setRegion(ui.msg, `${p.t.halt?.message}|${p.t.halt?.retry}|${p.notice}|${closed}|${needsWallet}`, () => {
     const out: Child[] = [];
     if (closed) out.push(el('div', 'msg warn', closed));
-    if (p.halt) {
-      const box = el('div', 'msg bad', p.halt.message);
-      if (p.halt.retry) {
+    if (p.t.halt) {
+      const box = el('div', 'msg bad', p.t.halt.message);
+      if (p.t.halt.retry) {
         box.append(el('div', 'actions', button('Try again', () => {
-          p.halt = undefined;
-          p.resyncs = 0;
-          p.holdTicks = false;
+          clearHalt(p.t);
+          p.lastPoll = 0;
           render(p);
           step0(p);
         }, true)));
@@ -668,6 +627,7 @@ async function main(): Promise<void> {
   } catch {
     dev = false;
   }
+  if (!dev) void loadDoor();
   window.addEventListener('hashchange', go);
   go();
 }
