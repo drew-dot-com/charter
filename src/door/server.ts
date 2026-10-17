@@ -8,7 +8,7 @@ import { findOfferExact } from '../tenant/offers.js';
 import type { Lease, Micro, Offer } from '../types.js';
 import { SendTimeoutError } from '../payer.js';
 import type { DoorLedger, LossKind } from './ledger.js';
-import { isPayerFault, paymentIdOf, realGate, settleReasonOf, stubGate, type Gate, type TestHooks, type X402Config } from './x402.js';
+import { MIN_WINDOW_SECONDS, isPayerFault, paymentIdOf, realGate, settleReasonOf, stubGate, type Gate, type TestHooks, type X402Config } from './x402.js';
 
 export interface DoorDeps {
   /** Live offers. The door caches the answer for 60 s. */
@@ -115,6 +115,8 @@ export function doorApp(deps: DoorDeps): express.Express {
   const partInflight = new Map<string, Promise<unknown>>();
   /** Leases with a tick in flight: one at a time. */
   const ticking = new Set<string>();
+  /** Payment keys claimed by a request that has not finished verifying. */
+  const claimed = new Set<string>();
 
   const partFile = (id: string, part: number): string => join(deps.dataDir, 'output', id, `${part}.json`);
 
@@ -270,8 +272,17 @@ export function doorApp(deps: DoorDeps): express.Express {
     // A payment is the authorization it carries, not the bytes of the header that carries it.
     const payment = paymentIdOf(req);
     if (payment === 'bad') return void res.status(400).json({ error: 'bad_payment' });
-    if (payment !== 'none' && ledger.seenPayment(createHash('sha256').update(`${payment.from}:${payment.nonce}`).digest('hex'))) {
-      return void res.status(409).json({ error: 'payment_reused' });
+    if (payment !== 'none') {
+      const t = Math.floor(now() / 1000);
+      if (payment.validAfter > t || payment.validBefore < t + MIN_WINDOW_SECONDS) {
+        return void res.status(400).json({ error: 'authorization_window' });
+      }
+      const key = createHash('sha256').update(`${payment.from}:${payment.nonce}`).digest('hex');
+      // Claimed from here: refused while another request holds it or once it has verified. A verify
+      // failure gives it back (paidTick), so an honest retry of a payment the facilitator refused works.
+      if (claimed.has(key) || ledger.hasPayment(key)) return void res.status(409).json({ error: 'payment_reused' });
+      claimed.add(key);
+      res.locals.paymentKey = key;
     }
     ticking.add(id);
     res.locals.offer = offer;
@@ -289,6 +300,7 @@ export function doorApp(deps: DoorDeps): express.Express {
       failure = e;
     } finally {
       ticking.delete(id);
+      if (res.locals.paymentKey) claimed.delete(res.locals.paymentKey as string);
     }
     const paid = res.locals.hostPaid as { leaseId: string; price: Micro } | undefined;
     if (paid) {
@@ -308,6 +320,8 @@ export function doorApp(deps: DoorDeps): express.Express {
     const id = req.params.id as string;
     const offer = res.locals.offer as Offer;
     const payer = res.locals.payer as string | undefined;
+    // Reaching here means the payment verified: from now on it is spent, whatever happens next.
+    if (res.locals.paymentKey) ledger.addPayment(res.locals.paymentKey as string);
     // The payment has verified, so the payer is known. One that cost the door before does not cost it again.
     if (payer && ledger.payerHasLoss(payer, now())) return void res.status(403).json({ error: 'payer_blocked' });
     const api = deps.api(offer);

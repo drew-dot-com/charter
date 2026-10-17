@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DoorLedger, LEDGER_FILE } from './ledger.js';
@@ -26,4 +26,12 @@ test('unblock refuses a bad address and a missing data dir', () => {
   assert.equal(unblockCommand(['nope'], { CHARTER_DATA_DIR: '/tmp/x' }, () => 1, (m) => lines.push(m)), 2);
   assert.equal(unblockCommand([ADDR], {}, () => 1, (m) => lines.push(m)), 2);
   assert.equal(unblockCommand([], { CHARTER_DATA_DIR: '/tmp/x' }, () => 1, (m) => lines.push(m)), 2);
+});
+
+test('unblock exits 1 with a clear message when there is no ledger yet, and creates nothing', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'unblock-'));
+  const lines: string[] = [];
+  assert.equal(unblockCommand([ADDR], { CHARTER_DATA_DIR: dir }, () => 1, (m) => lines.push(m)), 1);
+  assert.match(lines.join('\n'), /no ledger/);
+  assert.deepEqual(readdirSync(dir), []);
 });

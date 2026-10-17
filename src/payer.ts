@@ -85,6 +85,9 @@ export class KeyFileError extends Error {
   }
 }
 
+/** Per-packet timeout handed to ToonClient. */
+export const CLIENT_SEND_TIMEOUT_MS = 40_000;
+
 /** A send that got no answer in time. The packet may or may not have been paid. */
 export class SendTimeoutError extends Error {
   constructor() {
@@ -201,7 +204,8 @@ export class ToonClientPayer implements Payer {
   async send(dest: string, req: PacketRequest, opts: { sealKey: string; amount: Micro }): Promise<PacketAnswer> {
     const request: SendRequest = { method: req.method, target: relativeTarget(req.path) };
     if (req.body !== undefined) request.body = req.body as SendRequest['body'];
-    const res = await this.client.send(dest, request, { amount: opts.amount, sealTo: opts.sealKey });
+    // The client ends its own send (and its claim state) before the wrapper's 45 s timeout gives up on it.
+    const res = await this.client.send(dest, request, { amount: opts.amount, sealTo: opts.sealKey, timeoutMs: CLIENT_SEND_TIMEOUT_MS });
     if (!res.fulfilled) throw new PacketRefusedError(res.code, res.refusedBy, res.message);
     return { status: res.status, body: decodeBody(res.text()), paid: res.claim?.amount ?? 0n };
   }

@@ -144,6 +144,7 @@ export class DoorLedger {
 
   /** Clears a payer's block as of `at`. Safe from another process while the door runs. */
   unblock(payer: string, at: number): void {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(payer)) throw new Error('unblock needs a 0x address of 40 hex digits');
     mkdirSync(dirname(this.unblocksFile), { recursive: true, mode: 0o700 });
     appendFileSync(this.unblocksFile, `${payer.toLowerCase()} ${at}\n`, { mode: 0o600 });
     this.refreshUnblocks();
@@ -173,9 +174,14 @@ export class DoorLedger {
     this.update(leaseId, (l) => void l.hostReads++);
   }
 
-  /** Records a payment header's hash. True when it was already recorded: the payment is being reused. */
-  seenPayment(hash: string): boolean {
-    if (this.payments.has(hash)) return true;
+  /** True when a payment with this key has verified before. */
+  hasPayment(hash: string): boolean {
+    return this.payments.has(hash);
+  }
+
+  /** Records the key of a payment that verified. Bounded: the oldest are forgotten past MAX_PAYMENTS. */
+  addPayment(hash: string): void {
+    if (this.payments.has(hash)) return;
     this.payments.add(hash);
     mkdirSync(dirname(this.paymentsFile), { recursive: true, mode: 0o700 });
     appendFileSync(this.paymentsFile, `${hash}\n`, { mode: 0o600 });
@@ -187,7 +193,6 @@ export class DoorLedger {
       renameSync(tmp, this.paymentsFile);
       this.paymentLines = this.payments.size;
     }
-    return false;
   }
 
   stop(leaseId: string): void {

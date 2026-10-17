@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { DoorLedger, LEDGER_FILE } from './ledger.js';
 
@@ -13,7 +14,12 @@ export function unblockCommand(args: string[], env: NodeJS.ProcessEnv, now: () =
     out('CHARTER_DATA_DIR is required');
     return 2;
   }
-  new DoorLedger(join(dataDir, LEDGER_FILE)).unblock(address, now());
+  const file = join(dataDir, LEDGER_FILE);
+  if (!existsSync(file)) {
+    out(`no ledger at ${file}: nothing to unblock (is CHARTER_DATA_DIR the door's data dir?)`);
+    return 1;
+  }
+  new DoorLedger(file).unblock(address, now());
   out(`unblocked ${address}`);
   return 0;
 }

@@ -52,7 +52,7 @@ test('sealKey and amount reach client.send as sealTo and amount', async () => {
     const ans = await payer.send(DEST, { method: 'POST', path: '/open', body: { n: 1 } }, { sealKey: SEAL, amount: 5000n });
     assert.equal(s.sent.length, 1);
     assert.equal(s.sent[0]!.dest, DEST);
-    assert.deepEqual(s.sent[0]!.opts, { amount: 5000n, sealTo: SEAL });
+    assert.deepEqual(s.sent[0]!.opts, { amount: 5000n, sealTo: SEAL, timeoutMs: 40_000 }, 'the client ends its own send before the wrapper gives up at 45 s');
     // The leading slash is stripped: the connector refuses an absolute target with F00.
     assert.deepEqual(s.sent[0]!.req, { method: 'POST', target: 'open', body: { n: 1 } });
     assert.equal(ans.status, 200);

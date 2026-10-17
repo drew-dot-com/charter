@@ -14,15 +14,21 @@ import * as payerMod from '../payer.js';
 
 
 const b64 = (o: unknown, pretty = false) => Buffer.from(JSON.stringify(o, null, pretty ? 2 : undefined)).toString('base64');
-/** A payment header carrying one EIP-3009 authorization. `variant` 1 re-encodes the same authorization: other key order, whitespace, an extra field. */
-function pay(from: string, nonce: string, variant: 0 | 1 = 0): string {
-  const auth = { from, to: '0x' + '2'.repeat(40), value: '5000', validAfter: '0', validBefore: '9999999999', nonce };
+const pad = (s: string, n: number) => '0x' + s.replace(/^0x/i, '').toLowerCase().padStart(n, '0');
+const nowSeconds = () => 1_000_000 / 1000;
+/** A payment header carrying one EIP-3009 authorization. `variant` 1 re-encodes the same authorization: other key order, whitespace, an extra field, upper-case hex. */
+function pay(from: string, nonce: string, variant: 0 | 1 = 0, window: { validAfter?: string; validBefore?: string } = {}): string {
+  const auth = {
+    from: pad(from, 40), to: '0x' + '2'.repeat(40), value: '5000',
+    validAfter: window.validAfter ?? '0', validBefore: window.validBefore ?? '9999999999', nonce: pad(nonce, 64),
+  };
   if (variant === 0) return b64({ x402Version: 2, payload: { authorization: auth, signature: '0xsig' } });
   const { nonce: n, from: f, ...rest } = auth;
-  return b64({ extra: { note: 'x' }, payload: { signature: '0xsig', authorization: { nonce: n.toUpperCase().replace('0X', '0x'), ...rest, from: f.toUpperCase().replace('0X', '0x') } }, x402Version: 2 }, true);
+  const up = (h: string) => h.toUpperCase().replace('0X', '0x');
+  return b64({ extra: { note: 'x' }, payload: { signature: '0xsig', authorization: { nonce: up(n), ...rest, from: up(f) } }, x402Version: 2 }, true);
 }
 const PAYER_FAULT = 'invalid_exact_evm_insufficient_balance';
-const keyOf = (from: string, nonce: string) => createHash('sha256').update(`${from.toLowerCase()}:${nonce.toLowerCase()}`).digest('hex');
+const keyOf = (from: string, nonce: string) => createHash('sha256').update(`${pad(from, 40)}:${pad(nonce, 64)}`).digest('hex');
 
 const OFFER_ID = `${OFFER.hostPubkey}:${OFFER.id}`;
 const LEASE = 'a'.repeat(32);
@@ -544,21 +550,21 @@ test('C2: one payment header cannot buy ticks on two leases; the hash survives a
   try {
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
-    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'payment-signature': pay('0xaaa', '0xn1') })).status, 200);
+    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'payment-signature': pay('0xaaa', '0xe1') })).status, 200);
     const gated = d.gate.length;
     host.calls.length = 0;
-    const r = await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': pay('0xaaa', '0xn1') });
+    const r = await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': pay('0xaaa', '0xe1') });
     assert.equal(r.status, 409);
     assert.deepEqual(await r.json(), { error: 'payment_reused' });
     assert.equal(d.gate.length, gated, 'refused before the gate');
     assert.deepEqual(host.calls, [], 'no host call');
     // The x-payment spelling of the same header is the same payment only if its bytes are; a different one passes.
-    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': pay('0xaaa', '0xn2') })).status, 200);
+    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': pay('0xaaa', '0xe2') })).status, 200);
   } finally {
     d.close();
   }
   const again = new DoorLedger(join(d.dir, 'ledger.json'));
-  assert.equal(again.seenPayment(keyOf('0xaaa', '0xn1')), true);
+  assert.equal(again.hasPayment(keyOf('0xaaa', '0xe1')), true);
 });
 
 test('C2: the hash is added on entering the gate, even when settlement then fails', async () => {
@@ -567,8 +573,8 @@ test('C2: the hash is added on entering the gate, even when settlement then fail
   try {
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
-    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'payment-signature': pay('0xbbb', '0xn3') })).status, 402);
-    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': pay('0xbbb', '0xn3') })).status, 409);
+    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'payment-signature': pay('0xbbb', '0xe3') })).status, 402);
+    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': pay('0xbbb', '0xe3') })).status, 409);
   } finally {
     d.close();
   }
@@ -739,13 +745,167 @@ test('DoorLedger: payment hashes are kept bounded, newest last, and compacted on
   const file = join(dir, 'ledger.json');
   const l = new DoorLedger(file, 3);
   const h = (n: number) => String(n).padStart(64, '0');
-  for (let i = 1; i <= 10; i++) assert.equal(l.seenPayment(h(i)), false);
-  assert.equal(l.seenPayment(h(10)), true);
-  assert.equal(l.seenPayment(h(1)), false, 'a hash past the bound is forgotten');
+  for (let i = 1; i <= 10; i++) {
+    assert.equal(l.hasPayment(h(i)), false);
+    l.addPayment(h(i));
+  }
+  assert.equal(l.hasPayment(h(10)), true);
+  assert.equal(l.hasPayment(h(1)), false, 'a hash past the bound is forgotten');
   const again = new DoorLedger(file, 3);
-  assert.equal(again.seenPayment(h(1)), true);
-  assert.equal(again.seenPayment(h(10)), true);
+  assert.equal(again.hasPayment(h(10)), true);
+  assert.equal(again.hasPayment(h(1)), false);
   assert.ok(readFileSync(`${file}.payments`, 'utf8').split('\n').filter(Boolean).length <= 7, 'file is compacted');
+});
+
+test('DoorLedger.unblock refuses anything that is not a lowercase-able 0x address', () => {
+  const l = new DoorLedger(join(mkdtempSync(join(tmpdir(), 'ledger-')), 'ledger.json'));
+  for (const bad of ['nope', '0xabc', '0x' + 'g'.repeat(40), '0x' + 'a'.repeat(41)]) assert.throws(() => l.unblock(bad, 1), /address/);
+  l.unblock('0x' + 'AB'.repeat(20), 1);
+});
+
+test('R3-1: exactly one of payment-signature and x-payment, non-empty: an empty one beside a reused authorization is 400, not a way around the checks', async () => {
+  const host = fakeHost({ open: counterOpen() });
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    const good = pay('0xaa1', '0xf1');
+    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'payment-signature': good })).status, 200);
+    const gated = d.gate.length;
+    host.calls.length = 0;
+    for (const headers of [
+      { 'payment-signature': '', 'x-payment': good },
+      { 'payment-signature': good, 'x-payment': good },
+      { 'payment-signature': good, 'x-payment': '' },
+      { 'payment-signature': '' },
+      { 'x-payment': '' },
+    ]) {
+      const r = await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, headers);
+      assert.equal(r.status, 400, JSON.stringify(Object.keys(headers)));
+      assert.deepEqual(await r.json(), { error: 'bad_payment' });
+    }
+    assert.equal(d.gate.length, gated);
+    assert.deepEqual(host.calls, []);
+  } finally {
+    d.close();
+  }
+});
+
+test('R3-2: a payload carrying permit2Authorization, or a nonce or address that is not canonical hex, is 400 bad_payment', async () => {
+  const host = fakeHost();
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    host.calls.length = 0;
+    const auth = { from: pad('0xaa', 40), to: pad('2', 40), value: '5000', validAfter: '0', validBefore: '9999999999', nonce: pad('0x1', 64) };
+    const permit2 = { from: pad('0xbb', 40), nonce: pad('0x2', 64), deadline: '9999999999' };
+    for (const payload of [
+      { authorization: auth, permit2Authorization: permit2 },
+      { permit2Authorization: permit2 },
+      { authorization: { ...auth, nonce: 12345 } },
+      { authorization: { ...auth, nonce: '0x1' } },
+      { authorization: { ...auth, nonce: '1'.repeat(64) } },
+      { authorization: { ...auth, from: '0xabc' } },
+    ]) {
+      const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': b64({ x402Version: 2, payload }) });
+      assert.equal(r.status, 400, JSON.stringify(Object.keys(payload)));
+      assert.deepEqual(await r.json(), { error: 'bad_payment' });
+    }
+    assert.deepEqual(d.gate, []);
+    assert.deepEqual(host.calls, []);
+  } finally {
+    d.close();
+  }
+});
+
+test('R3-3: an authorization window that cannot outlast the verify-to-settle gap is 400 authorization_window before the gate', async () => {
+  const host = fakeHost();
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    host.calls.length = 0;
+    const now = nowSeconds();
+    for (const window of [
+      { validBefore: String(now + 40) }, // under maxTimeoutSeconds (60) minus 10
+      { validBefore: String(now - 1) },
+      { validAfter: String(now + 100) }, // not valid yet
+    ]) {
+      const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': pay('0xcc1', '0xf2', 0, window) });
+      assert.equal(r.status, 400, JSON.stringify(window));
+      assert.deepEqual(await r.json(), { error: 'authorization_window' });
+    }
+    assert.deepEqual(d.gate, []);
+    assert.deepEqual(host.calls, []);
+    // The boundary and the usual client shape (valid from 10 minutes ago, 60 s to run) pass.
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': pay('0xcc1', '0xf3', 0, { validBefore: String(now + 50), validAfter: String(now) }) })).status, 200);
+  } finally {
+    d.close();
+  }
+  const d2 = await start(fakeHost());
+  try {
+    await d2.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    const now = nowSeconds();
+    assert.equal((await d2.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': pay('0xcc2', '0xf4', 0, { validAfter: String(now - 600), validBefore: String(now + 60) }) })).status, 200);
+  } finally {
+    d2.close();
+  }
+  const d3 = await start(fakeHost());
+  try {
+    await d3.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    const r = await d3.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': b64({ payload: { authorization: { from: pad('1', 40), nonce: pad('1', 64) } } }) });
+    assert.equal(r.status, 400, 'a window that is not numbers is a bad payment');
+    assert.deepEqual(await r.json(), { error: 'bad_payment' });
+  } finally {
+    d3.close();
+  }
+});
+
+test('R3-6: a verify failure releases the key, so an identical retry is allowed', async () => {
+  const host = fakeHost();
+  let verifies = false;
+  const d = await start(host, { testHooks: { verify: () => verifies } });
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    const h = pay('0xdd1', '0xf5');
+    const first = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': h });
+    assert.equal(first.status, 402);
+    assert.equal(host.calls.filter((c) => c.startsWith('tick')).length, 0);
+    assert.equal(d.ledger.hasPayment(keyOf('0xdd1', '0xf5')), false, 'only a verified key is persisted');
+    verifies = true;
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': h })).status, 200);
+    assert.equal(d.ledger.hasPayment(keyOf('0xdd1', '0xf5')), true);
+  } finally {
+    d.close();
+  }
+});
+
+test('R3-6: concurrent identical authorizations on two leases reach the host once', async () => {
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  let hostTicks = 0;
+  const host = fakeHost({
+    open: counterOpen(),
+    tick: async (_id, index) => {
+      hostTicks++;
+      await held;
+      return { paidIntervals: index + 1, paidThrough: 31_000, duplicate: false };
+    },
+  });
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    const first = d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'payment-signature': pay('0xee1', '0xf6') });
+    while (hostTicks === 0) await new Promise((r) => setTimeout(r, 2));
+    const second = await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': pay('0xee1', '0xf6', 1) });
+    assert.equal(second.status, 409);
+    assert.deepEqual(await second.json(), { error: 'payment_reused' });
+    release();
+    assert.equal((await first).status, 200);
+    assert.equal(hostTicks, 1);
+  } finally {
+    d.close();
+  }
 });
 
 test('N1: one authorization re-encoded two ways on two leases: the second is 409 payment_reused with zero host calls', async () => {
@@ -787,9 +947,12 @@ test('N1: a payment that does not decode to from and nonce is 400 bad_payment be
   }
 });
 
-test('N2: a transient settlement failure is booked but never blocks; a payer-fault one does', async () => {
+test('N2: a transient settlement failure is booked but never blocks; only the exact payer-fault codes do', async () => {
   for (const [reason, blocks, kind] of [
     ['facilitator unreachable', false, 'settle_failed_transient'],
+    ['nonce too low', false, 'settle_failed_transient'],
+    ['invalid_exact_evm_transaction_failed: bad signature from the facilitator wallet', false, 'settle_failed_transient'],
+    ['insufficient funds for gas', false, 'settle_failed_transient'],
     ['invalid_exact_evm_payload_authorization_valid_before', false, 'settle_failed_transient'],
     ['invalid_exact_evm_insufficient_balance', true, 'settle_failed'],
     ['invalid_exact_evm_nonce_already_used', true, 'settle_failed'],
@@ -820,18 +983,16 @@ test('N2: a block lapses 24 h after the loss, and unblock (even from another pro
   try {
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
-    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
-    await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' });
-    assert.equal(d.ledger.payerHasLoss('0xABC', d.clock.t + 23 * 3_600_000), true);
-    assert.equal(d.ledger.payerHasLoss('0xABC', d.clock.t + 24 * 3_600_000 + 1), false, 'lapsed');
-    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' })).status, 403);
+    const ADDR = '0x' + 'ab'.repeat(20);
+    await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'x-test-payer': ADDR });
+    assert.equal(d.ledger.payerHasLoss(ADDR.toUpperCase(), d.clock.t + 23 * 3_600_000), true);
+    assert.equal(d.ledger.payerHasLoss(ADDR, d.clock.t + 24 * 3_600_000 + 1), false, 'lapsed');
+    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': ADDR })).status, 403);
     // The operator command runs in another process: it writes the file the running door re-reads.
-    new DoorLedger(join(d.dir, 'ledger.json')).unblock('0xABC', d.clock.t + 1);
+    new DoorLedger(join(d.dir, 'ledger.json')).unblock(ADDR, d.clock.t + 1);
     d.clock.t += 2;
-    assert.equal(d.ledger.payerHasLoss('0xabc', d.clock.t), false);
-    assert.notEqual((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' })).status, 403);
-    // A later loss blocks again.
-    await d.post(`/v1/leases/${'3'.padStart(32, '0')}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' });
+    assert.equal(d.ledger.payerHasLoss(ADDR, d.clock.t), false);
+    assert.notEqual((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': ADDR })).status, 403);
   } finally {
     d.close();
   }

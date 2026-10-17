@@ -21,6 +21,8 @@ export type Gate = (req: Request, res: Response, next: NextFunction) => Promise<
 export interface TestHooks {
   /** The gate was reached for this lease: a real gate would have asked for payment here. */
   onGate?: (leaseId: string) => void;
+  /** Payment verification. Return false to refuse the payment, as a facilitator would. Default: it verifies. */
+  verify?: (leaseId: string) => boolean;
   /** Settlement, after a 2xx. Throw to make it fail. */
   settle?: (info: { leaseId: string; price: Micro }) => void | Promise<void>;
 }
@@ -32,50 +34,63 @@ export function microToUsdc(m: Micro): string {
   return `${m / UNITS_PER_USDC}.${(m % UNITS_PER_USDC).toString().padStart(6, '0')}`;
 }
 
-interface DecodedPayment {
-  payload?: {
-    authorization?: { from?: unknown; nonce?: unknown };
-    permit2Authorization?: { from?: unknown; nonce?: unknown };
-    from?: unknown;
-  };
+/** What the route allows a payment to take: the middleware's `maxTimeoutSeconds`. */
+export const MAX_TIMEOUT_SECONDS = 60;
+/**
+ * A payment must stay valid this long after the door looks at it. Verify and settle are a tick apart,
+ * and a payer whose authorization lapses between them gets a host tick without paying for it.
+ */
+export const MIN_WINDOW_SECONDS = MAX_TIMEOUT_SECONDS - 10;
+
+export interface PaymentId {
+  from: string;
+  nonce: string;
+  /** Seconds since the epoch. */
+  validAfter: number;
+  validBefore: number;
 }
 
-function paymentHeader(req: Request): string | undefined {
-  return req.get('payment-signature') ?? req.get('x-payment');
-}
+const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+const NONCE = /^0x[0-9a-fA-F]{64}$/;
+const SECONDS = /^\d{1,15}$/;
 
-/** Who signed the x402 payment on this request, when it carried one. Best effort. */
-export function payerOf(req: Request): string | undefined {
-  const h = paymentHeader(req);
-  if (!h) return undefined;
-  try {
-    const p = decodePaymentSignatureHeader(h) as DecodedPayment;
-    const from = p.payload?.authorization?.from ?? p.payload?.from;
-    return typeof from === 'string' ? from : undefined;
-  } catch {
-    return undefined;
-  }
+/**
+ * The payment header the middleware will act on. It reads `payment-signature || x-payment`, so the
+ * door accepts exactly one of the two, non-empty: with both (or an empty one beside the other) the two
+ * could disagree about which authorization is being paid. 'none' when neither is present.
+ */
+function paymentHeader(req: Request): string | 'none' | 'bad' {
+  const sig = req.headers['payment-signature'];
+  const legacy = req.headers['x-payment'];
+  if (sig === undefined && legacy === undefined) return 'none';
+  if (sig !== undefined && legacy !== undefined) return 'bad';
+  const h = sig ?? legacy;
+  return typeof h === 'string' && h !== '' ? h : 'bad';
 }
 
 /**
- * The signed authorization a payment header carries: who signed it and its nonce, lowercased. One
- * authorization can be encoded many ways (key order, whitespace, extra fields), so this, not the
- * header's bytes, is what identifies a payment. 'none' when there is no payment header; 'bad' when
- * it does not decode to both fields.
+ * The EIP-3009 authorization a payment header carries, in canonical form. One authorization can be
+ * encoded many ways (key order, whitespace, extra fields), so this, not the header's bytes, is what
+ * identifies a payment. The door offers EIP-3009 only: a payload that also carries a Permit2 authorization
+ * is refused, since the facilitator might pay on the one the door did not read. 'bad' for anything that
+ * is not exactly that.
  */
-export function paymentIdOf(req: Request): { from: string; nonce: string } | 'none' | 'bad' {
+export function paymentIdOf(req: Request): PaymentId | 'none' | 'bad' {
   const h = paymentHeader(req);
-  if (!h) return 'none';
+  if (h === 'none' || h === 'bad') return h;
   try {
-    const p = decodePaymentSignatureHeader(h) as DecodedPayment | null;
-    const a = p?.payload?.authorization ?? p?.payload?.permit2Authorization;
-    if (typeof a?.from === 'string' && typeof a.nonce === 'string' && a.from !== '' && a.nonce !== '') {
-      return { from: a.from.toLowerCase(), nonce: a.nonce.toLowerCase() };
-    }
+    const p = decodePaymentSignatureHeader(h) as { payload?: Record<string, unknown> } | null;
+    const payload = p?.payload;
+    if (typeof payload !== 'object' || payload === null || 'permit2Authorization' in payload) return 'bad';
+    const a = payload.authorization as Record<string, unknown> | undefined;
+    if (typeof a !== 'object' || a === null) return 'bad';
+    const { from, nonce, validAfter, validBefore } = a;
+    if (typeof from !== 'string' || !ADDRESS.test(from) || typeof nonce !== 'string' || !NONCE.test(nonce)) return 'bad';
+    if (typeof validAfter !== 'string' || !SECONDS.test(validAfter) || typeof validBefore !== 'string' || !SECONDS.test(validBefore)) return 'bad';
+    return { from: from.toLowerCase(), nonce: nonce.toLowerCase(), validAfter: Number(validAfter), validBefore: Number(validBefore) };
   } catch {
-    // falls through
+    return 'bad';
   }
-  return 'bad';
 }
 
 /** The facilitator's reason for a failed settlement, from the PAYMENT-RESPONSE header the failure carried. */
@@ -91,11 +106,19 @@ export function settleReasonOf(res: Response): string | undefined {
 }
 
 /**
- * A settlement failure that is the payer's doing: no balance, a nonce already used, a bad signature.
- * Anything else (the facilitator down, an authorization that expired while the tick waited) is not.
+ * Facilitator reasons that are the payer's doing, by exact code: no balance, a nonce already used, a bad
+ * signature. These are the exact-scheme EVM codes @x402/evm defines for those three meanings. Anything
+ * else (the facilitator down, a facilitator wallet's own "nonce too low", an authorization that expired
+ * while the tick waited) is not, so it never blocks.
  */
+const PAYER_FAULT_REASONS: ReadonlySet<string> = new Set([
+  'invalid_exact_evm_insufficient_balance',
+  'invalid_exact_evm_nonce_already_used',
+  'invalid_exact_evm_signature',
+]);
+
 export function isPayerFault(reason: string | undefined): boolean {
-  return reason !== undefined && /insufficient|nonce|signature/i.test(reason);
+  return reason !== undefined && PAYER_FAULT_REASONS.has(reason);
 }
 
 /** The lease id out of `/v1/leases/<id>/ticks`. */
@@ -117,7 +140,7 @@ export function realGate(cfg: X402Config, priceOf: (leaseId: string) => Micro | 
           scheme: 'exact',
           network: cfg.network,
           payTo: cfg.payTo,
-          maxTimeoutSeconds: 60,
+          maxTimeoutSeconds: MAX_TIMEOUT_SECONDS,
           price: async (ctx) => {
             const price = priceOf(leaseIdOfPath(ctx.path));
             // The route guard has already resolved the lease, so this is a bug, not a user error.
@@ -133,8 +156,8 @@ export function realGate(cfg: X402Config, priceOf: (leaseId: string) => Micro | 
     server,
   );
   return async (req, res, next) => {
-    const payer = payerOf(req);
-    if (payer) res.locals.payer = payer;
+    const id = paymentIdOf(req);
+    if (typeof id === 'object') res.locals.payer = id.from;
     await mw(req, res, next);
   };
 }
@@ -150,6 +173,10 @@ export function stubGate(priceOf: (leaseId: string) => Micro | undefined, hooks:
     hooks.onGate?.(leaseId);
     const payer = req.get('x-test-payer');
     if (payer) res.locals.payer = payer;
+    if (hooks.verify?.(leaseId) === false) {
+      res.status(402).json({ error: 'payment_invalid' });
+      return;
+    }
 
     const end = res.end.bind(res);
     let held: unknown[] = [];
