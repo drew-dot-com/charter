@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { join } from 'node:path';
-import { KeyFileError, ToonClientPayer, serialized, type Payer } from '../payer.js';
+import { ToonClientPayer, serialized } from '../payer.js';
 import { hostApi } from '../tenant/host-api.js';
 import { fetchOffers } from '../tenant/offers.js';
 import { DoorLedger } from './ledger.js';
@@ -22,20 +22,15 @@ async function main(): Promise<void> {
   const dataDir = need(env, 'CHARTER_DATA_DIR');
   const trustProxy = env.CHARTER_DOOR_TRUST_PROXY?.trim();
 
-  // The door's own TOON wallet pays hosts. The key stays in the file the env names, and a failure
-  // here prints a fixed message: nothing the client threw is passed on, in case it quotes the key.
+  // The door's own TOON wallet pays hosts. The key stays in the file the env names. A bad key file
+  // fails with KeyFileError's fixed message; other startup errors carry no key material and print as they are.
   const payerConfig: Parameters<typeof ToonClientPayer.create>[0] = {
     connectorUrl: need(env, 'CHARTER_TOON_CONNECTOR_URL'),
     keyFile: need(env, 'CHARTER_TOON_KEY_FILE'),
     channelStore: need(env, 'CHARTER_TOON_CHANNEL_STORE'),
     chain,
   };
-  let payer: Payer;
-  try {
-    payer = serialized(await ToonClientPayer.create(payerConfig));
-  } catch (e) {
-    throw new Error(e instanceof KeyFileError ? e.message : 'could not start the TOON payer (details withheld)');
-  }
+  const payer = serialized(await ToonClientPayer.create(payerConfig));
 
   const app = doorApp({
     offers: () => fetchOffers(relayUrl, Date.now()),

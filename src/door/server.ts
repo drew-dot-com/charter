@@ -259,6 +259,10 @@ export function doorApp(deps: DoorDeps): express.Express {
     const rec = ledger.get(id)!;
     if (rec.stopped) return void res.status(409).json({ error: 'stopped' });
     if (!offer) return void res.status(503).json({ error: 'offer_unavailable' });
+    // The host already said this lease is over: a tick would only cost the door.
+    const seen = statuses.get(id)?.lease.state;
+    if (seen === 'done') return void res.status(409).json({ error: 'lease_done' });
+    if (seen === 'closed') return void res.status(409).json({ error: 'not_running' });
     if (index !== rec.nextIndex) return void res.status(409).json({ error: 'out_of_order', expected: rec.nextIndex });
     if (ticking.has(id)) return void res.status(409).json({ error: 'busy' });
     const payment = req.get('payment-signature') ?? req.get('x-payment');
@@ -288,7 +292,7 @@ export function doorApp(deps: DoorDeps): express.Express {
         ledger.renterTick(paid.leaseId, res.locals.payer as string | undefined);
       } else {
         // The host has its tick and the renter's payment never settled.
-        ledger.loss(paid.leaseId, paid.price, res.locals.payer as string | undefined);
+        ledger.loss(paid.leaseId, paid.price, 'settle_failed', res.locals.payer as string | undefined);
         ledger.stop(paid.leaseId);
       }
     }
@@ -312,7 +316,7 @@ export function doorApp(deps: DoorDeps): express.Express {
       // A host that answered, even with an error, took the door's money. It will not be paid again.
       const lost = api.spent() - before;
       if (lost > 0n) {
-        ledger.loss(id, lost, payer);
+        ledger.loss(id, lost, 'host_refused', payer);
         ledger.stop(id);
       }
       if (e instanceof HostError && e.status === 409 && (e.error === 'lease_done' || e.error === 'not_running')) {

@@ -15,6 +15,8 @@ export interface DoorLease {
   ticksPaidToHost: number;
   /** Micro-USDC the door paid a host for ticks the renter's payment never settled. */
   losses: Micro;
+  /** Why `losses` is above zero: the renter's payment did not settle, or the host refused the tick the door paid for. */
+  lossKind?: LossKind;
   /** The door will not pay another tick for this lease. */
   stopped: boolean;
   /** Epoch ms. */
@@ -24,6 +26,8 @@ export interface DoorLease {
   /** Paid host status and output calls made for this lease's free reads. */
   hostReads: number;
 }
+
+export type LossKind = 'settle_failed' | 'host_refused';
 
 /** Payment-header hashes kept, newest last. */
 export const MAX_PAYMENTS = 100_000;
@@ -56,7 +60,7 @@ export class DoorLedger {
           nextIndex: s.nextIndex ?? s.ticksPaidToHost,
           hostReads: s.hostReads ?? 0,
         });
-        if (BigInt(s.losses) > 0n && s.payer) this.lossPayers.add(s.payer);
+        if (s.lossKind === 'settle_failed' && s.payer) this.lossPayers.add(s.payer);
       }
     }
     const lines = readIfThere(this.paymentsFile)?.split('\n').filter((l) => /^[0-9a-f]{64}$/.test(l)) ?? [];
@@ -94,14 +98,18 @@ export class DoorLedger {
     });
   }
 
-  /** Money the door paid a host that the renter did not cover. The payer, when known, is blocked from new ticks. */
-  loss(leaseId: string, amount: Micro, payer?: string): void {
+  /**
+   * Money the door paid a host that the renter did not cover. Only a payment that failed to settle
+   * blocks the payer from new ticks; a host that refused the tick is not the payer's doing.
+   */
+  loss(leaseId: string, amount: Micro, kind: LossKind, payer?: string): void {
     this.update(leaseId, (l) => {
       l.losses += amount;
+      l.lossKind = kind;
       const who = payer?.toLowerCase() ?? l.payer;
       if (who) {
         l.payer = who;
-        this.lossPayers.add(who);
+        if (kind === 'settle_failed') this.lossPayers.add(who);
       }
     });
   }

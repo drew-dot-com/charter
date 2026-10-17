@@ -23,7 +23,8 @@ function lease(over: Partial<Lease> = {}): Lease {
 }
 
 /** A scripted HostApi. Each method can be overridden; calls are recorded. */
-function fakeHost(over: Partial<HostApi> = {}, tickFail?: Error) {
+function fakeHost(over: Partial<HostApi> = {}, tickFailure?: Error | ((n: number) => Error | undefined)) {
+  let tickCount = 0;
   const calls: string[] = [];
   let spent: Micro = 0n;
   const opened: Array<{ image: string; args: Record<string, string> }> = [];
@@ -31,6 +32,7 @@ function fakeHost(over: Partial<HostApi> = {}, tickFail?: Error) {
     open: async (job): Promise<OpenResult> => (calls.push('open'), opened.push(job), { leaseId: LEASE, state: 'awaiting_first_tick' }),
     tick: async (_id, index): Promise<TickResult> => {
       calls.push(`tick:${index}`);
+      const tickFail = typeof tickFailure === 'function' ? tickFailure(++tickCount) : tickFailure;
       // As hostApi: a packet the host answered is paid even when the answer is an error.
       if (tickFail instanceof HostError) spent += 5000n;
       if (tickFail) throw tickFail;
@@ -577,6 +579,58 @@ test('I3: a retry of an accepted index, or a skipped one, is 409 out_of_order wi
     assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 1 })).status, 200);
   } finally {
     d.close();
+  }
+});
+
+test('payer block: a loss booked because the host refused a tick does not block the payer on a new lease', async () => {
+  const host = fakeHost({ open: counterOpen() }, (n) => (n === 1 ? new HostError(409, 'lease_done') : undefined));
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    const r = await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'x-test-payer': '0xAbC', 'payment-signature': 'h1' });
+    assert.equal(r.status, 409);
+    const rec = d.ledger.get(LEASE_1)!;
+    assert.equal(rec.losses, 5000n);
+    assert.equal(rec.lossKind, 'host_refused');
+    assert.equal(rec.payer, '0xabc');
+    assert.equal(d.ledger.payerHasLoss('0xabc'), false);
+    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc', 'payment-signature': 'h2' })).status, 200);
+  } finally {
+    d.close();
+  }
+});
+
+test('payer block: a settlement failure is stored as settle_failed', async () => {
+  const d = await start(fakeHost(), { testHooks: { settle: () => { throw new Error('down'); } } });
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' });
+    assert.equal(d.ledger.get(LEASE)!.lossKind, 'settle_failed');
+    assert.equal(new DoorLedger(join(d.dir, 'ledger.json')).payerHasLoss('0xABC'), true, 'the block survives a restart');
+  } finally {
+    d.close();
+  }
+});
+
+test('a tick on a lease whose cached status is done or closed is refused before the gate with zero host calls', async () => {
+  for (const [state, error] of [['done', 'lease_done'], ['closed', 'not_running']] as const) {
+    const host = fakeHost({ status: async () => lease({ state }) });
+    const d = await start(host);
+    try {
+      await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+      await d.get(`/v1/leases/${LEASE}`);
+      host.calls.length = 0;
+      const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 });
+      assert.equal(r.status, 409, state);
+      assert.deepEqual(await r.json(), { error });
+      assert.deepEqual(d.gate, []);
+      assert.deepEqual(host.calls, []);
+      assert.equal(d.ledger.get(LEASE)!.losses, 0n);
+      assert.equal(d.ledger.get(LEASE)!.stopped, false);
+    } finally {
+      d.close();
+    }
   }
 });
 
