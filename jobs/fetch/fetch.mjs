@@ -4,6 +4,7 @@
 import { chromium } from 'playwright';
 import { writeFile } from 'node:fs/promises';
 import { checkUrl } from './guard.mjs';
+import { chromiumArgs } from './launch.mjs';
 
 const MAX_URLS = 5;
 const MAX_TEXT_BYTES = 32 * 1024;
@@ -34,7 +35,7 @@ async function main() {
 
   const proxy = process.env.CHARTER_PROXY;
   const browser = await chromium.launch({
-    args: ['--disable-dev-shm-usage'],
+    args: chromiumArgs(),
     ...(proxy ? { proxy: { server: proxy } } : {}),
   });
   try {

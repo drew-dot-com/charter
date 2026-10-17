@@ -84,6 +84,9 @@ export function dockerRunner(opts: {
         '--pids-limit', '256',
         '--read-only',
         '--tmpfs', '/tmp',
+        // No Linux capabilities, and no setuid path back to any.
+        '--cap-drop', 'ALL',
+        '--security-opt', 'no-new-privileges',
         '-v', `${out}:/out`,
       ];
       if (proxy) {

@@ -54,6 +54,9 @@ test('F-C3: create emits docker create (nothing runs yet) with the limits, the o
   has('--pids-limit', '256');
   has('--read-only');
   has('--tmpfs', '/tmp');
+  // F-C4: no capabilities, and nothing in the container can gain more.
+  has('--cap-drop', 'ALL');
+  has('--security-opt', 'no-new-privileges');
   has('-v', `${join(root, 'l1')}:/out`);
   has('-e', 'URLS=https://example.com,https://example.org');
   assert.equal(a[a.length - 1], 'charter-job-fetch');
