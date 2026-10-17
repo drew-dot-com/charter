@@ -1,0 +1,39 @@
+# charter-door on Drew's node (Hetzner). Nothing is host-published: the door
+# joins the node's network so Caddy reaches it as http://charter-door:3701.
+#
+# CHARTER_DOOR_HOME (default /root/charter-door), owned by uid 1000 (the image's
+# `node` user), mode 700:
+#   door.env          CHARTER_PAY_TO and CHARTER_DOOR_HOSTS (door.env.example)
+#   data/             the ledger, the TOON channel store, cached output
+#   secrets/          toon-payer.json (0400, from new-payer-key.mjs), rpc-url (0400)
+#
+# Losing data/channels.json strands the live channel's deposit: back it up.
+services:
+  charter-door:
+    build:
+      context: ../..
+      dockerfile: deploy/door/Dockerfile
+    image: charter-door:local
+    container_name: charter-door
+    env_file: ${CHARTER_DOOR_HOME:-/root/charter-door}/door.env
+    environment:
+      CHARTER_DOOR_HOST: 0.0.0.0
+      CHARTER_DOOR_PORT: '3701'
+      CHARTER_DOOR_TRUST_PROXY: '1'
+      CHARTER_DATA_DIR: /data
+      CHARTER_RELAY_URL: wss://relay.mainnet.toonprotocol.dev
+      CHARTER_TOON_CONNECTOR_URL: https://connector.mainnet.toonprotocol.dev
+      CHARTER_TOON_CHAIN: solana
+      CHARTER_TOON_KEY_FILE: /secrets/toon-payer.json
+      CHARTER_TOON_RPC_URL_FILE: /secrets/rpc-url
+      CHARTER_TOON_CHANNEL_STORE: /data/channels.json
+    volumes:
+      - ${CHARTER_DOOR_HOME:-/root/charter-door}/data:/data
+      - ${CHARTER_DOOR_HOME:-/root/charter-door}/secrets:/secrets:ro
+    expose: ['3701']
+    networks: [relay_deploy_net]
+    restart: unless-stopped
+
+networks:
+  relay_deploy_net:
+    external: true

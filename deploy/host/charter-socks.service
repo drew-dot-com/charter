@@ -1,0 +1,16 @@
+# systemd --user unit: job containers reach the toon node's Anyone SOCKS port at
+# 172.17.0.1:9150. The node's own port is loopback only and moves at every
+# `toon up`, so each connection reads the current port (charter-socks-connect).
+# Needs socat. Install beside charter-host.service; set CHARTER_PROXY=socks5://172.17.0.1:9150.
+[Unit]
+Description=Charter job egress: docker0 to the toon node's Anyone SOCKS port
+After=docker.service
+
+[Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/socat TCP-LISTEN:9150,bind=172.17.0.1,fork,reuseaddr EXEC:%h/.local/bin/charter-socks-connect
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

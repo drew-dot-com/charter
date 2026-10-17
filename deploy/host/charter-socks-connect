@@ -1,0 +1,8 @@
+#!/bin/sh
+# One SOCKS connection from a job container, joined to the toon node's Anyone
+# SOCKS port as it is right now (it changes at every `toon up`).
+set -eu
+rc="$HOME/.toon/agent-node/overlay/anonrc"
+port=$(sed -n 's/^SocksPort 127\.0\.0\.1:\([0-9][0-9]*\).*/\1/p' "$rc" | head -n 1)
+[ -n "$port" ] || { echo "charter-socks-connect: no SocksPort in $rc" >&2; exit 1; }
+exec socat STDIO "TCP:127.0.0.1:$port"

@@ -1,0 +1,11 @@
+# Append to /opt/toon-relay/deploy/Caddyfile. It is a read-only single-file
+# bind mount: back it up, write in place (cat new > Caddyfile, never sed -i),
+# then docker cp it to deploy-caddy-1:/tmp/Caddyfile and
+# caddy reload --config /tmp/Caddyfile. The door is on relay_deploy_net.
+charter.167-233-221-236.sslip.io {
+	encode zstd gzip
+	request_body {
+		max_size 64KB
+	}
+	reverse_proxy charter-door:3701
+}
