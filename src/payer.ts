@@ -137,6 +137,9 @@ export class SendTimeoutError extends Error {
   }
 }
 
+/** How long past a send's deadline `serialized` waits before giving up on it. */
+export const WRAPPER_GRACE_MS = 2_000;
+
 export interface SerializedOpts {
   /** Per send. Default 45 s. */
   timeoutMs?: number;
@@ -150,8 +153,8 @@ export interface SerializedOpts {
 /**
  * One `send` in flight at a time: a channel voucher names the running total, so two at once would race
  * it. Sends with `priority: 'high'` (ticks) go before any waiting normal send (reads); within a class it is
- * first in, first out. A send that does not answer within the timeout (or by its deadline, when that is
- * sooner) is rejected with SendTimeoutError and the queue moves on. A send whose deadline came too close
+ * first in, first out. A send that does not answer within the timeout (or WRAPPER_GRACE_MS past its deadline,
+ * when that is sooner) is rejected with SendTimeoutError and the queue moves on. A send whose deadline came too close
  * while it waited is rejected with DeadlinePassedError when its turn comes, without being sent.
  */
 export function serialized(p: Payer, o: SerializedOpts = {}): Payer {
@@ -189,9 +192,10 @@ export function serialized(p: Payer, o: SerializedOpts = {}): Payer {
               settle();
               done();
             };
-            // A send with a deadline is given up on by then, even when the client's own work before the
-            // packet (a channel open, a describe) is not bounded by its timeout.
-            const ms = opts.deadline === undefined ? timeoutMs : Math.min(timeoutMs, Math.max(0, opts.deadline - now()));
+            // A send with a deadline is given up on just after it, even when the client's own work before the
+            // packet (a channel open, a describe) is not bounded by its timeout. The client's own timeout ends
+            // at the deadline; this fires WRAPPER_GRACE_MS later, so the client unwinds its claim state first.
+            const ms = opts.deadline === undefined ? timeoutMs : Math.min(timeoutMs, Math.max(0, opts.deadline - now()) + WRAPPER_GRACE_MS);
             const timer = setTimer(() => end(() => reject(new SendTimeoutError())), ms);
             let sent: Promise<PacketAnswer>;
             try {

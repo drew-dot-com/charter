@@ -287,7 +287,7 @@ test('R4: serialized skips a send whose deadline passed while it waited, without
   assert.deepEqual(order, ['first', 'fine', 'after'], 'past its deadline, or under 5 s before it, a send is skipped');
 });
 
-test('F-I4: serialized times a send with a deadline at min(45 s, deadline - now), so a hung send frees the queue by its deadline', async () => {
+test('F-I4: serialized times a send with a deadline at min(45 s, deadline - now + 2 s), so a hung send frees the queue just after its deadline and the client times out first', async () => {
   const clock = { t: 1_000_000 };
   const timers: number[] = [];
   const inner: Payer = { send: async () => ({ status: 200, body: 'ok', paid: 1n }) };
@@ -297,7 +297,8 @@ test('F-I4: serialized times a send with a deadline at min(45 s, deadline - now)
   await send();
   await send(clock.t + 30_000);
   await send(clock.t + 100_000);
-  assert.deepEqual(timers, [45_000, 30_000, 45_000]);
+  await send(clock.t + 43_500);
+  assert.deepEqual(timers, [45_000, 32_000, 45_000, 45_000]);
 });
 
 test('F-I4: ToonClientPayer reports channel headroom as deposit minus signed (undefined with no channel), and warm opens the channel', async () => {
