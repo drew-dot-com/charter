@@ -18,11 +18,16 @@
   },
   "homepage": "https://github.com/drew-dot-com/charter#readme",
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^26.6.5",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "@toon-protocol/client": "^4.2.0"
+    "@toon-protocol/client": "^4.2.0",
+    "express": "^5.3.0"
+  },
+  "bin": {
+    "charter-host": "dist/host/main.js"
   }
 }
