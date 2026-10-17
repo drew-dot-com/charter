@@ -84,6 +84,13 @@ export interface ToonClientPayerConfig {
 /** The slice of ToonClient this payer uses. */
 export interface SendClient {
   send(destination: string, request?: SendRequest, options?: SendOptions): Promise<SendResult>;
+  /** `GET /ilp` of the connector, cached by the client. */
+  describe?(): Promise<unknown>;
+  /** The client's x402 channel with the connector. */
+  channel?: {
+    current(): Promise<{ depositTotal: bigint; signed: bigint } | undefined>;
+    open(): Promise<unknown>;
+  };
 }
 
 export interface ToonClientPayerDeps {
@@ -143,9 +150,9 @@ export interface SerializedOpts {
 /**
  * One `send` in flight at a time: a channel voucher names the running total, so two at once would race
  * it. Sends with `priority: 'high'` (ticks) go before any waiting normal send (reads); within a class it is
- * first in, first out. A send that does not answer within the timeout is rejected with SendTimeoutError
- * and the queue moves on. A send whose deadline came too close while it waited is rejected with
- * DeadlinePassedError when its turn comes, without being sent.
+ * first in, first out. A send that does not answer within the timeout (or by its deadline, when that is
+ * sooner) is rejected with SendTimeoutError and the queue moves on. A send whose deadline came too close
+ * while it waited is rejected with DeadlinePassedError when its turn comes, without being sent.
  */
 export function serialized(p: Payer, o: SerializedOpts = {}): Payer {
   const timeoutMs = o.timeoutMs ?? 45_000;
@@ -182,7 +189,10 @@ export function serialized(p: Payer, o: SerializedOpts = {}): Payer {
               settle();
               done();
             };
-            const timer = setTimer(() => end(() => reject(new SendTimeoutError())), timeoutMs);
+            // A send with a deadline is given up on by then, even when the client's own work before the
+            // packet (a channel open, a describe) is not bounded by its timeout.
+            const ms = opts.deadline === undefined ? timeoutMs : Math.min(timeoutMs, Math.max(0, opts.deadline - now()));
+            const timer = setTimer(() => end(() => reject(new SendTimeoutError())), ms);
             let sent: Promise<PacketAnswer>;
             try {
               sent = p.send(dest, req, opts);
@@ -244,6 +254,24 @@ export class ToonClientPayer implements Payer {
     };
     const client = await (deps.createClient ?? ((c) => ToonClient.create(c)))(config);
     return new ToonClientPayer(client, deps.now ?? Date.now);
+  }
+
+  /**
+   * Micro-USDC the open x402 channel can still pay, as the client records it (deposit minus what it has
+   * signed), or undefined when no channel is open. No chain read.
+   */
+  async headroom(): Promise<Micro | undefined> {
+    if (!this.client.channel) throw new Error('this TOON client exposes no channel state');
+    const s = await this.client.channel.current();
+    if (!s) return undefined;
+    return s.depositTotal > s.signed ? s.depositTotal - s.signed : 0n;
+  }
+
+  /** Reads the connector's self-description and opens the channel (or finds the open one), so the first tick does not. */
+  async warm(): Promise<void> {
+    if (!this.client.describe || !this.client.channel) throw new Error('this TOON client cannot open a channel ahead of a send');
+    await this.client.describe();
+    await this.client.channel.open();
   }
 
   async send(dest: string, req: PacketRequest, opts: SendOpts): Promise<PacketAnswer> {

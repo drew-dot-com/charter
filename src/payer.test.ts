@@ -286,3 +286,48 @@ test('R4: serialized skips a send whose deadline passed while it waited, without
   await first;
   assert.deepEqual(order, ['first', 'fine', 'after'], 'past its deadline, or under 5 s before it, a send is skipped');
 });
+
+test('F-I4: serialized times a send with a deadline at min(45 s, deadline - now), so a hung send frees the queue by its deadline', async () => {
+  const clock = { t: 1_000_000 };
+  const timers: number[] = [];
+  const inner: Payer = { send: async () => ({ status: 200, body: 'ok', paid: 1n }) };
+  const p = serialized(inner, { now: () => clock.t, setTimer: (_fn, ms) => (timers.push(ms), {}), clearTimer: () => undefined });
+  const send = (deadline?: number) =>
+    p.send('d', { method: 'POST', path: '/x' }, { sealKey: 's', sealUrl: 'u', amount: 1n, ...(deadline === undefined ? {} : { deadline }) });
+  await send();
+  await send(clock.t + 30_000);
+  await send(clock.t + 100_000);
+  assert.deepEqual(timers, [45_000, 30_000, 45_000]);
+});
+
+test('F-I4: ToonClientPayer reports channel headroom as deposit minus signed (undefined with no channel), and warm opens the channel', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'charter-payer-'));
+  try {
+    const keyFile = join(dir, 'sol.json');
+    writeFileSync(keyFile, JSON.stringify(Array.from({ length: 64 }, (_, i) => i)));
+    let current: { depositTotal: bigint; signed: bigint } | undefined;
+    const calls: string[] = [];
+    const client = {
+      send: async () => { throw new Error('unused'); },
+      describe: async () => (calls.push('describe'), {}),
+      channel: {
+        current: async () => current,
+        open: async () => (calls.push('open'), (current = { depositTotal: 2_000_000n, signed: 0n })),
+      },
+    };
+    const payer = await ToonClientPayer.create(
+      { connectorUrl: 'https://c.example', keyFile, channelStore: join(dir, 's.json'), chain: 'solana' },
+      { createClient: async () => client as never },
+    );
+    assert.equal(await payer.headroom(), undefined);
+    await payer.warm();
+    assert.deepEqual(calls, ['describe', 'open']);
+    assert.equal(await payer.headroom(), 2_000_000n);
+    current = { depositTotal: 2_000_000n, signed: 1_990_000n };
+    assert.equal(await payer.headroom(), 10_000n);
+    current = { depositTotal: 1_000n, signed: 2_000n };
+    assert.equal(await payer.headroom(), 0n);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
