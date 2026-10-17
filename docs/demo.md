@@ -132,17 +132,28 @@ EIP-6963. With a door fee of 0 the door carries the open and the reads, 1600 on 
 
 ## 6. Edison's tool (gate 4)
 
-- [ ] Install the plugin from hermes-toon branch `charter-tool` (push it first), with a pty:
+- [x] Install the plugin from hermes-toon branch `charter-tool` (push it first), with a pty:
   `yes y | script -q /dev/null hermes plugins install --force --enable 'https://github.com/drew-dot-com/hermes-toon#src/charter_tool'`.
   Add `charter` to `platform_toolsets` for telegram and discord.
-- [ ] `CHARTER_ALLOWED_IDS=telegram:<Drew's id>,discord:<Drew's id>` in `~/.hermes/.env`. Nobody else.
-- [ ] Into the `toon` VM: `limactl copy src/charter_tool/vm/charter-bridge toon:~/bin/charter-bridge`
+- [x] `CHARTER_ALLOWED_IDS=telegram:<Drew's id>,discord:<Drew's id>` in `~/.hermes/.env`. Nobody else.
+- [x] Into the `toon` VM: `limactl copy src/charter_tool/vm/charter-bridge toon:~/bin/charter-bridge`
   (mode 700) and `~/.config/charter/bridge.env` with `TOON_PASSPHRASE_FILE`, `CHARTER_OFFER_ID`,
   `CHARTER_RELAY_URL` only. The bridge caps 5 leases a UTC day and 6 intervals each.
-- [ ] Restart the gateway (`launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway`).
+- [x] Restart the gateway (`launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway`).
 - [ ] Check: a non-allowed account asking Edison to rent is refused before anything runs (no new
   counter file in `~/.charter-bridge/`, no lease on the host). Then Drew asks for one real rent and
   it comes back `done` through the bridge, with its minimal env.
+
+Done 2026-10-17 (gate 4): installed the way `toon-node` was, by copying hermes-toon `28d8fff`
+`src/charter_tool` to `~/.hermes/plugins/charter-tool` (no push needed), `hermes plugins enable
+charter-tool`, `charter` added to `platform_toolsets.telegram` and `.discord` (backups
+`config.yaml.bak-20261017-precharter`, `.env.bak-20261017-precharter`). Allowed:
+`telegram:6082398535,discord:1001391808925925438`. Bridge `~/bin/charter-bridge` (700) and
+`bridge.env` (600) in the `toon` VM. Refusal smoke test: the installed `charter_rent`, called under
+Hermes' own session context as Jonathan's and Jim's Discord ids, a stranger's Telegram id, an empty id,
+and Drew's Telegram id on Discord, refused every one before the bridge (a tripwire on `subprocess.run`
+never fired, and the VM has no `~/.charter-bridge`). Drew's two ids reached the bridge. Not yet done:
+a real rent through Edison from chat, and a refusal from a second real account.
 
 ## Operating the door
 
