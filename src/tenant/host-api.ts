@@ -49,7 +49,7 @@ export function hostApi(p: Payer, o: Offer): HostApi {
   let spent: Micro = 0n;
 
   async function call(app: 'open' | 'tick' | 'status', amount: Micro, req: PacketRequest): Promise<unknown> {
-    const a: PacketAnswer = await p.send(`${o.ilpBase}.charter-${app}`, req, { sealKey: o.sealKey, amount });
+    const a: PacketAnswer = await p.send(`${o.ilpBase}.charter-${app}`, req, { sealKey: o.sealKey, amount, ...(app === 'tick' ? { priority: 'high' as const } : {}) });
     spent += a.paid;
     if (a.status < 200 || a.status >= 300) {
       const e = (a.body as { error?: unknown } | null)?.error;

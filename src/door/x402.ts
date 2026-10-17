@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import { HTTPFacilitatorClient } from '@x402/core/server';
-import { decodePaymentSignatureHeader } from '@x402/core/http';
+import { decodePaymentResponseHeader, decodePaymentSignatureHeader } from '@x402/core/http';
 import { ExactEvmScheme } from '@x402/evm/exact/server';
 import { paymentMiddleware, x402ResourceServer } from '@x402/express';
 import type { Micro } from '../types.js';
@@ -32,17 +32,70 @@ export function microToUsdc(m: Micro): string {
   return `${m / UNITS_PER_USDC}.${(m % UNITS_PER_USDC).toString().padStart(6, '0')}`;
 }
 
+interface DecodedPayment {
+  payload?: {
+    authorization?: { from?: unknown; nonce?: unknown };
+    permit2Authorization?: { from?: unknown; nonce?: unknown };
+    from?: unknown;
+  };
+}
+
+function paymentHeader(req: Request): string | undefined {
+  return req.get('payment-signature') ?? req.get('x-payment');
+}
+
 /** Who signed the x402 payment on this request, when it carried one. Best effort. */
 export function payerOf(req: Request): string | undefined {
-  const h = req.get('payment-signature') ?? req.get('x-payment');
+  const h = paymentHeader(req);
   if (!h) return undefined;
   try {
-    const p = decodePaymentSignatureHeader(h) as { payload?: { authorization?: { from?: unknown }; from?: unknown } };
+    const p = decodePaymentSignatureHeader(h) as DecodedPayment;
     const from = p.payload?.authorization?.from ?? p.payload?.from;
     return typeof from === 'string' ? from : undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The signed authorization a payment header carries: who signed it and its nonce, lowercased. One
+ * authorization can be encoded many ways (key order, whitespace, extra fields), so this, not the
+ * header's bytes, is what identifies a payment. 'none' when there is no payment header; 'bad' when
+ * it does not decode to both fields.
+ */
+export function paymentIdOf(req: Request): { from: string; nonce: string } | 'none' | 'bad' {
+  const h = paymentHeader(req);
+  if (!h) return 'none';
+  try {
+    const p = decodePaymentSignatureHeader(h) as DecodedPayment | null;
+    const a = p?.payload?.authorization ?? p?.payload?.permit2Authorization;
+    if (typeof a?.from === 'string' && typeof a.nonce === 'string' && a.from !== '' && a.nonce !== '') {
+      return { from: a.from.toLowerCase(), nonce: a.nonce.toLowerCase() };
+    }
+  } catch {
+    // falls through
+  }
+  return 'bad';
+}
+
+/** The facilitator's reason for a failed settlement, from the PAYMENT-RESPONSE header the failure carried. */
+export function settleReasonOf(res: Response): string | undefined {
+  const h = res.getHeader('payment-response');
+  if (typeof h !== 'string') return undefined;
+  try {
+    const r = decodePaymentResponseHeader(h) as { errorReason?: unknown };
+    return typeof r.errorReason === 'string' ? r.errorReason : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A settlement failure that is the payer's doing: no balance, a nonce already used, a bad signature.
+ * Anything else (the facilitator down, an authorization that expired while the tick waited) is not.
+ */
+export function isPayerFault(reason: string | undefined): boolean {
+  return reason !== undefined && /insufficient|nonce|signature/i.test(reason);
 }
 
 /** The lease id out of `/v1/leases/<id>/ticks`. */
@@ -114,7 +167,10 @@ export function stubGate(priceOf: (leaseId: string) => Micro | undefined, hooks:
     if (res.statusCode >= 200 && res.statusCode < 300) {
       try {
         await hooks.settle?.({ leaseId, price: priceOf(leaseId) ?? 0n });
-      } catch {
+      } catch (e) {
+        // As the real middleware: the reason travels in PAYMENT-RESPONSE.
+        const errorReason = e instanceof Error ? e.message : 'Settlement failed';
+        res.setHeader('PAYMENT-RESPONSE', Buffer.from(JSON.stringify({ success: false, errorReason })).toString('base64'));
         res.status(402).json({ error: 'settlement_failed' });
         return;
       }

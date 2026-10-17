@@ -6,8 +6,9 @@ import express from 'express';
 import { HostError, type HostApi } from '../tenant/host-api.js';
 import { findOfferExact } from '../tenant/offers.js';
 import type { Lease, Micro, Offer } from '../types.js';
-import type { DoorLedger } from './ledger.js';
-import { realGate, stubGate, type Gate, type TestHooks, type X402Config } from './x402.js';
+import { SendTimeoutError } from '../payer.js';
+import type { DoorLedger, LossKind } from './ledger.js';
+import { isPayerFault, paymentIdOf, realGate, settleReasonOf, stubGate, type Gate, type TestHooks, type X402Config } from './x402.js';
 
 export interface DoorDeps {
   /** Live offers. The door caches the answer for 60 s. */
@@ -79,6 +80,7 @@ function isUrl(v: unknown): v is string {
 
 /** A host's error text, kept short: it is shown to a stranger. */
 function hostMessage(e: unknown): string {
+  if (e instanceof SendTimeoutError) return 'host_timeout';
   return e instanceof HostError ? e.error.slice(0, 64) : 'host_unreachable';
 }
 
@@ -265,8 +267,10 @@ export function doorApp(deps: DoorDeps): express.Express {
     if (seen === 'closed') return void res.status(409).json({ error: 'not_running' });
     if (index !== rec.nextIndex) return void res.status(409).json({ error: 'out_of_order', expected: rec.nextIndex });
     if (ticking.has(id)) return void res.status(409).json({ error: 'busy' });
-    const payment = req.get('payment-signature') ?? req.get('x-payment');
-    if (payment && ledger.seenPayment(createHash('sha256').update(payment).digest('hex'))) {
+    // A payment is the authorization it carries, not the bytes of the header that carries it.
+    const payment = paymentIdOf(req);
+    if (payment === 'bad') return void res.status(400).json({ error: 'bad_payment' });
+    if (payment !== 'none' && ledger.seenPayment(createHash('sha256').update(`${payment.from}:${payment.nonce}`).digest('hex'))) {
       return void res.status(409).json({ error: 'payment_reused' });
     }
     ticking.add(id);
@@ -291,8 +295,9 @@ export function doorApp(deps: DoorDeps): express.Express {
       if (!failure && res.statusCode >= 200 && res.statusCode < 300) {
         ledger.renterTick(paid.leaseId, res.locals.payer as string | undefined);
       } else {
-        // The host has its tick and the renter's payment never settled.
-        ledger.loss(paid.leaseId, paid.price, 'settle_failed', res.locals.payer as string | undefined);
+        // The host has its tick and the renter's payment never settled. Only the payer's own fault counts against them.
+        const kind: LossKind = !failure && isPayerFault(settleReasonOf(res)) ? 'settle_failed' : 'settle_failed_transient';
+        ledger.loss(paid.leaseId, paid.price, kind, now(), res.locals.payer as string | undefined);
         ledger.stop(paid.leaseId);
       }
     }
@@ -304,7 +309,7 @@ export function doorApp(deps: DoorDeps): express.Express {
     const offer = res.locals.offer as Offer;
     const payer = res.locals.payer as string | undefined;
     // The payment has verified, so the payer is known. One that cost the door before does not cost it again.
-    if (payer && ledger.payerHasLoss(payer)) return void res.status(403).json({ error: 'payer_blocked' });
+    if (payer && ledger.payerHasLoss(payer, now())) return void res.status(403).json({ error: 'payer_blocked' });
     const api = deps.api(offer);
     const before = api.spent();
     try {
@@ -314,9 +319,10 @@ export function doorApp(deps: DoorDeps): express.Express {
       res.status(200).json(t);
     } catch (e) {
       // A host that answered, even with an error, took the door's money. It will not be paid again.
-      const lost = api.spent() - before;
+      // A send that timed out may have been paid, though nothing was counted.
+      const lost = e instanceof SendTimeoutError ? offer.tickPrice : api.spent() - before;
       if (lost > 0n) {
-        ledger.loss(id, lost, 'host_refused', payer);
+        ledger.loss(id, lost, 'host_refused', now(), payer);
         ledger.stop(id);
       }
       if (e instanceof HostError && e.status === 409 && (e.error === 'lease_done' || e.error === 'not_running')) {

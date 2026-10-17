@@ -3,8 +3,9 @@ import { join } from 'node:path';
 import { ToonClientPayer, serialized } from '../payer.js';
 import { hostApi } from '../tenant/host-api.js';
 import { fetchOffers } from '../tenant/offers.js';
-import { DoorLedger } from './ledger.js';
+import { DoorLedger, LEDGER_FILE } from './ledger.js';
 import { doorApp } from './server.js';
+import { unblockCommand } from './unblock.js';
 
 function need(env: NodeJS.ProcessEnv, name: string): string {
   const v = env[name]?.trim();
@@ -35,7 +36,7 @@ async function main(): Promise<void> {
   const app = doorApp({
     offers: () => fetchOffers(relayUrl, Date.now()),
     api: (o) => hostApi(payer, o),
-    ledger: new DoorLedger(join(dataDir, 'door-ledger.json')),
+    ledger: new DoorLedger(join(dataDir, LEDGER_FILE)),
     dataDir,
     x402: {
       payTo: need(env, 'CHARTER_PAY_TO'),
@@ -55,6 +56,10 @@ async function main(): Promise<void> {
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);
   });
+}
+
+if (process.argv[2] === 'unblock') {
+  process.exit(unblockCommand(process.argv.slice(3), process.env, Date.now, (m) => console.log(m)));
 }
 
 main().then(

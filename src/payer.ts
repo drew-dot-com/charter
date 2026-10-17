@@ -25,7 +25,7 @@ export interface Payer {
    * compatibility). A packet the app never answers is a thrown error, not a
    * `PacketAnswer`.
    */
-  send(dest: string, req: PacketRequest, opts: { sealKey: string; amount: Micro }): Promise<PacketAnswer>;
+  send(dest: string, req: PacketRequest, opts: { sealKey: string; amount: Micro; priority?: 'high' }): Promise<PacketAnswer>;
 }
 
 /** The path as a ToonClient envelope target: no leading slash. (The CLI takes it as given.) */
@@ -85,17 +85,73 @@ export class KeyFileError extends Error {
   }
 }
 
-/** One `send` in flight at a time, in call order: a channel voucher names the running total, so two at once would race it. */
-export function serialized(p: Payer): Payer {
-  let tail: Promise<unknown> = Promise.resolve();
+/** A send that got no answer in time. The packet may or may not have been paid. */
+export class SendTimeoutError extends Error {
+  constructor() {
+    super('send timed out');
+    this.name = 'SendTimeoutError';
+  }
+}
+
+export interface SerializedOpts {
+  /** Per send. Default 45 s. */
+  timeoutMs?: number;
+  /** Timer functions, replaceable in tests. */
+  setTimer?: (fn: () => void, ms: number) => unknown;
+  clearTimer?: (handle: unknown) => void;
+}
+
+/**
+ * One `send` in flight at a time: a channel voucher names the running total, so two at once would race
+ * it. Sends with `priority: 'high'` (ticks) go before any waiting normal send (reads); within a class it is
+ * first in, first out. A send that does not answer within the timeout is rejected with SendTimeoutError
+ * and the queue moves on.
+ */
+export function serialized(p: Payer, o: SerializedOpts = {}): Payer {
+  const timeoutMs = o.timeoutMs ?? 45_000;
+  const setTimer = o.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
+  const clearTimer = o.clearTimer ?? ((h) => clearTimeout(h as NodeJS.Timeout));
+  const high: Array<() => Promise<void>> = [];
+  const normal: Array<() => Promise<void>> = [];
+  let running = false;
+  const pump = (): void => {
+    if (running) return;
+    const job = high.shift() ?? normal.shift();
+    if (!job) return;
+    running = true;
+    void job().then(() => {
+      running = false;
+      pump();
+    });
+  };
   return {
     send(dest, req, opts) {
-      const run = tail.then(() => p.send(dest, req, opts));
-      tail = run.then(
-        () => undefined,
-        () => undefined,
-      );
-      return run;
+      return new Promise((resolve, reject) => {
+        const job = () =>
+          new Promise<void>((done) => {
+            let over = false;
+            const end = (settle: () => void) => {
+              if (over) return;
+              over = true;
+              clearTimer(timer);
+              settle();
+              done();
+            };
+            const timer = setTimer(() => end(() => reject(new SendTimeoutError())), timeoutMs);
+            let sent: Promise<PacketAnswer>;
+            try {
+              sent = p.send(dest, req, opts);
+            } catch (e) {
+              sent = Promise.reject(e);
+            }
+            sent.then(
+              (v) => end(() => resolve(v)),
+              (e) => end(() => reject(e)),
+            );
+          });
+        (opts.priority === 'high' ? high : normal).push(job);
+        pump();
+      });
     },
   };
 }

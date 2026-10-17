@@ -10,6 +10,19 @@ import { OFFER } from '../tenant/test-host.js';
 import type { Lease, Micro, Offer } from '../types.js';
 import { DoorLedger } from './ledger.js';
 import { doorApp, type DoorDeps } from './server.js';
+import * as payerMod from '../payer.js';
+
+
+const b64 = (o: unknown, pretty = false) => Buffer.from(JSON.stringify(o, null, pretty ? 2 : undefined)).toString('base64');
+/** A payment header carrying one EIP-3009 authorization. `variant` 1 re-encodes the same authorization: other key order, whitespace, an extra field. */
+function pay(from: string, nonce: string, variant: 0 | 1 = 0): string {
+  const auth = { from, to: '0x' + '2'.repeat(40), value: '5000', validAfter: '0', validBefore: '9999999999', nonce };
+  if (variant === 0) return b64({ x402Version: 2, payload: { authorization: auth, signature: '0xsig' } });
+  const { nonce: n, from: f, ...rest } = auth;
+  return b64({ extra: { note: 'x' }, payload: { signature: '0xsig', authorization: { nonce: n.toUpperCase().replace('0X', '0x'), ...rest, from: f.toUpperCase().replace('0X', '0x') } }, x402Version: 2 }, true);
+}
+const PAYER_FAULT = 'invalid_exact_evm_insufficient_balance';
+const keyOf = (from: string, nonce: string) => createHash('sha256').update(`${from.toLowerCase()}:${nonce.toLowerCase()}`).digest('hex');
 
 const OFFER_ID = `${OFFER.hostPubkey}:${OFFER.id}`;
 const LEASE = 'a'.repeat(32);
@@ -509,9 +522,9 @@ test('C2: two concurrent ticks on one lease reach the host once; the second is 4
   const d = await start(host);
   try {
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
-    const first = d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': 'sig-a' });
+    const first = d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': pay('0xa1', '0x01') });
     while (hostTicks === 0) await new Promise((r) => setTimeout(r, 2));
-    const second = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': 'sig-b' });
+    const second = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': pay('0xa2', '0x02') });
     assert.equal(second.status, 409);
     assert.deepEqual(await second.json(), { error: 'busy' });
     assert.equal(d.gate.length, 1, 'the second never reached the gate');
@@ -519,7 +532,7 @@ test('C2: two concurrent ticks on one lease reach the host once; the second is 4
     assert.equal((await first).status, 200);
     assert.equal(hostTicks, 1);
     // The lease is free again afterwards.
-    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 1 }, { 'payment-signature': 'sig-c' })).status, 200);
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 1 }, { 'payment-signature': pay('0xa3', '0x03') })).status, 200);
   } finally {
     d.close();
   }
@@ -531,21 +544,21 @@ test('C2: one payment header cannot buy ticks on two leases; the hash survives a
   try {
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
-    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'payment-signature': 'same-sig' })).status, 200);
+    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'payment-signature': pay('0xaaa', '0xn1') })).status, 200);
     const gated = d.gate.length;
     host.calls.length = 0;
-    const r = await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': 'same-sig' });
+    const r = await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': pay('0xaaa', '0xn1') });
     assert.equal(r.status, 409);
     assert.deepEqual(await r.json(), { error: 'payment_reused' });
     assert.equal(d.gate.length, gated, 'refused before the gate');
     assert.deepEqual(host.calls, [], 'no host call');
     // The x-payment spelling of the same header is the same payment only if its bytes are; a different one passes.
-    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': 'other-sig' })).status, 200);
+    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': pay('0xaaa', '0xn2') })).status, 200);
   } finally {
     d.close();
   }
   const again = new DoorLedger(join(d.dir, 'ledger.json'));
-  assert.equal(again.seenPayment(createHash('sha256').update('same-sig').digest('hex')), true);
+  assert.equal(again.seenPayment(keyOf('0xaaa', '0xn1')), true);
 });
 
 test('C2: the hash is added on entering the gate, even when settlement then fails', async () => {
@@ -554,8 +567,8 @@ test('C2: the hash is added on entering the gate, even when settlement then fail
   try {
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
-    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'payment-signature': 'sig-x' })).status, 402);
-    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': 'sig-x' })).status, 409);
+    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'payment-signature': pay('0xbbb', '0xn3') })).status, 402);
+    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': pay('0xbbb', '0xn3') })).status, 409);
   } finally {
     d.close();
   }
@@ -588,26 +601,26 @@ test('payer block: a loss booked because the host refused a tick does not block 
   try {
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
-    const r = await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'x-test-payer': '0xAbC', 'payment-signature': 'h1' });
+    const r = await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'x-test-payer': '0xAbC', 'payment-signature': pay('0xc1', '0x01') });
     assert.equal(r.status, 409);
     const rec = d.ledger.get(LEASE_1)!;
     assert.equal(rec.losses, 5000n);
     assert.equal(rec.lossKind, 'host_refused');
     assert.equal(rec.payer, '0xabc');
-    assert.equal(d.ledger.payerHasLoss('0xabc'), false);
-    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc', 'payment-signature': 'h2' })).status, 200);
+    assert.equal(d.ledger.payerHasLoss('0xabc', d.clock.t), false);
+    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc', 'payment-signature': pay('0xc2', '0x02') })).status, 200);
   } finally {
     d.close();
   }
 });
 
 test('payer block: a settlement failure is stored as settle_failed', async () => {
-  const d = await start(fakeHost(), { testHooks: { settle: () => { throw new Error('down'); } } });
+  const d = await start(fakeHost(), { testHooks: { settle: () => { throw new Error(PAYER_FAULT); } } });
   try {
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
     await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' });
     assert.equal(d.ledger.get(LEASE)!.lossKind, 'settle_failed');
-    assert.equal(new DoorLedger(join(d.dir, 'ledger.json')).payerHasLoss('0xABC'), true, 'the block survives a restart');
+    assert.equal(new DoorLedger(join(d.dir, 'ledger.json')).payerHasLoss('0xABC', d.clock.t), true, 'the block survives a restart');
   } finally {
     d.close();
   }
@@ -637,22 +650,22 @@ test('a tick on a lease whose cached status is done or closed is refused before 
 test('I4: a settlement failure records the payer, and that payer is refused on a new lease before any host call', async () => {
   const host = fakeHost({ open: counterOpen() });
   let fail = true;
-  const d = await start(host, { testHooks: { settle: () => { if (fail) throw new Error('down'); } } });
+  const d = await start(host, { testHooks: { settle: () => { if (fail) throw new Error(PAYER_FAULT); } } });
   try {
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
-    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'x-test-payer': '0xAbC', 'payment-signature': 's1' })).status, 402);
+    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'x-test-payer': '0xAbC', 'payment-signature': pay('0xd1', '0x01') })).status, 402);
     assert.equal(d.ledger.get(LEASE_1)!.payer, '0xabc');
     assert.equal(d.ledger.get(LEASE_1)!.losses, 5000n);
     fail = false;
     host.calls.length = 0;
-    const r = await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': '0xABC', 'payment-signature': 's2' });
+    const r = await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': '0xABC', 'payment-signature': pay('0xd2', '0x02') });
     assert.equal(r.status, 403);
     assert.deepEqual(await r.json(), { error: 'payer_blocked' });
     assert.deepEqual(host.calls, []);
     assert.deepEqual(d.settled, [], 'nothing settled for the blocked payer');
     // A different payer is fine.
-    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': '0xdef', 'payment-signature': 's3' })).status, 200);
+    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': '0xdef', 'payment-signature': pay('0xd3', '0x03') })).status, 200);
   } finally {
     d.close();
   }
@@ -709,14 +722,14 @@ test('DoorLedger: JSON file, bigint losses, atomic writes, reload', () => {
   l.open({ leaseId: LEASE, offerId: OFFER_ID, createdAt: 5 });
   l.renterTick(LEASE, '0xpayer');
   l.hostTick(LEASE);
-  l.loss(LEASE, 5000n);
+  l.loss(LEASE, 5000n, 'settle_failed', 7);
   l.stop(LEASE);
   assert.deepEqual(readdirSync(join(dir, 'sub')), ['ledger.json'], 'no temp file left behind');
   const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
   assert.ok(JSON.stringify(raw).includes('"5000"'), 'bigint stored as a string');
   const again = new DoorLedger(file);
   assert.deepEqual(again.get(LEASE), {
-    leaseId: LEASE, offerId: OFFER_ID, payer: '0xpayer', ticksPaidByRenter: 1, ticksPaidToHost: 1, losses: 5000n, stopped: true, createdAt: 5, nextIndex: 1, hostReads: 0,
+    leaseId: LEASE, offerId: OFFER_ID, payer: '0xpayer', ticksPaidByRenter: 1, ticksPaidToHost: 1, losses: 5000n, lossKind: 'settle_failed', lossAt: 7, stopped: true, createdAt: 5, nextIndex: 1, hostReads: 0,
   });
   assert.equal(again.get('missing'), undefined);
 });
@@ -733,4 +746,112 @@ test('DoorLedger: payment hashes are kept bounded, newest last, and compacted on
   assert.equal(again.seenPayment(h(1)), true);
   assert.equal(again.seenPayment(h(10)), true);
   assert.ok(readFileSync(`${file}.payments`, 'utf8').split('\n').filter(Boolean).length <= 7, 'file is compacted');
+});
+
+test('N1: one authorization re-encoded two ways on two leases: the second is 409 payment_reused with zero host calls', async () => {
+  const host = fakeHost({ open: counterOpen() });
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'payment-signature': pay('0xAbC', '0xAA', 0) })).status, 200);
+    const gated = d.gate.length;
+    host.calls.length = 0;
+    const r = await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': pay('0xAbC', '0xAA', 1) });
+    assert.equal(r.status, 409);
+    assert.deepEqual(await r.json(), { error: 'payment_reused' });
+    assert.equal(d.gate.length, gated);
+    assert.deepEqual(host.calls, []);
+    // The legacy header spelling carries the same authorization.
+    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-payment': pay('0xabc', '0xaa', 1) })).status, 409);
+  } finally {
+    d.close();
+  }
+});
+
+test('N1: a payment that does not decode to from and nonce is 400 bad_payment before the gate', async () => {
+  const host = fakeHost();
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    host.calls.length = 0;
+    for (const h of ['not base64 !!', b64({ payload: {} }), b64({ payload: { authorization: { from: '0x1' } } }), b64('text'), b64(null)]) {
+      const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': h });
+      assert.equal(r.status, 400, h);
+      assert.deepEqual(await r.json(), { error: 'bad_payment' });
+    }
+    assert.deepEqual(d.gate, []);
+    assert.deepEqual(host.calls, []);
+  } finally {
+    d.close();
+  }
+});
+
+test('N2: a transient settlement failure is booked but never blocks; a payer-fault one does', async () => {
+  for (const [reason, blocks, kind] of [
+    ['facilitator unreachable', false, 'settle_failed_transient'],
+    ['invalid_exact_evm_payload_authorization_valid_before', false, 'settle_failed_transient'],
+    ['invalid_exact_evm_insufficient_balance', true, 'settle_failed'],
+    ['invalid_exact_evm_nonce_already_used', true, 'settle_failed'],
+    ['invalid_exact_evm_signature', true, 'settle_failed'],
+  ] as const) {
+    const host = fakeHost({ open: counterOpen() });
+    let fail = true;
+    const d = await start(host, { testHooks: { settle: () => { if (fail) throw new Error(reason); } } });
+    try {
+      await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+      await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+      assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' })).status, 402);
+      assert.equal(d.ledger.get(LEASE_1)!.losses, 5000n, reason);
+      assert.equal(d.ledger.get(LEASE_1)!.lossKind, kind, reason);
+      assert.equal(d.ledger.get(LEASE_1)!.stopped, true);
+      fail = false;
+      const next = await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' });
+      assert.equal(next.status, blocks ? 403 : 200, reason);
+    } finally {
+      d.close();
+    }
+  }
+});
+
+test('N2: a block lapses 24 h after the loss, and unblock (even from another process) clears it', async () => {
+  const host = fakeHost({ open: counterOpen() });
+  const d = await start(host, { testHooks: { settle: () => { throw new Error(PAYER_FAULT); } } });
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' });
+    assert.equal(d.ledger.payerHasLoss('0xABC', d.clock.t + 23 * 3_600_000), true);
+    assert.equal(d.ledger.payerHasLoss('0xABC', d.clock.t + 24 * 3_600_000 + 1), false, 'lapsed');
+    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' })).status, 403);
+    // The operator command runs in another process: it writes the file the running door re-reads.
+    new DoorLedger(join(d.dir, 'ledger.json')).unblock('0xABC', d.clock.t + 1);
+    d.clock.t += 2;
+    assert.equal(d.ledger.payerHasLoss('0xabc', d.clock.t), false);
+    assert.notEqual((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' })).status, 403);
+    // A later loss blocks again.
+    await d.post(`/v1/leases/${'3'.padStart(32, '0')}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' });
+  } finally {
+    d.close();
+  }
+});
+
+test('N3: a tick whose send timed out answers 502 host_timeout, books host_refused (it may have been paid) and stops the lease', async () => {
+  const host = fakeHost({ tick: async () => { throw new payerMod.SendTimeoutError(); } });
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' });
+    assert.equal(r.status, 502);
+    assert.deepEqual(await r.json(), { error: 'host_timeout' });
+    const rec = d.ledger.get(LEASE)!;
+    assert.equal(rec.losses, 5000n);
+    assert.equal(rec.lossKind, 'host_refused');
+    assert.equal(rec.stopped, true);
+    assert.deepEqual(d.settled, []);
+    assert.equal(d.ledger.payerHasLoss('0xabc', d.clock.t), false);
+  } finally {
+    d.close();
+  }
 });

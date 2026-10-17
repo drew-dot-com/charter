@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ToonClientPayer, PacketRefusedError, KeyFileError, serialized, type Payer } from './payer.js';
+import { ToonClientPayer, PacketRefusedError, KeyFileError, SendTimeoutError, serialized, type Payer } from './payer.js';
 
 const SEAL = 'http://ev2ocvzg6ubobqh7mnoskk2boxuo3l5grqbro6wvj4hq2ecnacaqttyd.anyone/ilp';
 const DEST = 'g.toon.69b2a212547e7a9c.charter-echo';
@@ -170,4 +170,63 @@ test('serialized: concurrent sends never overlap and run in the order they were 
   assert.equal(maxInFlight, 1);
   assert.deepEqual(order, [0, 1, 2, 3]);
   assert.deepEqual(results.map((r) => r.status), ['fulfilled', 'rejected', 'fulfilled', 'fulfilled'], 'a failed send does not block the queue');
+});
+
+test('serialized: a tick waiting behind several reads is sent before them, still one at a time', async () => {
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const order: string[] = [];
+  let releaseFirst!: () => void;
+  const firstHeld = new Promise<void>((r) => (releaseFirst = r));
+  const inner: Payer = {
+    async send(_dest, req) {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      const name = (req.body as { n: string }).n;
+      order.push(name);
+      if (name === 'first') await firstHeld;
+      await new Promise((r) => setImmediate(r));
+      inFlight--;
+      return { status: 200, body: null, paid: 1n };
+    },
+  };
+  const p = serialized(inner);
+  const send = (n: string, priority?: 'high') =>
+    p.send('d', { method: 'POST', path: '/x', body: { n } }, { sealKey: 's', amount: 1n, ...(priority ? { priority } : {}) });
+  const all = [send('first'), send('read1'), send('read2'), send('read3'), send('tick1', 'high'), send('tick2', 'high')];
+  await new Promise((r) => setImmediate(r));
+  releaseFirst();
+  await Promise.all(all);
+  assert.deepEqual(order, ['first', 'tick1', 'tick2', 'read1', 'read2', 'read3']);
+  assert.equal(maxInFlight, 1);
+});
+
+test('serialized: a send that never answers is rejected after the timeout and the queue moves on', async () => {
+  const timers: Array<{ fn: () => void; ms: number; live: boolean }> = [];
+  const order: string[] = [];
+  const inner: Payer = {
+    send(_dest, req) {
+      const n = (req.body as { n: string }).n;
+      order.push(n);
+      if (n === 'hung') return new Promise(() => undefined);
+      return Promise.resolve({ status: 200, body: n, paid: 1n });
+    },
+  };
+  const p = serialized(inner, {
+    timeoutMs: 45_000,
+    setTimer: (fn, ms) => { const t = { fn, ms, live: true }; timers.push(t); return t; },
+    clearTimer: (h) => void ((h as { live: boolean }).live = false),
+  });
+  const one = (n: string) => p.send('d', { method: 'POST', path: '/x', body: { n } }, { sealKey: 's', amount: 1n });
+  const hung = one('hung');
+  const next = one('next');
+  const hungResult = assert.rejects(hung, (e: Error) => e instanceof SendTimeoutError);
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(order, ['hung'], 'the next send waits for the hung one');
+  assert.equal(timers[0]!.ms, 45_000);
+  timers[0]!.fn();
+  await hungResult;
+  assert.equal((await next).body, 'next');
+  assert.deepEqual(order, ['hung', 'next']);
+  assert.equal(timers[1]!.live, false, 'a finished send clears its timer');
 });
