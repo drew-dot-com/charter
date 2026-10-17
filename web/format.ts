@@ -102,8 +102,41 @@ export interface OutputPage {
   jpegBase64: string | undefined;
 }
 
-export interface JobOutput {
+export interface FetchOutput {
+  kind: 'fetch';
   pages: OutputPage[];
+}
+
+/** What the python job reports about the renter's script. */
+export interface PythonOutput {
+  kind: 'python';
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  seconds: number;
+  stdout: string;
+  stderr: string;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+}
+
+export type JobOutput = FetchOutput | PythonOutput;
+
+function pythonOutput(o: Record<string, unknown>): PythonOutput {
+  const { exitCode, signal, seconds, stdout, stderr } = o;
+  if (typeof stdout !== 'string' || typeof stderr !== 'string') throw new Error('the output has no stdout or stderr');
+  if (exitCode !== null && !Number.isInteger(exitCode)) throw new Error('the output has a malformed exit code');
+  return {
+    kind: 'python',
+    exitCode: exitCode as number | null,
+    signal: typeof signal === 'string' ? signal : null,
+    timedOut: o.timedOut === true,
+    seconds: typeof seconds === 'number' && Number.isFinite(seconds) ? seconds : 0,
+    stdout,
+    stderr,
+    stdoutTruncated: o.stdoutTruncated === true,
+    stderrTruncated: o.stderrTruncated === true,
+  };
 }
 
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -115,7 +148,7 @@ function bytesOf(b64: string): Uint8Array {
   return out;
 }
 
-/** Joins the base64 output parts as bytes, then reads result.json. Throws on any other shape. */
+/** Joins the base64 output parts as bytes, then reads result.json: a fetch's pages or a python run. Throws on any other shape. */
 export function decodeOutput(parts: string[]): JobOutput {
   const chunks = parts.map(bytesOf);
   const all = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
@@ -125,9 +158,13 @@ export function decodeOutput(parts: string[]): JobOutput {
     at += c.length;
   }
   const parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(all)) as unknown;
+  if (typeof parsed === 'object' && parsed !== null && (parsed as { kind?: unknown }).kind === 'python') {
+    return pythonOutput(parsed as Record<string, unknown>);
+  }
   const pages = (parsed as { pages?: unknown } | null)?.pages;
   if (!Array.isArray(pages)) throw new Error('the output has no pages');
   return {
+    kind: 'fetch',
     pages: pages.map((p): OutputPage => {
       const o = p as { url?: unknown; text?: unknown; jpegBase64?: unknown } | null;
       if (!o || typeof o.url !== 'string' || typeof o.text !== 'string') throw new Error('the output has a malformed page');
@@ -155,6 +192,8 @@ export interface PublicOffer {
   /** USDC micro-units as a decimal string. */
   tickPrice: string;
   hiddenHost: boolean;
+  /** The job images it runs. Empty when the door did not say. */
+  images: string[];
 }
 
 export function parseOffer(o: unknown): PublicOffer | undefined {
@@ -171,7 +210,8 @@ export function parseOffer(o: unknown): PublicOffer | undefined {
     typeof x.hiddenHost === 'boolean'
   ) {
     const { offerId, cpu, memoryMiB, intervalSeconds, tickPrice, hiddenHost } = x;
-    return { offerId, cpu, memoryMiB, intervalSeconds, tickPrice, hiddenHost };
+    const images = Array.isArray(x.images) ? x.images.filter((i): i is string => typeof i === 'string') : [];
+    return { offerId, cpu, memoryMiB, intervalSeconds, tickPrice, hiddenHost, images };
   }
   return undefined;
 }

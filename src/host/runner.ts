@@ -2,6 +2,7 @@ import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Exec } from '../exec.js';
+import { FETCH_IMAGE, MAX_SCRIPT_BYTES, PYTHON_IMAGE } from '../jobs.js';
 import type { JobSpec } from '../types.js';
 
 export type RunnerErrorCode = 'image_not_allowed' | 'arg_not_allowed' | 'bad_input' | 'bad_output' | 'boot_failed';
@@ -34,6 +35,34 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+/** What a job image may be given and how it is fenced in. */
+export interface JobProfile {
+  /** Job arg names a tenant may set. Anything else is refused, so a tenant cannot reach the host's env. */
+  args: string[];
+  /** Largest value of any one arg, in UTF-8 bytes. */
+  maxArgBytes: number;
+  /** `proxy`: the default bridge, with the host's proxy handed in. `none`: no network at all. */
+  network: 'proxy' | 'none';
+  /** Extra `docker create` flags for this image only. */
+  flags: string[];
+}
+
+export const JOB_PROFILES: Record<string, JobProfile> = {
+  [FETCH_IMAGE]: { args: ['URLS'], maxArgBytes: 16 * 1024, network: 'proxy', flags: ['--tmpfs', '/tmp'] },
+  [PYTHON_IMAGE]: {
+    args: ['SCRIPT'],
+    maxArgBytes: MAX_SCRIPT_BYTES,
+    // Renter code: no network, so it can reach no one, and nothing it writes can outgrow the caps.
+    network: 'none',
+    flags: ['--tmpfs', '/tmp:size=64m', '--memory-swap', '1g', '--ulimit', 'fsize=8388608'],
+  },
+};
+
+function profileFor(image: string, allowArgs?: string[]): JobProfile {
+  const p = JOB_PROFILES[image] ?? JOB_PROFILES[FETCH_IMAGE]!;
+  return allowArgs ? { ...p, args: allowArgs } : p;
+}
+
 function name(leaseId: string): string {
   if (!ID.test(leaseId)) throw new RunnerError('bad_input', 'lease id');
   return `charter-${leaseId}`;
@@ -54,21 +83,25 @@ export function dockerRunner(opts: {
   outRoot: string;
   allow: string[];
   proxy?: string;
-  /** Job arg names a tenant may set. Anything else is refused, so a tenant cannot reach the host's env. */
+  /** Overrides every image's allowed arg names. For tests. */
   allowArgs?: string[];
+  /** An OCI runtime for every job, such as `runsc` (gVisor). Default: docker's own. */
+  runtime?: string;
 }): Runner {
-  const { exec, outRoot, allow, proxy } = opts;
-  const allowArgs = opts.allowArgs ?? ['URLS'];
+  const { exec, outRoot, allow, proxy, runtime } = opts;
   const docker = (args: string[]) => exec(args, {});
 
   return {
     async create(leaseId, job) {
       if (!allow.includes(job.image)) throw new RunnerError('image_not_allowed', job.image);
       const cname = name(leaseId);
+      const profile = profileFor(job.image, opts.allowArgs);
       const env: string[] = [];
       for (const [k, v] of Object.entries(job.args)) {
-        if (!allowArgs.includes(k)) throw new RunnerError('arg_not_allowed', k);
+        if (!profile.args.includes(k)) throw new RunnerError('arg_not_allowed', k);
         if (!ENV_NAME.test(k)) throw new RunnerError('bad_input', 'arg name');
+        if (v.includes('\0')) throw new RunnerError('bad_input', `${k} has a NUL`);
+        if (Buffer.byteLength(v, 'utf8') > profile.maxArgBytes) throw new RunnerError('bad_input', `${k} too large`);
         env.push('-e', `${k}=${v}`);
       }
       const out = join(outRoot, leaseId);
@@ -83,13 +116,16 @@ export function dockerRunner(opts: {
         '--memory', '1g',
         '--pids-limit', '256',
         '--read-only',
-        '--tmpfs', '/tmp',
         // No Linux capabilities, and no setuid path back to any.
         '--cap-drop', 'ALL',
         '--security-opt', 'no-new-privileges',
         '-v', `${out}:/out`,
+        ...profile.flags,
       ];
-      if (proxy) {
+      if (runtime) argv.push('--runtime', runtime);
+      if (profile.network === 'none') {
+        argv.push('--network', 'none');
+      } else if (proxy) {
         argv.push('--add-host', 'host.docker.internal:host-gateway');
         argv.push('-e', `CHARTER_PROXY=${containerProxy(proxy)}`);
       }

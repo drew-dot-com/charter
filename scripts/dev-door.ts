@@ -1,9 +1,12 @@
 // Runs the door locally for looking at the storefront: no payment gate, no wallet, a fake host with two offers.
+// A python lease runs the real job wrapper (jobs/python/run.py) with the local python3, on the host itself, unsandboxed.
 //   npm run build:web && npm run dev:door      then open http://127.0.0.1:8787
 // DEV_DOOR_PORT changes the port; DEV_INTERVAL_SECONDS (default 30, at least 12) shortens the interval.
-import { mkdtempSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DoorLedger } from '../src/door/ledger.js';
 import { doorApp } from '../src/door/server.js';
 import type { HostApi, OpenResult, OutputPart, TickResult } from '../src/tenant/host-api.js';
@@ -20,17 +23,22 @@ const OUTPUT_PARTS = 2;
 // Not a real transaction: it only has the shape of a Solana signature, so the page shows its link.
 const FAKE_LANDING = { chain: 'solana', tx: '1'.repeat(88), shared: true };
 
-const offer = (id: string, key: string, cpu: number, memoryMiB: number, hiddenHost: boolean): Offer => ({
+const offer = (id: string, key: string, cpu: number, memoryMiB: number, hiddenHost: boolean, images: string[]): Offer => ({
   id, hostPubkey: key.repeat(32), ilpBase: 'g.dev', sealKey: '0x04' + key.repeat(64), sealUrl: 'http://dev.invalid/ilp',
   cpu, memoryMiB, intervalSeconds, firstTickGraceSeconds: 90,
-  tickPrice: 5000n, openPrice: 1000n, statusPrice: 100n, images: ['charter-job-fetch'], hiddenHost, hiddenEgress: false,
+  tickPrice: 5000n, openPrice: 1000n, statusPrice: 100n, images, hiddenHost, hiddenEgress: false,
   expiresAt: Date.now() + 365 * 24 * 3600 * 1000,
 });
-const OFFERS = [offer('small', 'ab', 1, 1024, true), offer('medium', 'cd', 2, 4096, false)];
+const OFFERS = [
+  offer('small', 'ab', 1, 1024, true, ['charter-job-fetch', 'charter-job-python']),
+  offer('medium', 'cd', 2, 4096, false, ['charter-job-fetch']),
+];
+const RUN_PY = join(dirname(fileURLToPath(import.meta.url)), '..', 'jobs', 'python', 'run.py');
 
 interface FakeLease {
   lease: Lease;
   urls: string[];
+  result?: Buffer;
   nextIndex: number;
 }
 const leases = new Map<string, FakeLease>();
@@ -45,6 +53,18 @@ function view(f: FakeLease, now: number): Lease {
 }
 
 function resultJson(f: FakeLease): Buffer {
+  if (f.lease.job.image === 'charter-job-python') {
+    if (!f.result) {
+      const out = mkdtempSync(join(tmpdir(), 'charter-dev-py-'));
+      spawnSync('python3', [RUN_PY], { env: { PATH: process.env.PATH, CHARTER_OUT: out, SCRIPT: f.lease.job.args.SCRIPT ?? '' }, timeout: 60_000 });
+      try {
+        f.result = readFileSync(join(out, 'result.json'));
+      } catch {
+        f.result = Buffer.from(JSON.stringify({ kind: 'python', exitCode: 2, seconds: 0, stdout: '', stderr: 'dev door: the wrapper wrote no result' }));
+      }
+    }
+    return f.result;
+  }
   const pages = f.urls.map((url, i) => ({
     url,
     text: `Dev sample text for ${url}\n\nThis is fake output from the local dev door. Page ${i + 1} of ${f.urls.length}.\n<b>Markup in the text is shown as text.</b>`,

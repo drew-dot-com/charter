@@ -1,5 +1,5 @@
 import type { Lease } from '../src/types.js';
-import { decodeOutput, formatUsdc, landingLink, parseOffer, pricePerHour, sizeLabel, type JobOutput, type PublicOffer } from './format.js';
+import { decodeOutput, formatUsdc, landingLink, parseOffer, pricePerHour, sizeLabel, type JobOutput, type PublicOffer, type PythonOutput } from './format.js';
 import { call, makePost, type Answer, type DoorInfo } from './pay.js';
 import { nextTickAt } from './schedule.js';
 import { applyStatus, clearHalt, newTickState, runTick, shouldTick, type TickState } from './ticker.js';
@@ -13,6 +13,24 @@ const POLL_MS = 5_000;
 const POLL_FINAL_MS = 15_000;
 const STEP_MS = 1_000;
 const MAX_URLS = 5;
+const MAX_SCRIPT_BYTES = 8 * 1024;
+const FETCH_IMAGE = 'charter-job-fetch';
+const PYTHON_IMAGE = 'charter-job-python';
+
+/** What the script box starts with: real numeric work that finishes inside one interval. */
+const EXAMPLE_SCRIPT = `import time
+import numpy as np
+
+t = time.time()
+rng = np.random.default_rng()
+n = 20_000_000
+x, y = rng.random(n), rng.random(n)
+print("pi is about", 4 * np.count_nonzero(x * x + y * y <= 1) / n)
+
+a = rng.random((1500, 1500))
+print("largest eigenvalue", round(float(np.max(np.abs(np.linalg.eigvals(a)))), 3))
+print(f"took {time.time() - t:.1f} s on this machine")
+`;
 const MAX_OUTPUT_PARTS = 100;
 
 const STATE_LABEL: Record<Lease['state'], string> = {
@@ -188,7 +206,7 @@ async function showHome(token: number): Promise<void> {
   const list = el('ul', 'rows');
   mount(
     el('h1', undefined, 'Machines for rent'),
-    el('p', 'lede', 'Rent a container on a hidden host, paid in USDC on Base every 30 seconds while it runs. In v1 it runs one job: it fetches the pages you name and sends back a screenshot and the text of each.'),
+    el('p', 'lede', 'Rent a container on a hidden host, paid in USDC on Base every 30 seconds while it runs. Run your own Python script on it (NumPy included, no network), or have it fetch pages and send back a screenshot and the text of each.'),
     list,
     el('p', 'note', 'No account. Pay from a browser wallet with USDC on Base.'),
     dev ? el('p', 'note', 'Local test mode: payments are skipped.') : null,
@@ -251,20 +269,70 @@ function parseUrls(text: string): string[] | string {
 }
 
 const OPEN_FAILURES: Record<number, string> = {
-  400: 'The door refused those addresses.',
+  400: 'The door refused that job.',
   404: 'That machine is no longer offered. Reload the list.',
   429: 'Too many leases were started from this network. Try again later.',
   503: 'The door has reached its limit for now. Try again later.',
 };
 
+type JobMode = 'python' | 'fetch';
+
+/** A script the python job will take: non-blank, at most 8 KiB of UTF-8. */
+function checkScript(text: string): string | undefined {
+  if (text.trim() === '') return 'Write a script to run.';
+  const n = new TextEncoder().encode(text).length;
+  if (n > MAX_SCRIPT_BYTES) return `The script is ${n} bytes; the most is ${MAX_SCRIPT_BYTES}.`;
+  return undefined;
+}
+
 function rentForm(o: PublicOffer, close: () => void): HTMLElement {
+  // An offer that does not say which images it runs is a v1 host: fetch only.
+  const modes: JobMode[] = [];
+  if (o.images.includes(PYTHON_IMAGE)) modes.push('python');
+  if (o.images.includes(FETCH_IMAGE) || o.images.length === 0) modes.push('fetch');
+  let mode: JobMode = modes[0] ?? 'fetch';
+  const drafts: Record<JobMode, string> = { python: EXAMPLE_SCRIPT, fetch: '' };
+
+  const key = o.offerId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24);
   const area = el('textarea');
-  area.id = `urls-${o.offerId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`;
-  area.placeholder = 'https://example.com';
-  area.rows = 5;
+  area.id = `job-${key}`;
   area.spellcheck = false;
-  const label = el('label', undefined, `Pages to fetch (up to ${MAX_URLS}, one address per line)`);
+  const label = el('label');
   label.htmlFor = area.id;
+  const show = (m: JobMode) => {
+    drafts[mode] = area.value;
+    mode = m;
+    area.value = drafts[m];
+    area.classList.toggle('code', m === 'python');
+    if (m === 'python') {
+      label.textContent = 'Python script to run (up to 8 KiB, NumPy included, no network). Its output comes back when it finishes.';
+      area.placeholder = 'print("hello")';
+      area.rows = 14;
+    } else {
+      label.textContent = `Pages to fetch (up to ${MAX_URLS}, one address per line)`;
+      area.placeholder = 'https://example.com';
+      area.rows = 5;
+    }
+  };
+  area.value = drafts[mode];
+  show(mode);
+
+  let choose: HTMLElement | null = null;
+  if (modes.length > 1) {
+    choose = el('div', 'job-pick');
+    choose.setAttribute('role', 'radiogroup');
+    choose.setAttribute('aria-label', 'Job');
+    for (const m of modes) {
+      const r = el('input');
+      r.type = 'radio';
+      r.name = `mode-${key}`;
+      r.value = m;
+      r.checked = m === mode;
+      r.addEventListener('change', () => r.checked && show(m));
+      choose.append(el('label', undefined, r, m === 'python' ? ' Run Python' : ' Fetch pages'));
+    }
+  }
+
   const status = el('p', 'muted');
   status.setAttribute('role', 'status');
   const form = el('form', 'rent-form');
@@ -275,14 +343,25 @@ function rentForm(o: PublicOffer, close: () => void): HTMLElement {
     close();
   });
   let picker = dev ? null : walletPicker();
-  form.append(label, area, ...(picker ? [picker] : []), status, el('div', 'actions', start, cancel));
+  form.append(...(choose ? [choose] : []), label, area, ...(picker ? [picker] : []), status, el('div', 'actions', start, cancel));
   form.addEventListener('submit', (ev) => {
     ev.preventDefault();
     void (async () => {
-      const urls = parseUrls(area.value);
-      if (typeof urls === 'string') {
-        status.textContent = urls;
-        return;
+      let job: { urls: string[] } | { python: { script: string } };
+      if (mode === 'python') {
+        const bad = checkScript(area.value);
+        if (bad) {
+          status.textContent = bad;
+          return;
+        }
+        job = { python: { script: area.value } };
+      } else {
+        const urls = parseUrls(area.value);
+        if (typeof urls === 'string') {
+          status.textContent = urls;
+          return;
+        }
+        job = { urls };
       }
       start.disabled = true;
       try {
@@ -299,7 +378,7 @@ function rentForm(o: PublicOffer, close: () => void): HTMLElement {
         const a = await call(fetch, '/v1/leases', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ offerId: o.offerId, urls }),
+          body: JSON.stringify({ offerId: o.offerId, ...job }),
         });
         const id = (a.body as { leaseId?: unknown } | undefined)?.leaseId;
         if (a.status === 200 && typeof id === 'string' && /^[0-9a-f]{32}$/.test(id)) {
@@ -595,6 +674,7 @@ function render(p: LeasePage): void {
     if (o.state === 'loading') return [el('p', 'muted', 'Loading the result')];
     if (o.state === 'error') return [el('div', 'msg bad', o.error)];
     if (o.state !== 'done' || !o.value) return [];
+    if (o.value.kind === 'python') return [el('h2', undefined, 'Result'), pythonResult(o.value)];
     const pages = o.value.pages;
     return [
       el('h2', undefined, 'Result'),
@@ -607,6 +687,24 @@ function render(p: LeasePage): void {
 function step0(p: LeasePage): void {
   clearTimeout(p.timer);
   step(p);
+}
+
+function pythonResult(r: PythonOutput): HTMLElement {
+  const how = r.timedOut
+    ? `Stopped at the ${Math.round(r.seconds)} s limit.`
+    : r.exitCode === 0
+      ? 'The script finished.'
+      : r.exitCode !== null
+        ? `The script exited with code ${r.exitCode}.`
+        : `The script was stopped (${r.signal ?? 'signal'}).`;
+  const box = el('div', 'page-out', el('div', 'page-url', `${how} ${r.seconds.toFixed(1)} s`));
+  const stream = (name: string, text: string, cut: boolean) => [
+    el('div', 'stream', cut ? `${name} (first part only)` : name),
+    el('pre', undefined, text),
+  ];
+  box.append(...stream('Output', r.stdout === '' ? '(nothing printed)' : r.stdout, r.stdoutTruncated));
+  if (r.stderr !== '') box.append(...stream('Errors', r.stderr, r.stderrTruncated));
+  return box;
 }
 
 function outputPage(pg: { url: string; text: string; jpegBase64: string | undefined }): HTMLElement {

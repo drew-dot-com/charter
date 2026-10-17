@@ -6,9 +6,11 @@ no account on either side, and the host can be a home machine with no domain and
 hidden host, reached over Anyone).
 
 **Status: v1, first-party.** Every lease so far has Drew Pierson on both sides: he runs the one host,
-the door and the edge node, and both renters. There are no outside users yet. v1 runs one job
-image, `charter-job-fetch`, which fetches up to five pages in a headless browser and returns their
-text.
+the door and the edge node, and both renters. There are no outside users yet. Two job images:
+`charter-job-python` runs the renter's own Python script (up to 8 KiB, NumPy included) with no
+network at all and returns its stdout, stderr and exit code; `charter-job-fetch` fetches up to five
+pages in a headless browser and returns a screenshot and the text of each. Why the python job is
+safe enough for a home host: `docs/superpowers/specs/2026-10-17-python-job-design.md`.
 
 ## How it works
 
@@ -47,6 +49,7 @@ Next to a running `toon` node, with Docker and Node 22 or later:
 ```sh
 npm ci && npm run build && npm install -g --prefix ~/.local .
 docker build -t charter-job-fetch jobs/fetch
+docker build -t charter-job-python jobs/python
 toon add charter-open   --to relay --url http://127.0.0.1:7401/ --price 1000 --yes
 toon add charter-tick   --to relay --url http://127.0.0.1:7402/ --price 5000 --yes
 toon add charter-status --to relay --url http://127.0.0.1:7403/ --price 100  --yes

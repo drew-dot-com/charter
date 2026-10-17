@@ -116,6 +116,10 @@ textarea {
   background: var(--bg);
   color: var(--text);
 }
+.job-pick { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.job-pick label { font-weight: 400; }
+textarea.code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; tab-size: 4; }
+.stream { color: var(--muted); font-size: 0.85rem; margin-top: 10px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .wallet-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .wallet-pick label { font-weight: 600; font-size: 0.95rem; }

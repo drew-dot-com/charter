@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { realpathSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { MAX_SCRIPT_BYTES, fetchJob, isScript, pythonJob } from './jobs.js';
 import type { Payer } from './payer.js';
 import { ToonCli } from './toon-cli.js';
 import type { Lease, Micro, Offer } from './types.js';
@@ -11,11 +12,9 @@ import { runLease } from './tenant/run-lease.js';
 
 const USAGE = `usage:
   charter offers --relay <url>
-  charter rent --offer <pubkey>:<id> --urls <a,b> --max-intervals <n> --relay <url> [--json]
+  charter rent --offer <pubkey>:<id> (--urls <a,b> | --python <file.py>) --max-intervals <n> --relay <url> [--json]
   charter status <pubkey>:<offerId> <leaseId> --relay <url> [--json]
 paying commands read the wallet passphrase file named by TOON_PASSPHRASE_FILE`;
-
-const JOB_IMAGE = 'charter-job-fetch';
 
 export interface CliDeps {
   out: (line: string) => void;
@@ -131,6 +130,7 @@ async function rentCommand(rest: string[], env: Record<string, string | undefine
     options: {
       offer: { type: 'string' },
       urls: { type: 'string' },
+      python: { type: 'string' },
       'max-intervals': { type: 'string' },
       relay: { type: 'string' },
       json: { type: 'boolean' },
@@ -138,17 +138,27 @@ async function rentCommand(rest: string[], env: Record<string, string | undefine
     strict: true,
   });
   const offerId = required(values.offer, '--offer');
-  const urls = required(values.urls, '--urls');
+  if ((values.urls === undefined) === (values.python === undefined)) {
+    throw new UsageError('rent takes exactly one of --urls and --python');
+  }
+  let job;
+  if (values.python !== undefined) {
+    const script = readFileSync(values.python, 'utf8');
+    if (!isScript(script)) throw new UsageError(`--python must name a non-empty script of at most ${MAX_SCRIPT_BYTES} bytes`);
+    job = pythonJob(script);
+  } else {
+    job = fetchJob(required(values.urls, '--urls').split(','));
+  }
   const relay = required(values.relay, '--relay');
   const maxIntervals = positiveInt(values['max-intervals'], '--max-intervals');
   const payer = d.makePayer(passphraseFile(env));
 
   const offer = await findOffer(d, relay, offerId);
-  if (!offer.images.includes(JOB_IMAGE)) throw new Error(`offer ${offerId} does not list the ${JOB_IMAGE} image`);
+  if (!offer.images.includes(job.image)) throw new Error(`offer ${offerId} does not list the ${job.image} image`);
   const progress = (s: string) => {
     if (!values.json) d.err(s);
   };
-  const r = await runLease(hostApi(payer, offer), offer, { image: JOB_IMAGE, args: { URLS: urls } }, {
+  const r = await runLease(hostApi(payer, offer), offer, job, {
     maxIntervals,
     now: d.now,
     sleep: d.sleep,

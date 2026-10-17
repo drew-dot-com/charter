@@ -148,6 +148,76 @@ test('allowArgs widens what a tenant may set', async () => {
   assert.ok(calls[0]!.args.includes('MODE=fast'));
 });
 
+const PY = { image: 'charter-job-python', args: { SCRIPT: 'print(1)\nprint(2)' } };
+
+test('the python job gets no network and no proxy, even on a host that has one', async () => {
+  const { exec, calls } = fake();
+  const r = dockerRunner({
+    exec,
+    outRoot: await outRoot(),
+    allow: ['charter-job-fetch', 'charter-job-python'],
+    proxy: 'socks5://127.0.0.1:9050',
+  });
+  await r.create('l1', PY);
+  const a = calls[0]!.args;
+  const i = a.indexOf('--network');
+  assert.equal(a[i + 1], 'none');
+  assert.ok(!a.includes('--add-host'));
+  assert.ok(!a.some((x) => x.startsWith('CHARTER_PROXY')));
+  assert.ok(a.includes('SCRIPT=print(1)\nprint(2)'));
+  assert.equal(a[a.length - 1], 'charter-job-python');
+});
+
+test('the python job keeps the v1 limits and adds a capped /tmp, no swap and a per-file size cap', async () => {
+  const { exec, calls } = fake();
+  const r = dockerRunner({ exec, outRoot: await outRoot(), allow: ['charter-job-python'] });
+  await r.create('l1', PY);
+  const a = calls[0]!.args;
+  const has = (...seq: string[]) =>
+    assert.ok(a.some((_, i) => seq.every((s, j) => a[i + j] === s)), `argv missing ${seq.join(' ')}: ${a.join(' ')}`);
+  has('--cpus', '1');
+  has('--memory', '1g');
+  has('--memory-swap', '1g');
+  has('--pids-limit', '256');
+  has('--read-only');
+  has('--cap-drop', 'ALL');
+  has('--security-opt', 'no-new-privileges');
+  has('--tmpfs', '/tmp:size=64m');
+  has('--ulimit', 'fsize=8388608');
+});
+
+test('the fetch job keeps its v1 network: no --network flag, the proxy handed in', async () => {
+  const { exec, calls } = fake();
+  const r = dockerRunner({ exec, outRoot: await outRoot(), allow: ['charter-job-fetch'], proxy: 'socks5://127.0.0.1:9050' });
+  await r.create('l1', JOB);
+  assert.ok(!calls[0]!.args.includes('--network'));
+  assert.ok(calls[0]!.args.includes('CHARTER_PROXY=socks5://host.docker.internal:9050'));
+});
+
+test('the python job refuses URLS, a script past 8 KiB, and a NUL, before any docker call', async () => {
+  const { exec, calls } = fake();
+  const r = dockerRunner({ exec, outRoot: await outRoot(), allow: ['charter-job-python'] });
+  const refused = (args: Record<string, string>, code: string) =>
+    assert.rejects(
+      r.create('l1', { image: 'charter-job-python', args }),
+      (e: unknown) => e instanceof RunnerError && e.code === code,
+    );
+  await refused({ URLS: 'https://example.com' }, 'arg_not_allowed');
+  await refused({ SCRIPT: 'x'.repeat(8 * 1024 + 1) }, 'bad_input');
+  await refused({ SCRIPT: 'print(1)\0' }, 'bad_input');
+  assert.equal(calls.length, 0);
+  await r.create('l1', { image: 'charter-job-python', args: { SCRIPT: 'x'.repeat(8 * 1024) } });
+  assert.equal(calls.length, 1);
+});
+
+test('a runtime, such as gVisor, applies to every job', async () => {
+  const { exec, calls } = fake();
+  const r = dockerRunner({ exec, outRoot: await outRoot(), allow: ['charter-job-fetch', 'charter-job-python'], runtime: 'runsc' });
+  await r.create('l1', PY);
+  await r.create('l2', JOB);
+  for (const c of calls) assert.equal(c.args[c.args.indexOf('--runtime') + 1], 'runsc');
+});
+
 test('stop emits docker rm -f charter-<id>', async () => {
   const { exec, calls } = fake();
   const r = dockerRunner({ exec, outRoot: await outRoot(), allow: [] });

@@ -64,6 +64,7 @@ async function main(argv: string[]): Promise<number> {
     outRoot: join(cfg.dataDir, 'out'),
     allow: cfg.allowImages,
     proxy: cfg.proxy,
+    runtime: cfg.runtime,
   });
   const deps = { store, runner, now, log: (m: string) => console.error(m) };
   await reconcile(deps);

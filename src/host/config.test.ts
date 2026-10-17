@@ -43,6 +43,12 @@ test('loadConfig reads overrides, the proxy and the hidden host flag', () => {
   assert.equal(c.offer.hiddenHost, true);
   assert.equal(c.offer.tickPrice, 7000n);
   assert.deepEqual(c.allowImages, ['a', 'b']);
+  assert.equal(c.runtime, undefined);
+});
+
+test('loadConfig reads CHARTER_RUNTIME and refuses anything that is not a runtime name', () => {
+  assert.equal(loadConfig({ ...ENV, CHARTER_RUNTIME: 'runsc' }).runtime, 'runsc');
+  assert.throws(() => loadConfig({ ...ENV, CHARTER_RUNTIME: 'runsc --privileged' }), /CHARTER_RUNTIME/);
 });
 
 test('loadConfig names what is missing or malformed', () => {

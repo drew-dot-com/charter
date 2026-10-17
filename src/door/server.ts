@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { HostError, type HostApi } from '../tenant/host-api.js';
 import { findOfferExact } from '../tenant/offers.js';
+import { JOB_IMAGES, jobFromBody } from '../jobs.js';
 import type { Lease, Micro, Offer } from '../types.js';
 import { DeadlinePassedError, SendTimeoutError } from '../payer.js';
 import { offerOfSnapshot, snapshotOffer, type DoorLedger, type LossKind } from './ledger.js';
@@ -45,8 +46,6 @@ export interface DoorDeps {
   testHooks?: TestHooks;
 }
 
-export const JOB_IMAGE = 'charter-job-fetch';
-const MAX_URLS = 5;
 const OFFERS_TTL_MS = 60_000;
 const STATUS_TTL_MS = 5_000;
 /** Paid host reads a lease's free GET routes may cause: this, plus READS_PER_TICK for each tick the renter paid. */
@@ -114,16 +113,6 @@ class CapacityError extends Error {}
 
 function final(l: Lease): boolean {
   return l.state === 'done' || l.state === 'closed';
-}
-
-function isUrl(v: unknown): v is string {
-  if (typeof v !== 'string' || v.length > 2000 || v.includes(',')) return false;
-  try {
-    const u = new URL(v);
-    return u.protocol === 'http:' || u.protocol === 'https:';
-  } catch {
-    return false;
-  }
 }
 
 /** A host's error text, kept short: it is shown to a stranger. */
@@ -292,7 +281,8 @@ export function doorApp(deps: DoorDeps): express.Express {
     if (req.method === 'POST' && !req.is('application/json')) return void res.status(415).json({ error: 'unsupported_media_type' });
     next();
   });
-  app.use(express.json({ limit: '16kb', type: () => true }));
+  // A python job carries a script of up to 8 KiB, which JSON escaping can grow.
+  app.use(express.json({ limit: '32kb', type: () => true }));
 
   // Only a door with no payment gate (local development) answers this, so the page knows to skip x402.
   if (deps.x402 === 'free-for-tests') app.get('/v1/dev', (_req, res) => void res.json({ dev: true }));
@@ -312,17 +302,17 @@ export function doorApp(deps: DoorDeps): express.Express {
     }
     res.json(
       list
-        .filter((o) => trusted(o) && o.images.includes(JOB_IMAGE) && o.expiresAt > now())
+        .filter((o) => trusted(o) && o.images.some((i) => JOB_IMAGES.includes(i)) && o.expiresAt > now())
         .map(publicOffer),
     );
   });
 
   app.post('/v1/leases', async (req, res) => {
     if (!allowOpen(req.ip ?? 'unknown')) return void res.status(429).json({ error: 'rate_limited' });
-    const { offerId, urls } = (req.body ?? {}) as { offerId?: unknown; urls?: unknown };
-    if (typeof offerId !== 'string' || !Array.isArray(urls) || urls.length < 1 || urls.length > MAX_URLS || !urls.every(isUrl)) {
-      return void res.status(400).json({ error: 'bad_request' });
-    }
+    const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { offerId?: unknown; urls?: unknown; python?: unknown };
+    const { offerId } = body;
+    const job = jobFromBody(body);
+    if (typeof offerId !== 'string' || !job) return void res.status(400).json({ error: 'bad_request' });
     let offer: Offer | undefined;
     try {
       offer = findOfferExact((await offers()).filter(trusted), offerId);
@@ -330,7 +320,7 @@ export function doorApp(deps: DoorDeps): express.Express {
       return void res.status(502).json({ error: 'offers_unavailable' });
     }
     if (!offer || offer.expiresAt <= now()) return void res.status(404).json({ error: 'not_found' });
-    if (!offer.images.includes(JOB_IMAGE)) return void res.status(400).json({ error: 'image_not_offered' });
+    if (!offer.images.includes(job.image)) return void res.status(400).json({ error: 'image_not_offered' });
     // Door-wide: an open costs the door and no renter pays for it.
     if (overCap() || !allowDoorOpen('door')) return void res.status(503).json({ error: 'capacity' });
     // A lease the channel cannot carry through its open and first tick is not started.
@@ -340,7 +330,6 @@ export function doorApp(deps: DoorDeps): express.Express {
 
     try {
       const api = deps.api(offer);
-      const job = { image: JOB_IMAGE, args: { URLS: (urls as string[]).join(',') } };
       const r = await unpaid(api, () => api.open(job));
       if (!LEASE_ID.test(r.leaseId) || ledger.get(r.leaseId)) return void res.status(502).json({ error: 'bad_host_answer' });
       ledger.open({ leaseId: r.leaseId, offerId, createdAt: now(), offer: snapshotOffer(offer) });

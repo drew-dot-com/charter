@@ -10,7 +10,7 @@ Secrets never go in these variables: a variable names the file that holds one.
 | variable | required | default | what it is |
 | --- | --- | --- | --- |
 | `CHARTER_DATA_DIR` | yes | | Lease store (`leases.json`) and job output (`out/<lease>/`). Created mode 700. |
-| `CHARTER_ALLOW_IMAGES` | yes | | Comma list of the job images this host runs. Also the offer's `images`. |
+| `CHARTER_ALLOW_IMAGES` | yes | | Comma list of the job images this host runs: `charter-job-fetch` (fetch pages through the proxy) and `charter-job-python` (the renter's Python script, no network). Also the offer's `images`. |
 | `CHARTER_RELAY_URL` | yes | | `wss://` relay the offer is published to (a paid write). |
 | `TOON_PASSPHRASE_FILE` | yes | | File holding the node wallet passphrase. Passed to `toon` in its env only. |
 | `CHARTER_OFFER_ID` | yes | | The offer's `d` tag. |
@@ -19,6 +19,7 @@ Secrets never go in these variables: a variable names the file that holds one.
 | `CHARTER_SEAL_URL` | yes | | The node connector's `/ilp` URL, usually onion (`toon describe --json` `.description.httpEndpoint`). The `toon` CLI seals to it. |
 | `CHARTER_PORTS` | no | `7401,7402,7403` | Loopback ports of the open, tick and status apps, in that order. |
 | `CHARTER_PROXY` | no | none | SOCKS proxy for job egress (for example `socks5://172.17.0.1:9150`). Set means the offer says `hiddenEgress`. A loopback host is rewritten to `host.docker.internal` for the container. |
+| `CHARTER_RUNTIME` | no | docker's own | OCI runtime for every job container. `runsc` runs jobs under gVisor: recommended on any host that runs `charter-job-python` for anyone but its owner, since that job runs the renter's own code. |
 | `CHARTER_HIDDEN_HOST` | no | false | `1`, `true` or `yes`: the offer carries the hidden-host badge. |
 | `CHARTER_MAX_LEASES` | no | `1` | Live leases at once (booting, awaiting the first tick, running). An open past it answers `closed`, `busy`, before any container is made. |
 | `CHARTER_INTERVAL_SECONDS` | no | `30` | Length of one paid interval. |

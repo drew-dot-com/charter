@@ -7,6 +7,8 @@ export interface HostConfig {
   dataDir: string;
   allowImages: string[];
   proxy?: string;
+  /** OCI runtime for every job container (`runsc` for gVisor). Default: docker's own. */
+  runtime?: string;
   relayUrl: string;
   passphraseFile: string;
   /** Leases this host runs at once (booting, awaiting the first tick, or running). An open past it answers closed `busy`. */
@@ -54,6 +56,10 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
     .filter(Boolean);
   if (allowImages.length === 0) throw new Error('CHARTER_ALLOW_IMAGES is required');
   const proxy = env.CHARTER_PROXY?.trim() || undefined;
+  const runtime = env.CHARTER_RUNTIME?.trim() || undefined;
+  if (runtime !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(runtime)) {
+    throw new Error('CHARTER_RUNTIME must be a docker runtime name, such as runsc');
+  }
   const sealKey = need(env, 'CHARTER_SEAL_KEY');
   if (!isSealKey(sealKey)) throw new Error('CHARTER_SEAL_KEY must be the connector public key: 0x04 and 128 hex digits (toon describe --json .description.edgeIdentity.publicKey)');
   const sealUrl = need(env, 'CHARTER_SEAL_URL');
@@ -64,6 +70,7 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
     dataDir: need(env, 'CHARTER_DATA_DIR'),
     allowImages,
     proxy,
+    runtime,
     relayUrl: need(env, 'CHARTER_RELAY_URL'),
     passphraseFile: need(env, 'TOON_PASSPHRASE_FILE'),
     maxLeases: num(env, 'CHARTER_MAX_LEASES', 1),

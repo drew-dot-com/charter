@@ -85,7 +85,7 @@ test('decodeOutput joins the parts as bytes, so a multi-byte character may strad
   const bytes = Buffer.from(json);
   const cut = Buffer.from(json.slice(0, json.indexOf('\u00e9'))).length + 1; // inside the two bytes of the e-acute
   const parts = [b64(bytes.subarray(0, cut)), b64(bytes.subarray(cut))];
-  assert.deepEqual(decodeOutput(parts), { pages: [{ url: 'https://example.com/', text: 'café ☃', jpegBase64: 'AAAA' }] });
+  assert.deepEqual(decodeOutput(parts), { kind: 'fetch', pages: [{ url: 'https://example.com/', text: 'café ☃', jpegBase64: 'AAAA' }] });
 });
 
 test('decodeOutput refuses a result that is not {pages:[...]}', () => {
@@ -96,8 +96,21 @@ test('decodeOutput refuses a result that is not {pages:[...]}', () => {
 
 test('decodeOutput tolerates a page without a screenshot, and drops a malformed one', () => {
   const out = decodeOutput([b64(JSON.stringify({ pages: [{ url: 'u', text: 't' }, { url: 'v', text: 'w', jpegBase64: 'not base64!' }] }))]);
+  assert.ok(out.kind === 'fetch');
   assert.deepEqual(out.pages[0], { url: 'u', text: 't', jpegBase64: undefined });
   assert.equal(out.pages[1]!.jpegBase64, undefined);
+});
+
+test('decodeOutput reads a python run: exit code, signal, time, stdout and stderr', () => {
+  const run = { kind: 'python', exitCode: null, signal: 'SIGKILL', timedOut: true, seconds: 600.1, stdout: 'pi 3.14\n', stderr: '', stdoutTruncated: true, stderrTruncated: false };
+  assert.deepEqual(decodeOutput([b64(JSON.stringify(run))]), run);
+  const ok = decodeOutput([b64(JSON.stringify({ kind: 'python', exitCode: 0, seconds: 0.2, stdout: 'x', stderr: 'y' }))]);
+  assert.ok(ok.kind === 'python' && ok.exitCode === 0 && ok.signal === null && !ok.timedOut && ok.stdout === 'x');
+});
+
+test('decodeOutput refuses a python run without stdout or with a malformed exit code', () => {
+  assert.throws(() => decodeOutput([b64(JSON.stringify({ kind: 'python', exitCode: 0, stderr: '' }))]));
+  assert.throws(() => decodeOutput([b64(JSON.stringify({ kind: 'python', exitCode: '0', stdout: '', stderr: '' }))]));
 });
 
 test('final review: the authorization_window message no longer says ten seconds, and capacity and duplicate have their own words', () => {

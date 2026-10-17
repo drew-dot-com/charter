@@ -179,6 +179,54 @@ test('POST /v1/leases validates the body and the offer', async () => {
   }
 });
 
+test('POST /v1/leases with python opens a python job on an offer that lists the image', async () => {
+  const both: Offer = { ...OFFER, images: ['charter-job-fetch', 'charter-job-python'] };
+  const host = fakeHost();
+  const d = await start(host, { offers: async () => [both] });
+  const script = 'import numpy as np\nprint("pi", np.pi)\n' + '#'.repeat(8 * 1024 - 40);
+  try {
+    const open = await d.post('/v1/leases', { offerId: OFFER_ID, python: { script } });
+    assert.equal(open.status, 200);
+    assert.deepEqual(host.opened, [{ image: 'charter-job-python', args: { SCRIPT: script } }]);
+  } finally {
+    d.close();
+  }
+});
+
+test('POST /v1/leases refuses a bad python body, and a python job on an offer without the image', async () => {
+  const both: Offer = { ...OFFER, images: ['charter-job-fetch', 'charter-job-python'] };
+  const host = fakeHost();
+  const d = await start(host, { offers: async () => [both] });
+  try {
+    for (const python of [{ script: '' }, { script: '  \n' }, { script: 'x'.repeat(8 * 1024 + 1) }, { script: 'a\0b' }, { script: 5 }, 'print(1)', null]) {
+      assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, python })).status, 400, JSON.stringify(python)?.slice(0, 40));
+    }
+    assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS, python: { script: 'print(1)' } })).status, 400, 'one job per lease');
+    assert.equal(host.opened.length, 0);
+  } finally {
+    d.close();
+  }
+  const d2 = await start(fakeHost());
+  try {
+    const r = await d2.post('/v1/leases', { offerId: OFFER_ID, python: { script: 'print(1)' } });
+    assert.equal(r.status, 400);
+    assert.deepEqual(await r.json(), { error: 'image_not_offered' });
+  } finally {
+    d2.close();
+  }
+});
+
+test('GET /v1/offers lists an offer that carries only the python image', async () => {
+  const py: Offer = { ...OFFER, images: ['charter-job-python'] };
+  const d = await start(fakeHost(), { offers: async () => [py] });
+  try {
+    const list = (await (await d.get('/v1/offers')).json()) as Array<{ images: string[] }>;
+    assert.deepEqual(list.map((o) => o.images), [['charter-job-python']]);
+  } finally {
+    d.close();
+  }
+});
+
 test('a host open that throws answers 502 and records no lease', async () => {
   const d = await start(fakeHost({ open: async () => { throw new Error('socket hang up at 10.0.0.1'); } }));
   try {
