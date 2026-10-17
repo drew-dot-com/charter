@@ -119,12 +119,16 @@ user, so make the dirs with `install -d -m 700` then `chown -R 1000:1000`.
 
 ## 5. Browser lease (Drew clicks Rent)
 
-- [ ] Drew opens `https://charter.167-233-221-236.sslip.io` with his own browser wallet (USDC on Base),
+- [x] Drew opens `https://charter.167-233-221-236.sslip.io` with his own browser wallet (USDC on Base),
   picks the machine, enters URLs, clicks Rent and signs each interval (one prompt per interval until
   Task 12's batch settlement).
-- [ ] Check: the lease page reaches `done`; the x402 payments show on Basescan to `CHARTER_PAY_TO`;
+- [x] Check: the lease page reaches `done`; the x402 payments show on Basescan to `CHARTER_PAY_TO`;
   `door-ledger.json` shows 0 losses for the lease; `charter-host land` and its tx on Solscan.
-- [ ] Record below.
+- [x] Record below.
+
+Notes (10-17): the first try failed with the wallet's own "Unexpected error" (a stuck connect request
+or two wallet extensions on `window.ethereum`); clearing it fixed it. The page should pick a wallet by
+EIP-6963. With a door fee of 0 the door carries the open and the reads, 1600 on this lease.
 
 ## 6. Edison's tool (gate 4)
 
@@ -192,4 +196,4 @@ each publish is a paid relay write of 1000, so a running host costs about 0.14 U
 | | lease id | intervals paid | spent (micro-USDC) | txs |
 | --- | --- | --- | --- | --- |
 | Edison, step 3 (10-17 18:17 UTC) | `c73ccd97ab6987023b37c99281f12a34` | 1 (the job finished inside it) | 6500 (open 1000, tick 5000, 5 reads) | land (Solana, finalized): `E6C5MaGtD5PyTURWSM5GYufXdE9boBZGkYiyhyHtFaNBVX2Wbjgk4EFBfDSQreFbcyuDJajkUfVdDsMsKxt535k` |
-| browser, step 5 | | | | x402: , land: |
+| browser, step 5 (10-17 18:53 UTC, Drew's wallet) | `0b4ce38ec3ea43a7172f8df136a68501` | 1 | renter 5000 over x402; door paid host 6600 (open 1000, tick 5000, 6 reads), 0 losses | x402 (Base): `0xaa19e753857fb3347f83d02d0fc84d7024f37a92a734f35756912476a58bf51d`; land (Solana, finalized): `mNmAd7kHpTwM3ep98JzPXKKPJioB2sGhDwGmLpsyPySQKgHc2spFnNoN5o3nEfn1Ewogc93Nadj4AouV8j2B5Sp` |
