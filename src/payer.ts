@@ -90,7 +90,28 @@ export interface SendClient {
   channel?: {
     current(): Promise<{ depositTotal: bigint; signed: bigint } | undefined>;
     open(): Promise<unknown>;
+    channels?(): ChannelSummary[];
+    close?(): Promise<ChannelExit[]>;
+    settle?(): Promise<ChannelExit[]>;
   };
+}
+
+/** One x402 channel the client holds with the connector, live or archived (the client's own summary). */
+export interface ChannelSummary {
+  channel: { channelId: string };
+  depositTotal: bigint;
+  signed: bigint;
+  closedAt?: bigint;
+  settleableAt?: bigint;
+  settledAt?: bigint;
+}
+
+/** What one exit step did to one channel. */
+export interface ChannelExit {
+  channelId: string;
+  transaction?: string;
+  settleableAt?: bigint;
+  error?: string;
 }
 
 export interface ToonClientPayerDeps {
@@ -276,6 +297,24 @@ export class ToonClientPayer implements Payer {
     if (!this.client.describe || !this.client.channel) throw new Error('this TOON client cannot open a channel ahead of a send');
     await this.client.describe();
     await this.client.channel.open();
+  }
+
+  /** Every channel the client holds with the connector, live or archived. */
+  channels(): ChannelSummary[] {
+    if (!this.client.channel?.channels) throw new Error('this TOON client lists no channels');
+    return this.client.channel.channels();
+  }
+
+  /** Starts leaving every open channel (Solana `request_close`, costs SOL gas). The next open onboards a fresh one. */
+  async closeChannels(): Promise<ChannelExit[]> {
+    if (!this.client.channel?.close) throw new Error('this TOON client cannot close a channel');
+    return this.client.channel.close();
+  }
+
+  /** Takes back the unspent deposit of every channel whose exit window has passed. */
+  async settleChannels(): Promise<ChannelExit[]> {
+    if (!this.client.channel?.settle) throw new Error('this TOON client cannot settle a channel');
+    return this.client.channel.settle();
   }
 
   async send(dest: string, req: PacketRequest, opts: SendOpts): Promise<PacketAnswer> {

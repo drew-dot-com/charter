@@ -37,6 +37,8 @@ a read-only root, no capabilities and `no-new-privileges`.
 
 `charter-door` serves the storefront and pays hosts for browser renters. `charter-door unblock <0x address>`
 reads only `CHARTER_DATA_DIR`.
+`charter-door channel status | rotate | settle` reads only the `CHARTER_TOON_*` variables; run it with the
+door stopped (docs/demo.md, channel rotation).
 
 | variable | required | default | what it is |
 | --- | --- | --- | --- |
@@ -52,12 +54,14 @@ reads only `CHARTER_DATA_DIR`.
 | `CHARTER_TOON_KEY_FILE` | yes | | File holding the door's TOON payer key: a hex private key (`evm`) or a JSON array of secret key bytes (`solana`). |
 | `CHARTER_TOON_CHANNEL_STORE` | yes | | The client's x402 channel store file. Losing it strands a live channel's deposit. |
 | `CHARTER_TOON_CHAIN` | yes | | `evm` or `solana`: the chain the door's channel is on. |
+| `CHARTER_TOON_RPC_URL_FILE` | no | the client's default | File holding the chain RPC URL (one `https://` line). A file because the URL may carry an API key. On the Hetzner box use the Helius URL: the public Solana RPC rate-limits it. |
 
 Fixed, not configurable: 10 opens an hour per IP and 30 across all IPs; 120 GETs a minute per IP on
 `/v1/leases/*`; 30 tick POSTs a minute per IP; at most 500000 micro-USDC a UTC day of door spend no
 renter paid for (opens, free reads, the status read before each tick, losses), past which opens,
 ticks and uncached reads answer 503 `capacity`; a tick is refused 503 `retry_later` while the
-channel's headroom is under the tick price plus 10000.
+channel's headroom is under the tick price plus 10000, and an open is refused 503 `capacity` while it
+is under the open price plus the tick price plus 10000.
 
 ## charter (tenant CLI)
 

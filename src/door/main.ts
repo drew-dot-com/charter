@@ -1,8 +1,10 @@
 #!/usr/bin/env node
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ToonClientPayer, serialized } from '../payer.js';
 import { hostApi } from '../tenant/host-api.js';
 import { fetchOffers } from '../tenant/offers.js';
+import { channelCommand } from './channel.js';
 import { parseDoorHosts, parseTrustProxy } from './config.js';
 import { DoorLedger, LEDGER_FILE } from './ledger.js';
 import { doorApp } from './server.js';
@@ -14,26 +16,38 @@ function need(env: NodeJS.ProcessEnv, name: string): string {
   return v;
 }
 
-async function main(): Promise<void> {
-  const env = process.env;
-  const port = Number(need(env, 'CHARTER_DOOR_PORT'));
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('CHARTER_DOOR_PORT must be a port number');
-  const relayUrl = need(env, 'CHARTER_RELAY_URL');
+/** The door's own TOON wallet, which pays hosts. */
+async function doorPayer(env: NodeJS.ProcessEnv): Promise<ToonClientPayer> {
   const chain = need(env, 'CHARTER_TOON_CHAIN');
   if (chain !== 'evm' && chain !== 'solana') throw new Error('CHARTER_TOON_CHAIN must be evm or solana');
-  const dataDir = need(env, 'CHARTER_DATA_DIR');
-  const trustProxy = parseTrustProxy(env.CHARTER_DOOR_TRUST_PROXY);
-  const hosts = parseDoorHosts(env.CHARTER_DOOR_HOSTS);
-
-  // The door's own TOON wallet pays hosts. The key stays in the file the env names. A bad key file
-  // fails with KeyFileError's fixed message; other startup errors carry no key material and print as they are.
+  // The key stays in the file the env names. A bad key file fails with KeyFileError's fixed message;
+  // other startup errors carry no key material and print as they are.
   const payerConfig: Parameters<typeof ToonClientPayer.create>[0] = {
     connectorUrl: need(env, 'CHARTER_TOON_CONNECTOR_URL'),
     keyFile: need(env, 'CHARTER_TOON_KEY_FILE'),
     channelStore: need(env, 'CHARTER_TOON_CHANNEL_STORE'),
     chain,
   };
-  const client = await ToonClientPayer.create(payerConfig);
+  // The RPC URL may carry an API key, so it comes from a file like the other secrets.
+  const rpcFile = env.CHARTER_TOON_RPC_URL_FILE?.trim();
+  if (rpcFile) {
+    const rpcUrl = readFileSync(rpcFile, 'utf8').trim();
+    if (!/^https:\/\/\S+$/.test(rpcUrl)) throw new Error('CHARTER_TOON_RPC_URL_FILE must hold one https:// URL');
+    payerConfig.rpcUrl = rpcUrl;
+  }
+  return ToonClientPayer.create(payerConfig);
+}
+
+async function main(): Promise<void> {
+  const env = process.env;
+  const port = Number(need(env, 'CHARTER_DOOR_PORT'));
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('CHARTER_DOOR_PORT must be a port number');
+  const relayUrl = need(env, 'CHARTER_RELAY_URL');
+  const dataDir = need(env, 'CHARTER_DATA_DIR');
+  const trustProxy = parseTrustProxy(env.CHARTER_DOOR_TRUST_PROXY);
+  const hosts = parseDoorHosts(env.CHARTER_DOOR_HOSTS);
+
+  const client = await doorPayer(env);
   // The channel is opened (or found) now, at boot, not inside the first tick's payment window.
   try {
     await client.warm();
@@ -75,7 +89,11 @@ if (process.argv[2] === 'unblock') {
   process.exit(unblockCommand(process.argv.slice(3), process.env, Date.now, (m) => console.log(m)));
 }
 
-main().then(
+const run = process.argv[2] === 'channel'
+  ? doorPayer(process.env).then((p) => channelCommand(process.argv.slice(3), p, (m) => console.log(m))).then((code) => process.exit(code))
+  : main();
+
+run.then(
   () => process.exit(0),
   (e) => {
     console.error(String(e instanceof Error ? e.message : e));
