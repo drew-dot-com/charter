@@ -1526,14 +1526,18 @@ test('minor: a host tick answer with duplicate: true is 409 duplicate, nothing s
 test('F-I4: a tick is refused 503 retry_later after verify, with no host call, when the channel headroom is under tickPrice + 10000', async () => {
   for (const [headroom, status] of [[14_999n, 503], [undefined, 503], ['throws', 503], [15_000n, 200]] as const) {
     const host = fakeHost();
+    // Enough for the open; the case's headroom from the tick on.
+    let opened = false;
     const d = await start(host, {
       headroom: async () => {
+        if (!opened) return 1_000_000n;
         if (headroom === 'throws') throw new Error('describe failed');
         return headroom;
       },
     });
     try {
       await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+      opened = true;
       host.calls.length = 0;
       const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 });
       assert.equal(r.status, status, String(headroom));
@@ -1543,6 +1547,29 @@ test('F-I4: a tick is refused 503 retry_later after verify, with no host call, w
         assert.deepEqual(d.settled, []);
         assert.equal(d.ledger.get(LEASE)!.losses, 0n);
         assert.equal(d.ledger.get(LEASE)!.stopped, false);
+      }
+    } finally {
+      d.close();
+    }
+  }
+});
+
+test('Task 11: an open is refused 503 capacity, with no host call, when the channel headroom is under openPrice + tickPrice + 10000', async () => {
+  for (const [headroom, status] of [[15_999n, 503], [undefined, 503], ['throws', 503], [16_000n, 200]] as const) {
+    const host = fakeHost();
+    const d = await start(host, {
+      headroom: async () => {
+        if (headroom === 'throws') throw new Error('describe failed');
+        return headroom;
+      },
+    });
+    try {
+      const r = await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+      assert.equal(r.status, status, String(headroom));
+      if (status === 503) {
+        assert.deepEqual(await r.json(), { error: 'capacity' });
+        assert.deepEqual(host.calls, []);
+        assert.equal(d.ledger.get(LEASE), undefined);
       }
     } finally {
       d.close();

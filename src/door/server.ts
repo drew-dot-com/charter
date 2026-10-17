@@ -22,7 +22,8 @@ export interface DoorDeps {
   /**
    * What the door's open x402 channel can still pay, in micro-USDC, as its TOON client records it;
    * undefined when no channel is open. A tick is refused while it is under tickPrice + HEADROOM_MARGIN,
-   * so a tick never waits on a channel open inside its payment window. Left out: no check.
+   * so a tick never waits on a channel open inside its payment window, and an open while it is under
+   * openPrice + tickPrice + HEADROOM_MARGIN, so a new lease can pay its open and its first tick. Left out: no check.
    */
   headroom?: () => Promise<Micro | undefined>;
   ledger: DoorLedger;
@@ -180,6 +181,25 @@ export function doorApp(deps: DoorDeps): express.Express {
   const claimed = new Set<string>();
   /** When the operator was last told the channel is too low for ticks (epoch ms). */
   let lowHeadroomWarnedAt = -Infinity;
+  /**
+   * True when the door's channel cannot pay `need` (or its headroom is unknown). Logs at most once a minute,
+   * so the operator sees the channel needs replacing (docs/demo.md, channel rotation).
+   */
+  const headroomShort = async (need: Micro, what: string): Promise<boolean> => {
+    if (!deps.headroom) return false;
+    let left: Micro | undefined;
+    try {
+      left = await deps.headroom();
+    } catch {
+      left = undefined;
+    }
+    if (left !== undefined && left >= need) return false;
+    if (now() - lowHeadroomWarnedAt >= MINUTE_MS) {
+      lowHeadroomWarnedAt = now();
+      console.error(`charter-door: channel headroom ${left === undefined ? 'unknown (no open channel?)' : left.toString()} is under ${need}; ${what} wait until the channel is replaced`);
+    }
+    return true;
+  };
 
   const partFile = (id: string, part: number): string => join(deps.dataDir, 'output', id, `${part}.json`);
 
@@ -303,6 +323,10 @@ export function doorApp(deps: DoorDeps): express.Express {
     if (!offer.images.includes(JOB_IMAGE)) return void res.status(400).json({ error: 'image_not_offered' });
     // Door-wide: an open costs the door and no renter pays for it.
     if (overCap() || !allowDoorOpen('door')) return void res.status(503).json({ error: 'capacity' });
+    // A lease the channel cannot carry through its open and first tick is not started.
+    if (await headroomShort(offer.openPrice + offer.tickPrice + HEADROOM_MARGIN, 'opens')) {
+      return void res.status(503).json({ error: 'capacity' });
+    }
 
     try {
       const api = deps.api(offer);
@@ -400,21 +424,7 @@ export function doorApp(deps: DoorDeps): express.Express {
     if (payer && ledger.payerHasLoss(payer, now())) return void res.status(403).json({ error: 'payer_blocked' });
     // A channel too low for this tick would be replaced inside the tick's send, past its payment window.
     // Nothing is sent and the renter's payment does not settle: the renter signs again.
-    if (deps.headroom) {
-      let left: Micro | undefined;
-      try {
-        left = await deps.headroom();
-      } catch {
-        left = undefined;
-      }
-      if (left === undefined || left < offer.tickPrice + HEADROOM_MARGIN) {
-        if (now() - lowHeadroomWarnedAt >= MINUTE_MS) {
-          lowHeadroomWarnedAt = now();
-          console.error(`charter-door: channel headroom ${left === undefined ? 'unknown (no open channel?)' : left.toString()} is under tick ${offer.tickPrice} + ${HEADROOM_MARGIN}; ticks wait until the channel is replaced`);
-        }
-        return void res.status(503).json({ error: 'retry_later' });
-      }
-    }
+    if (await headroomShort(offer.tickPrice + HEADROOM_MARGIN, 'ticks')) return void res.status(503).json({ error: 'retry_later' });
     const api = deps.api(offer);
     const deadline = res.locals.deadline as number | undefined;
     const sendOpts = deadline === undefined ? {} : { deadline };
