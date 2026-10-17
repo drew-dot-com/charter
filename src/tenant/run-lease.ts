@@ -8,7 +8,7 @@ export type LeaseEvent =
   | { kind: 'ticked'; index: number; paidIntervals: number }
   | { kind: 'status'; state: Lease['state']; paidIntervals: number }
   | { kind: 'output'; bytes: number }
-  | { kind: 'stopped'; reason: 'max_intervals' | 'closed' | 'done' };
+  | { kind: 'stopped'; reason: 'max_intervals' | 'closed' | 'done' | 'stalled' | 'no_paid_through' };
 
 export interface RunLeaseOpts {
   /** The most ticks to pay. After the last one it waits out the paid time, reads the lease once more and returns. */
@@ -38,6 +38,7 @@ export async function runLease(api: HostApi, o: Offer, job: JobSpec, opts: RunLe
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const emit = opts.onEvent ?? (() => undefined);
+  const intervalMs = o.intervalSeconds * 1000;
   const spent0 = api.spent();
   const result = (lease: Lease, extra: { output?: Buffer; error?: string } = {}): RunLeaseResult => ({
     lease,
@@ -75,12 +76,21 @@ export async function runLease(api: HostApi, o: Offer, job: JobSpec, opts: RunLe
     return { lease, finished: false };
   };
 
-  /** Pay tick `index`. A 409 means the lease is no longer running: read it, never retry the tick. */
-  const pay = async (index: number): Promise<{ paidThrough?: number } | { ended: RunLeaseResult }> => {
+  /** Local (tenant clock) estimate of when the paid time runs out. Never taken from the host. */
+  let paidUntil: number | undefined;
+  /** Ticks sent, whatever the host reports. This, not the host's count, is the spend cap. */
+  let ticksSent = 0;
+
+  /** Pay the next tick. A 409 means the lease is no longer running: read it, never retry the tick. */
+  const pay = async (): Promise<{ ended: RunLeaseResult } | { hostPaidThrough: boolean }> => {
+    const index = ticksSent++;
     try {
       const t = await api.tick(leaseId, index);
       emit({ kind: 'ticked', index, paidIntervals: t.paidIntervals });
-      return t.paidThrough === undefined ? {} : { paidThrough: t.paidThrough };
+      // The host extends the paid time by one interval from its current end, so the local estimate
+      // does the same, starting from when the first tick went through.
+      if (!t.duplicate || paidUntil === undefined) paidUntil = (paidUntil ?? now()) + intervalMs;
+      return { hostPaidThrough: t.paidThrough !== undefined };
     } catch (e) {
       if (e instanceof HostError && e.status === 409 && (e.error === 'lease_done' || e.error === 'not_running')) {
         const s = await settle();
@@ -90,19 +100,30 @@ export async function runLease(api: HostApi, o: Offer, job: JobSpec, opts: RunLe
     }
   };
 
-  let paid = await pay(0);
+  let p = await pay();
   for (;;) {
-    if ('ended' in paid) return paid.ended;
-    if (paid.paidThrough !== undefined) await sleep(Math.max(0, paid.paidThrough - EARLY_MS - now()));
+    if ('ended' in p) return p.ended;
+    if (!p.hostPaidThrough) {
+      // A tick answer with no paid time is only right for a job that already finished: look once, never tick again.
+      const s = await settle();
+      if (!s.finished) emit({ kind: 'stopped', reason: 'no_paid_through' });
+      return result(s.lease, s.output ? { output: s.output } : {});
+    }
+    await sleep(Math.max(0, paidUntil! - EARLY_MS - now()));
     const s = await settle();
     if (s.finished) return result(s.lease, s.output ? { output: s.output } : {});
-    if (s.lease.paidIntervals >= opts.maxIntervals) {
+    if (ticksSent >= opts.maxIntervals) {
       // No more ticks, but the last interval is paid for: wait it out, then look once more.
-      if (s.lease.paidThrough !== undefined) await sleep(Math.max(0, s.lease.paidThrough - now()));
+      await sleep(Math.max(0, paidUntil! - now()));
       const last = await settle();
       if (!last.finished) emit({ kind: 'stopped', reason: 'max_intervals' });
       return result(last.lease, last.output ? { output: last.output } : {});
     }
-    paid = await pay(s.lease.paidIntervals);
+    if (s.lease.paidIntervals < ticksSent) {
+      // The host did not count the tick just paid. Paying again would buy nothing.
+      emit({ kind: 'stopped', reason: 'stalled' });
+      return result(s.lease);
+    }
+    p = await pay();
   }
 }

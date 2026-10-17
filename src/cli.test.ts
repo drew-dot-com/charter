@@ -2,10 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runCli, type CliDeps } from './cli.js';
 import { exitJob, OFFER, testHost } from './tenant/test-host.js';
+import type { Offer } from './types.js';
 
 const RESULT = Buffer.from(JSON.stringify({ ok: true, pages: ['a'] }));
 
-async function cli(argv: string[], env: Record<string, string>, extra: Partial<CliDeps> = {}) {
+async function cli(argv: string[], env: Record<string, string>, extra: Partial<CliDeps> = {}, offers: Offer[] = [OFFER]) {
   const out: string[] = [];
   const err: string[] = [];
   const h = await testHost({
@@ -20,7 +21,7 @@ async function cli(argv: string[], env: Record<string, string>, extra: Partial<C
     err: (s) => err.push(s),
     now: () => h.clock.t,
     sleep: h.sleep,
-    fetchOffers: async () => [OFFER],
+    fetchOffers: async () => offers,
     makePayer: (file) => (made.push(file), h.payer),
     ...extra,
   });
@@ -81,7 +82,7 @@ test('rent with an unknown offer id fails without paying', async () => {
 test('offers lists live offers and needs no passphrase', async () => {
   const r = await cli(['offers', '--relay', 'wss://r'], {});
   assert.equal(r.code, 0, r.err);
-  assert.match(r.out, /o1/);
+  assert.match(r.out, new RegExp(`${OFFER.hostPubkey}:o1`)); // copyable as --offer
   assert.match(r.out, /0\.005/); // tick price in USDC
 });
 
@@ -103,4 +104,38 @@ test('status resolves the offer from the relay and prints the lease', async () =
   } finally {
     h0.close();
   }
+});
+
+const OTHER: Offer = { ...OFFER, hostPubkey: 'cd'.repeat(32), sealKey: 'http://other.example/ilp' };
+const RENT = ['--urls', 'https://example.com', '--max-intervals', '5', '--relay', 'wss://r', '--json'];
+
+test('a bare --offer id shared by two hosts is refused, listing both pubkeys, and nothing is paid', async () => {
+  const r = await cli(['rent', '--offer', 'o1', ...RENT], ENV, {}, [OTHER, OFFER]);
+  assert.equal(r.code, 1);
+  assert.ok(r.err.includes(OFFER.hostPubkey) && r.err.includes(OTHER.hostPubkey), r.err);
+  assert.equal(r.h.sent['charter-open'], 0);
+  const s = await cli(['status', 'o1', 'a'.repeat(32), '--relay', 'wss://r'], ENV, {}, [OTHER, OFFER]);
+  assert.equal(s.code, 1);
+  assert.ok(s.err.includes(OFFER.hostPubkey) && s.err.includes(OTHER.hostPubkey), s.err);
+  assert.equal(s.h.sent['charter-status'], 0);
+});
+
+test('--offer <pubkey>:<id> picks that host exactly, and a wrong pubkey pays nothing', async () => {
+  const r = await cli(['rent', '--offer', `${OTHER.hostPubkey}:o1`, ...RENT], ENV, {}, [OFFER, OTHER]);
+  assert.equal(r.code, 0, r.err);
+  assert.ok(r.h.seen.length > 0);
+  for (const s of r.h.seen) assert.equal(s.sealKey, OTHER.sealKey);
+
+  const bad = await cli(['rent', '--offer', `${'ee'.repeat(32)}:o1`, ...RENT], ENV, {}, [OFFER, OTHER]);
+  assert.equal(bad.code, 1);
+  assert.equal(bad.h.sent['charter-open'], 0);
+
+  const st = await cli(['status', `${OTHER.hostPubkey}:o1`, 'a'.repeat(32), '--relay', 'wss://r'], ENV, {}, [OFFER, OTHER]);
+  for (const s of st.h.seen) assert.equal(s.sealKey, OTHER.sealKey);
+  assert.ok(st.h.seen.length > 0);
+});
+
+test('a bare --offer id still works when exactly one offer matches', async () => {
+  const r = await cli(['rent', '--offer', 'o1', ...RENT], ENV, {}, [OFFER]);
+  assert.equal(r.code, 0, r.err);
 });

@@ -32,6 +32,8 @@ export interface TestHostOpts {
   runner?: Partial<Runner>;
   /** Called after each answered tick, to simulate the job. */
   afterTick?: (h: TestHost, paidIntervals: number) => void;
+  /** The host's clock runs this far ahead (or behind, when negative) of the tenant's. */
+  skewMs?: number;
 }
 
 export async function testHost(opts: TestHostOpts = {}): Promise<TestHost> {
@@ -45,7 +47,7 @@ export async function testHost(opts: TestHostOpts = {}): Promise<TestHost> {
     alive: async () => true,
     ...opts.runner,
   };
-  const apps = hostApps({ store, runner, offer: OFFER, now: () => clock.t });
+  const apps = hostApps({ store, runner, offer: OFFER, now: () => clock.t + (opts.skewMs ?? 0) });
   const servers: Array<import('node:http').Server> = [];
   const listen = async (app: Express) => {
     const s = app.listen(0, '127.0.0.1');

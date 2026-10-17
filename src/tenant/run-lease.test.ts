@@ -183,3 +183,75 @@ test('maxIntervals reached: waits out the last paid interval, so a job that exit
     h.close();
   }
 });
+
+test('a host that stalls paidIntervals: at most 2 ticks are paid and runLease returns', async () => {
+  const h = await testHost({
+    afterTick: (host) => {
+      const l = host.store.all()[0]!;
+      host.store.put({ ...l, paidIntervals: 1 });
+    },
+  });
+  try {
+    const r = await runLease(hostApi(h.payer, OFFER), OFFER, JOB, { maxIntervals: 10, now: () => h.clock.t, sleep: h.sleep });
+    assert.ok(h.sent['charter-tick'] <= 2, `ticks paid: ${h.sent['charter-tick']}`);
+    assert.equal(r.lease.state, 'running');
+  } finally {
+    h.close();
+  }
+});
+
+test('never more than maxIntervals ticks, whatever the host reports', async () => {
+  // The host forgets every tick: status always says 0 paid intervals.
+  const h = await testHost({
+    afterTick: (host) => {
+      const l = host.store.all()[0]!;
+      host.store.put({ ...l, paidIntervals: 0 });
+    },
+  });
+  try {
+    await runLease(hostApi(h.payer, OFFER), OFFER, JOB, { maxIntervals: 3, now: () => h.clock.t, sleep: h.sleep });
+    assert.ok(h.sent['charter-tick'] <= 3, `ticks paid: ${h.sent['charter-tick']}`);
+  } finally {
+    h.close();
+  }
+});
+
+test('a tick answer without paidThrough on a lease that is not done: returns without a second tick', async () => {
+  const h = await testHost();
+  try {
+    const orig = h.payer.send.bind(h.payer);
+    h.payer.send = async (d, r, o) => {
+      const a = await orig(d, r, o);
+      if (d.endsWith('charter-tick') && a.status === 200) {
+        const { paidThrough: _p, ...rest } = a.body as Record<string, unknown>;
+        return { ...a, body: rest };
+      }
+      return a;
+    };
+    const r = await runLease(hostApi(h.payer, OFFER), OFFER, JOB, { maxIntervals: 10, now: () => h.clock.t, sleep: h.sleep });
+    assert.equal(h.sent['charter-tick'], 1);
+    assert.equal(r.lease.state, 'running');
+    assert.equal(r.output, undefined);
+  } finally {
+    h.close();
+  }
+});
+
+test('a host clock far in the past: ticks are still spaced by the interval (local time)', async () => {
+  const h = await testHost({
+    skewMs: -10 * 60_000,
+    runner: { output: async () => RESULT },
+    afterTick: (host, n) => {
+      if (n === 4) exitJob(host, host.store.all()[0]!.id, RESULT);
+    },
+  });
+  try {
+    const r = await runLease(hostApi(h.payer, OFFER), OFFER, JOB, { maxIntervals: 10, now: () => h.clock.t, sleep: h.sleep });
+    assert.equal(r.lease.state, 'done');
+    assert.equal(h.sent['charter-tick'], 4);
+    // Ten seconds before the paid time runs out, then a full interval each time.
+    assert.deepEqual(h.sleeps, [20_000, 30_000, 30_000, 30_000]);
+  } finally {
+    h.close();
+  }
+});

@@ -11,8 +11,8 @@ import { runLease } from './tenant/run-lease.js';
 
 const USAGE = `usage:
   charter offers --relay <url>
-  charter rent --offer <id> --urls <a,b> --max-intervals <n> --relay <url> [--json]
-  charter status <offerId> <leaseId> --relay <url> [--json]
+  charter rent --offer <pubkey>:<id> --urls <a,b> --max-intervals <n> --relay <url> [--json]
+  charter status <pubkey>:<offerId> <leaseId> --relay <url> [--json]
 paying commands read the wallet passphrase file named by TOON_PASSPHRASE_FILE`;
 
 const JOB_IMAGE = 'charter-job-fetch';
@@ -62,11 +62,27 @@ function passphraseFile(env: Record<string, string | undefined>): string {
   return f;
 }
 
-async function findOffer(d: CliDeps, relay: string, id: string): Promise<Offer> {
-  const offers = await d.fetchOffers(relay, d.now());
-  const o = offers.find((x) => x.id === id);
-  if (!o) throw new Error(`no live offer with id ${id} on ${relay}`);
-  return o;
+/** `<pubkey>:<id>` names one host's offer exactly; a bare `<id>` is accepted only when one offer has it. */
+export function resolveOffer(offers: Offer[], ref: string): Offer {
+  const m = /^([0-9a-f]{64}):(.+)$/.exec(ref);
+  if (m) {
+    const exact = offers.find((x) => x.hostPubkey === m[1] && x.id === m[2]);
+    if (!exact) throw new Error(`no live offer ${ref}`);
+    return exact;
+  }
+  const matches = offers.filter((x) => x.id === ref);
+  if (matches.length === 0) throw new Error(`no live offer with id ${ref}`);
+  if (matches.length > 1) {
+    throw new Error(
+      `offer id ${ref} is published by ${matches.length} hosts; name one as <pubkey>:<id>:\n` +
+        matches.map((x) => `  ${x.hostPubkey}:${x.id}`).join('\n'),
+    );
+  }
+  return matches[0]!;
+}
+
+async function findOffer(d: CliDeps, relay: string, ref: string): Promise<Offer> {
+  return resolveOffer(await d.fetchOffers(relay, d.now()), ref);
 }
 
 function leaseLines(l: Lease, spent: Micro): string[] {
@@ -96,7 +112,7 @@ async function offersCommand(rest: string[], d: CliDeps): Promise<number> {
   for (const o of offers) {
     d.out(
       [
-        o.id,
+        `${o.hostPubkey}:${o.id}`,
         `${formatUsdc(o.tickPrice)} USDC per ${o.intervalSeconds}s tick`,
         `open ${formatUsdc(o.openPrice)}`,
         `${o.cpu} cpu ${o.memoryMiB} MiB`,
