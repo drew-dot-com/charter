@@ -4,6 +4,7 @@ import type { Lease, Offer } from '../types.js';
 import { OFFER_KIND } from '../offer.js';
 import { RunnerError, type Runner } from './runner.js';
 import { BOOT_TIMEOUT_MS, landAll, offerTick, reconcile, windowTick } from './loop.js';
+import { onTick } from '../lease.js';
 import { LeaseStore } from './store.js';
 
 const T0 = 1_000_000;
@@ -213,4 +214,36 @@ test('landAll keeps going when one channel fails to land and reports the error',
   assert.equal(r.errors.length, 1);
   assert.match(r.errors[0]!, /bad/);
   assert.equal(store.get('paid')!.landing!.tx, 'tx9');
+});
+
+test('windowTick decides each lease from a fresh read: a tick paid during an earlier stop is kept', async () => {
+  const store = new LeaseStore();
+  store.put(lease({ id: 'a', paidThrough: T0 + 30_000, bootedAt: T0 }));
+  store.put(lease({ id: 'b', paidThrough: T0 + 30_000, bootedAt: T0 }));
+  const now = T0 + 30_000 + 10_001;
+  const { r, stops } = fakeRunner({
+    stop: async (id) => {
+      stops.push(id);
+      if (id === 'a') store.put(onTick(store.get('b')!, 1, now, 30_000).lease);
+    },
+  });
+  await windowTick({ store, runner: r, now: () => now });
+  assert.deepEqual(stops, ['a']);
+  assert.equal(store.get('a')!.state, 'closed');
+  assert.equal(store.get('b')!.state, 'running');
+  assert.equal(store.get('b')!.paidIntervals, 2);
+});
+
+test('windowTick does not overwrite a landing written while it was stopping an earlier lease', async () => {
+  const store = new LeaseStore();
+  store.put(lease({ id: 'a', paidThrough: T0 + 30_000, bootedAt: T0 }));
+  store.put(lease({ id: 'b', paidThrough: T0 + 30_000, bootedAt: T0 }));
+  const { r } = fakeRunner({
+    stop: async (id) => {
+      if (id === 'a') store.put({ ...store.get('b')!, landing: { chain: 'solana', tx: 't', shared: true } });
+    },
+  });
+  await windowTick({ store, runner: r, now: () => T0 + 30_000 + 10_001 });
+  assert.equal(store.get('b')!.state, 'closed');
+  assert.equal(store.get('b')!.landing?.tx, 't');
 });

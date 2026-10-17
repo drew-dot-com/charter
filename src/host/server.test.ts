@@ -263,3 +263,62 @@ test('GET output is 404 while the lease has no output parts', async () => {
     t.done();
   }
 });
+
+test('GET output is 409 unpaid while the lease has no paid tick', async () => {
+  const t = await setup({ output: async () => Buffer.from('hi') });
+  try {
+    const leaseId = await opened(t);
+    t.store.put(onJobExit(t.store.get(leaseId)!, 1));
+    const r = await t.get(t.urls.status, `/leases/${leaseId}/output/0`);
+    assert.equal(r.status, 409);
+    assert.equal(r.body.error, 'unpaid');
+  } finally {
+    t.done();
+  }
+});
+
+test('tick 0 on a done lease with nothing paid records it and unlocks the output; tick 1 stays lease_done', async () => {
+  const t = await setup({ output: async () => Buffer.from('hello') });
+  try {
+    const leaseId = await opened(t);
+    t.store.put(onJobExit(t.store.get(leaseId)!, 1));
+    const late = await t.post(t.urls.tick, '/tick', { leaseId, index: 1 });
+    assert.equal(late.status, 409);
+    assert.equal(late.body.error, 'lease_done');
+    assert.equal(t.store.get(leaseId)!.paidIntervals, 0);
+
+    const r = await t.post(t.urls.tick, '/tick', { leaseId, index: 0 });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.paidIntervals, 1);
+    assert.equal(r.body.duplicate, false);
+    assert.equal(t.store.get(leaseId)!.state, 'done');
+    assert.equal(t.store.get(leaseId)!.paidIntervals, 1);
+
+    const out = await t.get(t.urls.status, `/leases/${leaseId}/output/0`);
+    assert.equal(out.status, 200);
+    assert.equal(Buffer.from(out.body.data, 'base64').toString(), 'hello');
+
+    const again = await t.post(t.urls.tick, '/tick', { leaseId, index: 0 });
+    assert.equal(again.status, 409);
+    assert.equal(again.body.error, 'lease_done');
+    assert.equal(t.store.get(leaseId)!.paidIntervals, 1);
+  } finally {
+    t.done();
+  }
+});
+
+test('request bodies parse as JSON whatever the content-type says', async () => {
+  const t = await setup();
+  try {
+    const leaseId = await opened(t);
+    const res = await fetch(t.urls.tick + '/tick', {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain' },
+      body: JSON.stringify({ leaseId, index: 0 }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(((await res.json()) as any).paidIntervals, 1);
+  } finally {
+    t.done();
+  }
+});

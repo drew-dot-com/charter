@@ -63,15 +63,21 @@ function watchExit(deps: LoopDeps, id: string): void {
   })();
 }
 
-/** Runs every second: closes unpaid and stuck leases, and starts exit watches. */
+/**
+ * Runs every second: closes unpaid and stuck leases, and starts exit watches.
+ * Ticks arrive while this awaits `stop`, so each lease is re-read, and judged
+ * against a fresh clock, right before it is decided; the write goes before the await.
+ */
 export async function windowTick(deps: LoopDeps): Promise<void> {
   const watched = (deps.watched ??= new Set());
-  const now = deps.now();
-  for (const l of deps.store.all()) {
+  for (const { id } of deps.store.all()) {
+    const l = deps.store.get(id);
+    if (!l) continue;
+    const now = deps.now();
     if (l.state === 'booting') {
       if (now > l.createdAt + BOOT_TIMEOUT_MS) {
         deps.store.put(onBootFailed(l));
-        await stop(deps, l.id);
+        await stop(deps, id);
       }
       continue;
     }
@@ -79,12 +85,12 @@ export async function windowTick(deps: LoopDeps): Promise<void> {
     const reason = due(l, now, GRACE_MS);
     if (reason !== null) {
       close(deps, l, reason);
-      await stop(deps, l.id);
+      await stop(deps, id);
       continue;
     }
-    if (!watched.has(l.id)) {
-      watched.add(l.id);
-      watchExit(deps, l.id);
+    if (!watched.has(id)) {
+      watched.add(id);
+      watchExit(deps, id);
     }
   }
 }

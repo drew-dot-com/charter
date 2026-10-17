@@ -41,7 +41,7 @@ function parseJob(body: unknown): JobSpec | null {
 function newApp(): express.Express {
   const app = express();
   app.disable('x-powered-by');
-  app.use(express.json({ limit: '64kb' }));
+  app.use(express.json({ limit: '64kb', type: () => true }));
   return app;
 }
 
@@ -108,7 +108,12 @@ export function hostApps(deps: HostDeps): { open: express.Express; tick: express
     }
     const lease = store.get(leaseId);
     if (!lease) return void res.status(404).json({ error: 'not_found' });
-    if (lease.state === 'done') return void res.status(409).json({ error: 'lease_done' });
+    if (lease.state === 'done') {
+      // A job that finished before its first tick: tick 0 is what pays for reading its output.
+      if (index !== 0 || lease.paidIntervals !== 0) return void res.status(409).json({ error: 'lease_done' });
+      store.put({ ...lease, paidIntervals: 1 });
+      return void res.json({ paidIntervals: 1, duplicate: false });
+    }
     try {
       const r = onTick(lease, index, now(), intervalMs);
       if (!r.duplicate) store.put(r.lease);
@@ -131,6 +136,7 @@ export function hostApps(deps: HostDeps): { open: express.Express; tick: express
     if (!lease || parts === undefined || !NON_NEG_INT.test(req.params.part)) {
       return void res.status(404).json({ error: 'not_found' });
     }
+    if (lease.paidIntervals === 0) return void res.status(409).json({ error: 'unpaid' });
     const part = Number(req.params.part);
     if (!Number.isSafeInteger(part) || part >= parts) return void res.status(404).json({ error: 'not_found' });
     let bytes: Buffer;
