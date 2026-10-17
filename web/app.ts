@@ -3,6 +3,7 @@ import { decodeOutput, formatUsdc, landingLink, parseOffer, pricePerHour, sizeLa
 import { call, makePost, type Answer, type DoorInfo } from './pay.js';
 import { nextTickAt } from './schedule.js';
 import { applyStatus, clearHalt, newTickState, runTick, shouldTick, type TickState } from './ticker.js';
+import { CHOOSE_WALLET, NO_WALLET, chooseWallet, discoverWallets, requestAccounts } from './providers.js';
 import { BASE_CHAIN_ID_HEX, type Eip1193 } from './wallet.js';
 
 // ---------------------------------------------------------------------------
@@ -77,19 +78,74 @@ let wallet: Wallet | undefined;
 let dev = false;
 let doorInfo: DoorInfo | undefined;
 
-function provider(): Eip1193 | undefined {
-  return (window as unknown as { ethereum?: Eip1193 }).ethereum;
+/** The wallets that announced themselves (EIP-6963). Several installed wallets each get a line here. */
+const wallets = discoverWallets(window);
+const CHOICE_KEY = 'charter.wallet';
+/** The rdns of the wallet the renter picked, remembered for the next visit. */
+let chosen: string | undefined = (() => {
+  try {
+    return localStorage.getItem(CHOICE_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+})();
+
+function choose(rdns: string): void {
+  chosen = rdns;
+  try {
+    localStorage.setItem(CHOICE_KEY, rdns);
+  } catch {
+    // Remembering the pick is a convenience only.
+  }
+}
+
+const injected = (): Eip1193 | undefined => (window as unknown as { ethereum?: Eip1193 }).ethereum;
+
+/** A wallet picker, shown only when more than one wallet announced itself. */
+function walletPicker(): HTMLElement | null {
+  if (wallets.length < 2) return null;
+  const select = el('select');
+  select.id = `wallet-${Math.random().toString(36).slice(2, 10)}`;
+  const known = wallets.some((w) => w.info.rdns === chosen);
+  const none = el('option', undefined, 'Choose a wallet');
+  none.value = '';
+  none.disabled = true;
+  none.selected = !known;
+  select.append(none);
+  for (const w of wallets) {
+    const o = el('option', undefined, w.info.name || w.info.rdns);
+    o.value = w.info.rdns;
+    o.selected = known && w.info.rdns === chosen;
+    select.append(o);
+  }
+  select.addEventListener('change', () => {
+    if (select.value) choose(select.value);
+  });
+  const label = el('label', undefined, 'Pay with');
+  label.htmlFor = select.id;
+  return el('div', 'wallet-pick', label, select);
 }
 
 /** `silent`: reuse an account the wallet already shared, never prompt. Returns undefined when there is none. */
 async function connectWallet(silent = false): Promise<Wallet | undefined> {
-  if (wallet) return wallet;
-  const eth = provider();
-  if (!eth) {
+  const choice = chooseWallet(wallets, chosen, injected());
+  if (choice.kind !== 'provider') {
     if (silent) return undefined;
-    throw new Error('No browser wallet found. Install one such as MetaMask, then reload.');
+    throw new Error(choice.kind === 'pick' ? CHOOSE_WALLET : NO_WALLET);
   }
-  const accounts = (await eth.request({ method: silent ? 'eth_accounts' : 'eth_requestAccounts' })) as string[];
+  const eth = choice.provider;
+  if (wallet?.eth === eth) return wallet;
+  wallet = undefined;
+  let accounts: string[];
+  if (silent) {
+    try {
+      accounts = (await eth.request({ method: 'eth_accounts' })) as string[];
+    } catch {
+      return undefined;
+    }
+  } else {
+    accounts = await requestAccounts(eth);
+  }
   const address = accounts[0];
   if (!address || !/^0x[0-9a-fA-F]{40}$/.test(address)) return undefined;
   if (!silent) {
@@ -134,7 +190,7 @@ async function showHome(token: number): Promise<void> {
     el('h1', undefined, 'Machines for rent'),
     el('p', 'lede', 'Rent a container on a hidden host, paid in USDC on Base every 30 seconds while it runs. In v1 it runs one job: it fetches the pages you name and sends back a screenshot and the text of each.'),
     list,
-    el('p', 'note', 'No account. Pay from any funded channel.'),
+    el('p', 'note', 'No account. Pay from a browser wallet with USDC on Base.'),
     dev ? el('p', 'note', 'Local test mode: payments are skipped.') : null,
   );
   list.append(el('li', 'muted', 'Loading machines'));
@@ -218,7 +274,8 @@ function rentForm(o: PublicOffer, close: () => void): HTMLElement {
     form.remove();
     close();
   });
-  form.append(label, area, status, el('div', 'actions', start, cancel));
+  let picker = dev ? null : walletPicker();
+  form.append(label, area, ...(picker ? [picker] : []), status, el('div', 'actions', start, cancel));
   form.addEventListener('submit', (ev) => {
     ev.preventDefault();
     void (async () => {
@@ -230,6 +287,11 @@ function rentForm(o: PublicOffer, close: () => void): HTMLElement {
       start.disabled = true;
       try {
         if (!dev) {
+          if (!picker && wallets.length > 1) {
+            // A wallet announced itself after the form opened.
+            picker = walletPicker();
+            form.insertBefore(picker!, status);
+          }
           status.textContent = 'Connecting your wallet';
           await connectWallet();
         }
@@ -500,6 +562,8 @@ function render(p: LeasePage): void {
     if (needsWallet) {
       const box = el('div', 'msg warn', 'Connect your wallet to keep paying for this lease. Without a payment in time, it closes.');
       const note = el('p', 'muted');
+      const pick = walletPicker();
+      if (pick) box.append(pick);
       box.append(el('div', 'actions', button('Connect wallet', () => {
         connectWallet().then(() => render(p), (e) => {
           note.textContent = short(e);
