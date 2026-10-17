@@ -30,10 +30,10 @@ function fakeRunner(over: Partial<Runner> = {}) {
   return { r, calls };
 }
 
-async function setup(over: Partial<Runner> = {}) {
+async function setup(over: Partial<Runner> = {}, maxLeases?: number) {
   const store = new LeaseStore();
   const { r, calls } = fakeRunner(over);
-  const apps = hostApps({ store, runner: r, offer: OFFER, now: () => T0 });
+  const apps = hostApps({ store, runner: r, offer: OFFER, now: () => T0, ...(maxLeases === undefined ? {} : { maxLeases }) });
   const servers: Array<import('node:http').Server> = [];
   const base = async (app: Express) => {
     const s = app.listen(0, '127.0.0.1');
@@ -98,6 +98,38 @@ test('POST /open reports a runner refusal by code, and does not stop a container
     assert.equal(r.body.state, 'closed');
     assert.equal(r.body.error, 'image_not_allowed');
     assert.deepEqual(t.calls, []);
+  } finally {
+    t.done();
+  }
+});
+
+test('F-I2: past CHARTER_MAX_LEASES live leases an open answers 200 closed busy before docker create', async () => {
+  const t = await setup({}, 1);
+  try {
+    const first = await opened(t);
+    const r = await t.post(t.urls.open, '/open', { job: JOB });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.state, 'closed');
+    assert.equal(r.body.closedReason, 'busy');
+    assert.match(r.body.leaseId, /^[0-9a-f]{32}$/);
+    assert.equal(t.store.get(r.body.leaseId)!.closedReason, 'busy');
+    assert.deepEqual(t.calls, [`create ${first}`], 'no container for the refused lease');
+    // A running lease still counts; a done or closed one does not.
+    await t.post(t.urls.tick, '/tick', { leaseId: first, index: 0 });
+    assert.equal((await t.post(t.urls.open, '/open', { job: JOB })).body.closedReason, 'busy');
+    t.store.put(onJobExit(t.store.get(first)!, 0));
+    const again = await t.post(t.urls.open, '/open', { job: JOB });
+    assert.equal(again.body.state, 'awaiting_first_tick');
+  } finally {
+    t.done();
+  }
+});
+
+test('F-I2: the default cap is one live lease', async () => {
+  const t = await setup();
+  try {
+    await opened(t);
+    assert.equal((await t.post(t.urls.open, '/open', { job: JOB })).body.closedReason, 'busy');
   } finally {
     t.done();
   }

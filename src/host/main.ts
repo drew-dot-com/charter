@@ -68,7 +68,7 @@ async function main(argv: string[]): Promise<number> {
   const deps = { store, runner, now, log: (m: string) => console.error(m) };
   await reconcile(deps);
 
-  const apps = hostApps({ store, runner, offer: cfg.offer, now });
+  const apps = hostApps({ store, runner, offer: cfg.offer, now, maxLeases: cfg.maxLeases });
   const servers = [
     apps.open.listen(cfg.ports.open, '127.0.0.1'),
     apps.tick.listen(cfg.ports.tick, '127.0.0.1'),

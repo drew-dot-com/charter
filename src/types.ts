@@ -31,7 +31,7 @@ export interface JobSpec {
 
 export type LeaseState = 'booting' | 'awaiting_first_tick' | 'running' | 'done' | 'closed';
 
-export type CloseReason = 'boot_failed' | 'missed_tick' | 'max_intervals' | 'host_restart';
+export type CloseReason = 'boot_failed' | 'missed_tick' | 'max_intervals' | 'host_restart' | 'busy';
 
 export interface Lease {
   id: string;

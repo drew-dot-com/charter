@@ -27,6 +27,7 @@ const CLOSE_REASON: Record<string, string> = {
   missed_tick: 'A payment was missed, so the lease closed.',
   max_intervals: 'The lease reached its maximum length.',
   host_restart: 'The host restarted, so the lease closed.',
+  busy: 'The machine is busy with another lease. Nothing is owed. Try again later.',
 };
 
 // ---------------------------------------------------------------------------

@@ -10,6 +10,8 @@ export interface HostDeps {
   runner: Runner;
   offer: Offer;
   now: () => number;
+  /** Live leases (booting, awaiting the first tick, running) at once. Default 1. */
+  maxLeases?: number;
 }
 
 /** Size of one output slice a status call returns. */
@@ -65,6 +67,9 @@ function finish(app: express.Express): express.Express {
 export function hostApps(deps: HostDeps): { open: express.Express; tick: express.Express; status: express.Express } {
   const { store, runner, offer, now } = deps;
   const intervalMs = offer.intervalSeconds * 1000;
+  const maxLeases = deps.maxLeases ?? 1;
+  const live = (): number =>
+    store.all().filter((l) => l.state === 'booting' || l.state === 'awaiting_first_tick' || l.state === 'running').length;
 
   const open = newApp();
   open.post('/open', async (req, res) => {
@@ -72,6 +77,11 @@ export function hostApps(deps: HostDeps): { open: express.Express; tick: express
     if (!job) return void res.status(400).json({ error: 'bad_request' });
 
     const leaseId = randomBytes(16).toString('hex');
+    // The count and the write happen with no await between them, so two opens cannot both pass.
+    if (live() >= maxLeases) {
+      store.put({ ...newLease(leaseId, offer, job, now()), state: 'closed', closedReason: 'busy' });
+      return void res.json({ leaseId, state: 'closed', closedReason: 'busy' });
+    }
     store.put(newLease(leaseId, offer, job, now()));
 
     // The packet is paid whatever happens, so a boot failure answers 200 with the reason.
