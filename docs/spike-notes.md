@@ -71,7 +71,7 @@ payer (Edison, hidden)  --peering "drew"-->  edge (connector.mainnet.toonprotoco
   - The edge was restarted once (`docker restart deploy-connector-rust-1`, 23:32 UTC, about 13 s).
 - Before and after the restart: 21 routes, peer `drew-store` kept, relay NIP-11 answered, Lading
   containers healthy. Edison's zero-amount probes still got `F06` cost quotes (`g.drew.relay`
-  1000, `g.drew.ario` 1030). Lading canary #758 at 23:24 UTC was ok (paid 3090).
+  1000, `g.drew.ario` 1030). Lading canary #758 (23:24 UTC, before) and #759 (00:24 UTC, after) were both ok, paid 3090.
 
 ## Versions
 
