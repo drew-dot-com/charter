@@ -1,0 +1,159 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { HostError, hostApi } from './host-api.js';
+import { runLease, type LeaseEvent } from './run-lease.js';
+import { exitJob, OFFER, testHost } from './test-host.js';
+import type { JobSpec } from '../types.js';
+
+const JOB: JobSpec = { image: 'charter-job-fetch', args: { URLS: 'https://example.com' } };
+const RESULT = Buffer.from(JSON.stringify({ ok: true, pages: ['a'] }));
+
+test('happy path: the job exits after the 3rd tick, output equals the runner bytes, spent is exact', async () => {
+  const events: LeaseEvent[] = [];
+  const h = await testHost({
+    runner: { output: async () => RESULT },
+    afterTick: (host, n) => {
+      if (n === 3) exitJob(host, host.store.all()[0]!.id, RESULT);
+    },
+  });
+  try {
+    const r = await runLease(hostApi(h.payer, OFFER), OFFER, JOB, {
+      maxIntervals: 10, now: () => h.clock.t, sleep: h.sleep, onEvent: (e) => events.push(e),
+    });
+    assert.equal(r.lease.state, 'done');
+    assert.equal(r.lease.paidIntervals, 3);
+    assert.deepEqual(r.output, RESULT);
+    assert.equal(h.sent['charter-open'], 1);
+    assert.equal(h.sent['charter-tick'], 3);
+    assert.equal(r.spent, 1000n + 3n * 5000n + BigInt(h.sent['charter-status']) * 100n);
+    assert.equal(h.sent['charter-status'], 4); // three polls plus one output part
+    assert.ok(events.length > 0);
+    // Each app is addressed under ilpBase and sealed to the host's /ilp URL.
+    for (const s of h.seen) assert.equal(s.sealKey, OFFER.sealKey);
+    assert.deepEqual(new Set(h.seen.map((s) => s.dest)), new Set(['g.test.charter-open', 'g.test.charter-tick', 'g.test.charter-status']));
+    // It sleeps until ten seconds before the paid time runs out. Ticks paid early extend from
+    // paidThrough, so: 30 s - 10 s, then a full 30 s each time.
+    assert.deepEqual(h.sleeps, [20_000, 30_000, 30_000]);
+  } finally {
+    h.close();
+  }
+});
+
+test('boot failure: boot_failed, no tick paid, spent is the open price only', async () => {
+  const h = await testHost({ runner: { start: async () => { throw new Error('no docker'); } } });
+  try {
+    const r = await runLease(hostApi(h.payer, OFFER), OFFER, JOB, { maxIntervals: 5, now: () => h.clock.t, sleep: h.sleep });
+    assert.equal(r.lease.state, 'closed');
+    assert.equal(r.lease.closedReason, 'boot_failed');
+    assert.equal(r.lease.paidIntervals, 0);
+    assert.equal(r.output, undefined);
+    assert.equal(r.spent, 1000n);
+    assert.equal(h.sent['charter-tick'], 0);
+    assert.equal(h.sent['charter-status'], 0);
+  } finally {
+    h.close();
+  }
+});
+
+test('maxIntervals 2 with a job that never exits: exactly 2 ticks are paid', async () => {
+  const h = await testHost();
+  try {
+    const r = await runLease(hostApi(h.payer, OFFER), OFFER, JOB, { maxIntervals: 2, now: () => h.clock.t, sleep: h.sleep });
+    assert.equal(h.sent['charter-tick'], 2);
+    assert.equal(r.lease.paidIntervals, 2);
+    assert.equal(r.lease.state, 'running');
+    assert.equal(r.output, undefined);
+    assert.equal(r.spent, 1000n + 2n * 5000n + BigInt(h.sent['charter-status']) * 100n);
+  } finally {
+    h.close();
+  }
+});
+
+test('a job that finished before tick 0: tick 0 is paid and unlocks the output', async () => {
+  const h = await testHost({ runner: { output: async () => RESULT } });
+  try {
+    // The job exits while the open answer is on its way back.
+    const orig = h.payer.send.bind(h.payer);
+    h.payer.send = async (d, r, o) => {
+      const a = await orig(d, r, o);
+      if (d.endsWith('charter-open')) exitJob(h, (a.body as { leaseId: string }).leaseId, RESULT);
+      return a;
+    };
+    const r = await runLease(hostApi(h.payer, OFFER), OFFER, JOB, { maxIntervals: 5, now: () => h.clock.t, sleep: h.sleep });
+    assert.equal(r.lease.state, 'done');
+    assert.equal(h.sent['charter-tick'], 1);
+    assert.deepEqual(r.output, RESULT);
+    assert.deepEqual(h.sleeps, []);
+  } finally {
+    h.close();
+  }
+});
+
+test('a 409 not_running on a tick reads status and returns closed, never retrying the tick', async () => {
+  const h = await testHost({
+    afterTick: (host, n) => {
+      if (n === 1) {
+        const l = host.store.all()[0]!;
+        host.store.put({ ...l, state: 'closed', closedReason: 'missed_tick' });
+      }
+    },
+  });
+  try {
+    const r = await runLease(hostApi(h.payer, OFFER), OFFER, JOB, { maxIntervals: 5, now: () => h.clock.t, sleep: h.sleep });
+    assert.equal(r.lease.state, 'closed');
+    assert.equal(r.lease.closedReason, 'missed_tick');
+    assert.equal(r.output, undefined);
+    assert.equal(h.sent['charter-tick'], 1);
+  } finally {
+    h.close();
+  }
+});
+
+test('a lease that goes done between the status read and the tick: 409 lease_done leads to the output', async () => {
+  let ticks = 0;
+  const h = await testHost({ runner: { output: async () => RESULT } });
+  try {
+    const orig = h.payer.send.bind(h.payer);
+    h.payer.send = async (d, r, o) => {
+      if (d.endsWith('charter-tick') && ++ticks === 2) exitJob(h, h.store.all()[0]!.id, RESULT);
+      return orig(d, r, o);
+    };
+    const r = await runLease(hostApi(h.payer, OFFER), OFFER, JOB, { maxIntervals: 5, now: () => h.clock.t, sleep: h.sleep });
+    assert.equal(r.lease.state, 'done');
+    assert.deepEqual(r.output, RESULT);
+    assert.equal(ticks, 2);
+    // The refused tick was still paid.
+    assert.equal(r.spent, 1000n + 2n * 5000n + BigInt(h.sent['charter-status']) * 100n);
+  } finally {
+    h.close();
+  }
+});
+
+test('hostApi: non-2xx answers throw HostError and are still counted in spent', async () => {
+  const h = await testHost();
+  try {
+    const api = hostApi(h.payer, OFFER);
+    await assert.rejects(api.tick('0'.repeat(32), 0), (e: unknown) => e instanceof HostError && e.status === 404 && e.error === 'not_found');
+    await assert.rejects(api.status('0'.repeat(32)), (e: unknown) => e instanceof HostError && e.status === 404);
+    assert.equal(api.spent(), 5100n);
+  } finally {
+    h.close();
+  }
+});
+
+test('hostApi.output joins every 48 KiB part', async () => {
+  const big = Buffer.alloc(48 * 1024 * 2 + 10, 7);
+  const h = await testHost({ runner: { output: async () => big } });
+  try {
+    const api = hostApi(h.payer, OFFER);
+    const { leaseId } = await api.open(JOB);
+    await api.tick(leaseId, 0);
+    exitJob(h, leaseId, big);
+    const out = await api.output(leaseId);
+    assert.equal(out.length, big.length);
+    assert.ok(out.equals(big));
+    assert.equal(h.sent['charter-status'], 3);
+  } finally {
+    h.close();
+  }
+});
