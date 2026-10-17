@@ -130,6 +130,10 @@ It is free, describes this node's own connector, and needs the node running:
   self-description.
 - Both answer **only while the node is running**. The local port is chosen at `toon init` and
   stored in `state.json` (`toon_apps[0].listen`).
+- **An offer carries both** (final review F-C2, supersedes any earlier note that a seal key alone
+  is enough): `sealKey` = the hex `0x04...` key above, which ToonClient seals to with no fetch
+  (the door), and `sealUrl` = the onion `/ilp` URL, which the `toon` CLI needs for `--seal-to`
+  (Edison's `charter rent`). A door that had only the URL would need SOCKS to fetch the key.
 - Stopped fallback: `TOON_PASSPHRASE_FILE=... toon wallet show --json` gives
   `.wallet.connector_identities[0].public_key` = the 32-byte x of the seal key, not the 65-byte key.
   The onion hostname is in `~/.toon/agent-node/overlay/0/hostname`.
