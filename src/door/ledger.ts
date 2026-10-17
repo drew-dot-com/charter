@@ -8,9 +8,11 @@ export interface OfferSnapshot {
   hostPubkey: string;
   ilpBase: string;
   sealKey: string;
+  sealUrl: string;
   cpu: number;
   memoryMiB: number;
   intervalSeconds: number;
+  firstTickGraceSeconds: number;
   tickPrice: string;
   openPrice: string;
   statusPrice: string;

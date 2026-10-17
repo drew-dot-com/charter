@@ -5,16 +5,19 @@ import { OFFER_KIND, offerFromEvent, offerToEvent, latestOffers } from './offer.
 
 const NOW = 1_800_000_000_000;
 const PUB = 'ab'.repeat(32);
+const SEAL_KEY = '0x04' + 'cd'.repeat(64);
 
 function offer(over: Partial<Offer> = {}): Offer {
   return {
     id: 'offer-1',
     hostPubkey: PUB,
     ilpBase: 'g.drew.charter',
-    sealKey: 'cd'.repeat(32),
+    sealKey: SEAL_KEY,
+    sealUrl: 'http://ev2ocvzg.anyone/ilp',
     cpu: 1,
     memoryMiB: 1024,
     intervalSeconds: 30,
+    firstTickGraceSeconds: 90,
     tickPrice: 5000n,
     openPrice: 1000n,
     statusPrice: 100n,
@@ -120,4 +123,41 @@ test('latestOffers drops an offer whose newest event is expired', () => {
   const live = signed(offer(), 100);
   const dead = signed(offer({ expiresAt: NOW - 1 }), 200);
   assert.deepEqual(latestOffers([live, dead], NOW), []);
+});
+
+function content(over: Record<string, unknown>) {
+  const ev = offerToEvent(offer());
+  return { pubkey: PUB, tags: ev.tags, content: JSON.stringify({ ...JSON.parse(ev.content), ...over }) };
+}
+
+test('F-C1: cpu, memoryMiB, intervalSeconds and firstTickGraceSeconds must be positive safe integers', () => {
+  for (const field of ['cpu', 'memoryMiB', 'intervalSeconds', 'firstTickGraceSeconds']) {
+    for (const bad of [0, -1, 1.5, 2 ** 60, '1', null]) {
+      assert.equal(offerFromEvent(content({ [field]: bad }), NOW), null, `${field} = ${String(bad)}`);
+    }
+  }
+  assert.notEqual(offerFromEvent(content({ cpu: 2, memoryMiB: 2048, intervalSeconds: 60 }), NOW), null);
+});
+
+test('F-C1: an expiration tag beyond a safe integer is refused, not read as never expiring', () => {
+  const ev = offerToEvent(offer());
+  for (const exp of ['9'.repeat(30), String(Number.MAX_SAFE_INTEGER)]) {
+    const tags = ev.tags.map((t) => (t[0] === 'expiration' ? ['expiration', exp] : t));
+    assert.equal(offerFromEvent({ pubkey: PUB, tags, content: ev.content }, NOW), null, exp);
+  }
+});
+
+test('F-C2: sealKey must be the 65-byte uncompressed hex key and sealUrl an http(s) URL', () => {
+  for (const bad of ['http://x.anyone/ilp', '0x04' + 'cd'.repeat(63), '0x02' + 'cd'.repeat(64), 'cd'.repeat(65), '0x04' + 'zz'.repeat(64)]) {
+    assert.equal(offerFromEvent(content({ sealKey: bad }), NOW), null, bad);
+  }
+  for (const bad of ['', 'ftp://x/ilp', 'not a url', 5]) {
+    assert.equal(offerFromEvent(content({ sealUrl: bad }), NOW), null, String(bad));
+  }
+  const { sealUrl: _u, ...noUrl } = JSON.parse(offerToEvent(offer()).content);
+  assert.equal(offerFromEvent({ pubkey: PUB, tags: offerToEvent(offer()).tags, content: JSON.stringify(noUrl) }, NOW), null);
+  const back = offerFromEvent(content({}), NOW)!;
+  assert.equal(back.sealKey, SEAL_KEY);
+  assert.equal(back.sealUrl, 'http://ev2ocvzg.anyone/ilp');
+  assert.equal(back.firstTickGraceSeconds, 90);
 });

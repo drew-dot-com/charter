@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ToonClientPayer, PacketRefusedError, KeyFileError, SendTimeoutError, DeadlinePassedError, serialized, type Payer } from './payer.js';
 
-const SEAL = 'http://ev2ocvzg6ubobqh7mnoskk2boxuo3l5grqbro6wvj4hq2ecnacaqttyd.anyone/ilp';
+const SEAL = '0x04' + '69'.repeat(64);
+const SEAL_URL = 'http://ev2ocvzg6ubobqh7mnoskk2boxuo3l5grqbro6wvj4hq2ecnacaqttyd.anyone/ilp';
 const DEST = 'g.toon.69b2a212547e7a9c.charter-echo';
 
 type Sent = { dest: string; req: unknown; opts: unknown };
@@ -42,14 +43,14 @@ const fulfilled = (status: number, text: string, amount?: bigint) => ({
   claim: amount === undefined ? undefined : { channelId: 'c', chain: 'solana', cumulative: amount, amount },
 });
 
-test('sealKey and amount reach client.send as sealTo and amount', async () => {
+test('F-C2: the raw sealKey (never the URL) and the amount reach client.send as sealTo and amount', async () => {
   const s = setup(fulfilled(200, '{"ok":true}', 5000n));
   try {
     const payer = await ToonClientPayer.create(
       { connectorUrl: 'https://connector.mainnet.toonprotocol.dev', keyFile: s.keyFile, channelStore: join(s.dir, 'store.json'), chain: 'solana' },
       { createClient: s.createClient },
     );
-    const ans = await payer.send(DEST, { method: 'POST', path: '/open', body: { n: 1 } }, { sealKey: SEAL, amount: 5000n });
+    const ans = await payer.send(DEST, { method: 'POST', path: '/open', body: { n: 1 } }, { sealKey: SEAL, sealUrl: SEAL_URL, amount: 5000n });
     assert.equal(s.sent.length, 1);
     assert.equal(s.sent[0]!.dest, DEST);
     assert.deepEqual(s.sent[0]!.opts, { amount: 5000n, sealTo: SEAL, timeoutMs: 40_000 }, 'the client ends its own send before the wrapper gives up at 45 s');
@@ -92,7 +93,7 @@ test('a free route (no claim) is paid 0n, and a plain-text body stays a string',
       { connectorUrl: 'https://c.example', keyFile: s.keyFile, channelStore: join(s.dir, 's.json'), chain: 'solana' },
       { createClient: s.createClient },
     );
-    const ans = await payer.send(DEST, { method: 'GET', path: '/' }, { sealKey: SEAL, amount: 0n });
+    const ans = await payer.send(DEST, { method: 'GET', path: '/' }, { sealKey: SEAL, sealUrl: SEAL_URL, amount: 0n });
     assert.deepEqual(s.sent[0]!.req, { method: 'GET', target: '' });
     assert.equal(ans.status, 503);
     assert.equal(ans.body, 'busy');
@@ -110,7 +111,7 @@ test('a refused packet throws PacketRefusedError with the reject code', async ()
       { createClient: s.createClient },
     );
     await assert.rejects(
-      payer.send(DEST, { method: 'POST', path: '/x' }, { sealKey: SEAL, amount: 1n }),
+      payer.send(DEST, { method: 'POST', path: '/x' }, { sealKey: SEAL, sealUrl: SEAL_URL, amount: 1n }),
       (e: unknown) => e instanceof PacketRefusedError && e.code === 'T01' && e.refusedBy === 'destination',
     );
   } finally {
@@ -165,7 +166,7 @@ test('serialized: concurrent sends never overlap and run in the order they were 
     },
   };
   const p = serialized(inner);
-  const one = (n: number) => p.send('d', { method: 'POST', path: '/x', body: { n } }, { sealKey: 's', amount: 1n });
+  const one = (n: number) => p.send('d', { method: 'POST', path: '/x', body: { n } }, { sealKey: 's', sealUrl: 'u', amount: 1n });
   const results = await Promise.allSettled([one(0), one(1), one(2), one(3)]);
   assert.equal(maxInFlight, 1);
   assert.deepEqual(order, [0, 1, 2, 3]);
@@ -192,7 +193,7 @@ test('serialized: a tick waiting behind several reads is sent before them, still
   };
   const p = serialized(inner);
   const send = (n: string, priority?: 'high') =>
-    p.send('d', { method: 'POST', path: '/x', body: { n } }, { sealKey: 's', amount: 1n, ...(priority ? { priority } : {}) });
+    p.send('d', { method: 'POST', path: '/x', body: { n } }, { sealKey: 's', sealUrl: 'u', amount: 1n, ...(priority ? { priority } : {}) });
   const all = [send('first'), send('read1'), send('read2'), send('read3'), send('tick1', 'high'), send('tick2', 'high')];
   await new Promise((r) => setImmediate(r));
   releaseFirst();
@@ -217,7 +218,7 @@ test('serialized: a send that never answers is rejected after the timeout and th
     setTimer: (fn, ms) => { const t = { fn, ms, live: true }; timers.push(t); return t; },
     clearTimer: (h) => void ((h as { live: boolean }).live = false),
   });
-  const one = (n: string) => p.send('d', { method: 'POST', path: '/x', body: { n } }, { sealKey: 's', amount: 1n });
+  const one = (n: string) => p.send('d', { method: 'POST', path: '/x', body: { n } }, { sealKey: 's', sealUrl: 'u', amount: 1n });
   const hung = one('hung');
   const next = one('next');
   const hungResult = assert.rejects(hung, (e: Error) => e instanceof SendTimeoutError);
@@ -239,7 +240,7 @@ test('R4: a send with a deadline gives the client min(40 s, deadline - now) and 
       { connectorUrl: 'https://c.example', keyFile: s.keyFile, channelStore: join(s.dir, 's.json'), chain: 'solana' },
       { createClient: s.createClient, now: () => clock.t },
     );
-    const send = (deadline: number) => payer.send(DEST, { method: 'POST', path: '/tick' }, { sealKey: SEAL, amount: 5000n, deadline });
+    const send = (deadline: number) => payer.send(DEST, { method: 'POST', path: '/tick' }, { sealKey: SEAL, sealUrl: SEAL_URL, amount: 5000n, deadline });
     await send(clock.t + 30_000);
     await send(clock.t + 100_000);
     await send(clock.t + 5_000);
@@ -267,7 +268,7 @@ test('R4: serialized skips a send whose deadline passed while it waited, without
   };
   const p = serialized(inner, { now: () => clock.t, setTimer: () => ({}), clearTimer: () => undefined });
   const send = (n: string, deadline?: number) =>
-    p.send('d', { method: 'POST', path: '/x', body: { n } }, { sealKey: 's', amount: 1n, priority: 'high', ...(deadline === undefined ? {} : { deadline }) });
+    p.send('d', { method: 'POST', path: '/x', body: { n } }, { sealKey: 's', sealUrl: 'u', amount: 1n, priority: 'high', ...(deadline === undefined ? {} : { deadline }) });
   const first = send('first');
   const late = send('late', clock.t + 20_000);
   const close = send('close', clock.t + 24_999);

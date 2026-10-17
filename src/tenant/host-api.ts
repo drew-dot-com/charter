@@ -52,6 +52,7 @@ export function hostApi(p: Payer, o: Offer): HostApi {
   async function call(app: 'open' | 'tick' | 'status', amount: Micro, req: PacketRequest, deadline?: number): Promise<unknown> {
     const a: PacketAnswer = await p.send(`${o.ilpBase}.charter-${app}`, req, {
       sealKey: o.sealKey,
+      sealUrl: o.sealUrl,
       amount,
       ...(app === 'tick' ? { priority: 'high' as const } : {}),
       ...(deadline === undefined ? {} : { deadline }),

@@ -19,6 +19,7 @@ const CHANNEL_LAND =
 
 const PASS = '/secrets/charter.pass';
 const SEAL = 'http://ev2ocvzg6ubobqh7mnoskk2boxuo3l5grqbro6wvj4hq2ecnacaqttyd.anyone/ilp';
+const KEY = '0x04' + '69'.repeat(64);
 const DEST = 'g.toon.69b2a212547e7a9c.charter-echo';
 
 interface Call {
@@ -43,10 +44,10 @@ function fake(stdout: string, code = 0, stderr = ''): { exec: Exec; calls: Call[
   return { exec, calls };
 }
 
-test('send builds the spike-notes argv and maps the JSON to a PacketAnswer', async () => {
+test('send builds the spike-notes argv (--seal-to is the /ilp URL, never the key) and maps the JSON to a PacketAnswer', async () => {
   const { exec, calls } = fake(SEND_OK);
   const cli = new ToonCli({ passphraseFile: PASS, exec });
-  const ans = await cli.send(DEST, { method: 'POST', path: '/open', body: { hi: 1 } }, { sealKey: SEAL, amount: 100n });
+  const ans = await cli.send(DEST, { method: 'POST', path: '/open', body: { hi: 1 } }, { sealKey: KEY, sealUrl: SEAL, amount: 100n });
 
   const c = calls[0]!;
   assert.deepEqual(c.args, [
@@ -63,17 +64,17 @@ test('send builds the spike-notes argv and maps the JSON to a PacketAnswer', asy
 
 test('send deletes the body temp file afterwards, and on failure too', async () => {
   const ok = fake(SEND_OK);
-  await new ToonCli({ passphraseFile: PASS, exec: ok.exec }).send(DEST, { method: 'POST', path: '/echo', body: {} }, { sealKey: SEAL, amount: 1n });
+  await new ToonCli({ passphraseFile: PASS, exec: ok.exec }).send(DEST, { method: 'POST', path: '/echo', body: {} }, { sealKey: KEY, sealUrl: SEAL, amount: 1n });
   assert.equal(existsSync(ok.calls[0]!.bodyFile!), false);
 
   const bad = fake(SEND_T01, 1);
-  await assert.rejects(new ToonCli({ passphraseFile: PASS, exec: bad.exec }).send(DEST, { method: 'POST', path: 'echo', body: {} }, { sealKey: SEAL, amount: 1n }));
+  await assert.rejects(new ToonCli({ passphraseFile: PASS, exec: bad.exec }).send(DEST, { method: 'POST', path: 'echo', body: {} }, { sealKey: KEY, sealUrl: SEAL, amount: 1n }));
   assert.equal(existsSync(bad.calls[0]!.bodyFile!), false);
 });
 
 test('send without a body passes no --body, and the path is passed as given', async () => {
   const { exec, calls } = fake(SEND_503);
-  const ans = await new ToonCli({ passphraseFile: PASS, exec }).send(DEST, { method: 'GET', path: '/' }, { sealKey: SEAL, amount: 100n });
+  const ans = await new ToonCli({ passphraseFile: PASS, exec }).send(DEST, { method: 'GET', path: '/' }, { sealKey: KEY, sealUrl: SEAL, amount: 100n });
   assert.deepEqual(calls[0]!.args, ['send', '--json', '--seal-to', SEAL, '--method', 'GET', '--path', '/', '--amount', '100', '--yes', DEST]);
   assert.equal(ans.status, 503);
   assert.equal(ans.body, 'busy');
@@ -83,7 +84,7 @@ test('send without a body passes no --body, and the path is passed as given', as
 test('the passphrase file path is in env, never in argv', async () => {
   const { exec, calls } = fake(SEND_OK);
   const cli = new ToonCli({ passphraseFile: PASS, exec });
-  await cli.send(DEST, { method: 'POST', path: '/echo', body: { a: 1 } }, { sealKey: SEAL, amount: 100n });
+  await cli.send(DEST, { method: 'POST', path: '/echo', body: { a: 1 } }, { sealKey: KEY, sealUrl: SEAL, amount: 100n });
   await cli.channels().catch(() => undefined);
   for (const c of calls) {
     assert.equal(c.env['TOON_PASSPHRASE_FILE'], PASS);
@@ -95,7 +96,7 @@ test('a rejected send (exit 1) throws ToonCliError with a truncated stderr', asy
   const { exec } = fake(SEND_T01, 1, 'x'.repeat(1000));
   const cli = new ToonCli({ passphraseFile: PASS, exec });
   await assert.rejects(
-    cli.send(DEST, { method: 'POST', path: 'echo' }, { sealKey: SEAL, amount: 100n }),
+    cli.send(DEST, { method: 'POST', path: 'echo' }, { sealKey: KEY, sealUrl: SEAL, amount: 100n }),
     (e: unknown) => {
       assert.ok(e instanceof ToonCliError);
       assert.equal(e.code, 1);
@@ -108,7 +109,7 @@ test('a rejected send (exit 1) throws ToonCliError with a truncated stderr', asy
 test('a non-zero exit with empty stderr keeps the reject JSON as the error text', async () => {
   const { exec } = fake(SEND_T01, 1);
   await assert.rejects(
-    new ToonCli({ passphraseFile: PASS, exec }).send(DEST, { method: 'POST', path: 'echo' }, { sealKey: SEAL, amount: 100n }),
+    new ToonCli({ passphraseFile: PASS, exec }).send(DEST, { method: 'POST', path: 'echo' }, { sealKey: KEY, sealUrl: SEAL, amount: 100n }),
     (e: unknown) => e instanceof ToonCliError && e.stderr.includes('T01'),
   );
 });

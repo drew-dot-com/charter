@@ -21,7 +21,8 @@ const OUTPUT_PARTS = 2;
 const FAKE_LANDING = { chain: 'solana', tx: '1'.repeat(88), shared: true };
 
 const offer = (id: string, key: string, cpu: number, memoryMiB: number, hiddenHost: boolean): Offer => ({
-  id, hostPubkey: key.repeat(32), ilpBase: 'g.dev', sealKey: 'http://dev.invalid/ilp', cpu, memoryMiB, intervalSeconds,
+  id, hostPubkey: key.repeat(32), ilpBase: 'g.dev', sealKey: '0x04' + key.repeat(64), sealUrl: 'http://dev.invalid/ilp',
+  cpu, memoryMiB, intervalSeconds, firstTickGraceSeconds: 90,
   tickPrice: 5000n, openPrice: 1000n, statusPrice: 100n, images: ['charter-job-fetch'], hiddenHost, hiddenEgress: false,
   expiresAt: Date.now() + 365 * 24 * 3600 * 1000,
 });

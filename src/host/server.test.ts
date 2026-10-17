@@ -9,8 +9,8 @@ import { hostApps, OUTPUT_PART_BYTES } from './server.js';
 import { LeaseStore } from './store.js';
 
 const OFFER: Offer = {
-  id: 'o1', hostPubkey: '', ilpBase: 'g.test', sealKey: 'http://x.anyone/ilp', cpu: 1, memoryMiB: 1024,
-  intervalSeconds: 30, tickPrice: 5000n, openPrice: 1000n, statusPrice: 100n, images: ['charter-job-fetch'],
+  id: 'o1', hostPubkey: '', ilpBase: 'g.test', sealKey: '0x04' + 'ab'.repeat(64), sealUrl: 'http://x.anyone/ilp', cpu: 1,
+  memoryMiB: 1024, intervalSeconds: 30, firstTickGraceSeconds: 90, tickPrice: 5000n, openPrice: 1000n, statusPrice: 100n, images: ['charter-job-fetch'],
   hiddenHost: true, hiddenEgress: false, expiresAt: 0,
 };
 const JOB: JobSpec = { image: 'charter-job-fetch', args: { URLS: 'https://example.com' } };

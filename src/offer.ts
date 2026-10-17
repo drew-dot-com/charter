@@ -41,6 +41,26 @@ function parsePrice(v: unknown): Micro | null {
   return n > 0n ? n : null;
 }
 
+function isPositiveInt(v: unknown): v is number {
+  return typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
+}
+
+/** The 65-byte uncompressed secp256k1 point a connector seals to, as `0x04` and 128 hex digits. */
+export function isSealKey(v: unknown): v is string {
+  return typeof v === 'string' && /^0x04[0-9a-fA-F]{128}$/.test(v);
+}
+
+/** An http(s) URL, as `toon send --seal-to` takes. */
+export function isSealUrl(v: unknown): v is string {
+  if (typeof v !== 'string' || v.length > 512) return false;
+  try {
+    const u = new URL(v);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === 'string');
 }
@@ -53,7 +73,8 @@ export function offerFromEvent(ev: OfferEvent, now: number): Offer | null {
   const expSeconds = tagValue(ev.tags, 'expiration');
   if (expSeconds === undefined || !/^\d+$/.test(expSeconds)) return null;
   const expiresAt = Number(expSeconds) * 1000;
-  if (expiresAt <= now) return null;
+  // A number of digits past a safe integer would read as an offer that never expires.
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= now) return null;
 
   let c: Record<string, unknown>;
   try {
@@ -69,8 +90,8 @@ export function offerFromEvent(ev: OfferEvent, now: number): Offer | null {
   const statusPrice = parsePrice(c.statusPrice);
   if (tickPrice === null || openPrice === null || statusPrice === null) return null;
 
-  if (typeof c.ilpBase !== 'string' || typeof c.sealKey !== 'string') return null;
-  if (typeof c.cpu !== 'number' || typeof c.memoryMiB !== 'number' || typeof c.intervalSeconds !== 'number') {
+  if (typeof c.ilpBase !== 'string' || !isSealKey(c.sealKey) || !isSealUrl(c.sealUrl)) return null;
+  if (!isPositiveInt(c.cpu) || !isPositiveInt(c.memoryMiB) || !isPositiveInt(c.intervalSeconds) || !isPositiveInt(c.firstTickGraceSeconds)) {
     return null;
   }
   if (!isStringArray(c.images)) return null;
@@ -81,9 +102,11 @@ export function offerFromEvent(ev: OfferEvent, now: number): Offer | null {
     hostPubkey: ev.pubkey,
     ilpBase: c.ilpBase,
     sealKey: c.sealKey,
+    sealUrl: c.sealUrl,
     cpu: c.cpu,
     memoryMiB: c.memoryMiB,
     intervalSeconds: c.intervalSeconds,
+    firstTickGraceSeconds: c.firstTickGraceSeconds,
     tickPrice,
     openPrice,
     statusPrice,

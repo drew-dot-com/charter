@@ -10,8 +10,8 @@ import { LeaseStore } from '../host/store.js';
 import type { Micro, Offer } from '../types.js';
 
 export const OFFER: Offer = {
-  id: 'o1', hostPubkey: 'ab'.repeat(32), ilpBase: 'g.test', sealKey: 'http://x.anyone/ilp', cpu: 1, memoryMiB: 1024,
-  intervalSeconds: 30, tickPrice: 5000n, openPrice: 1000n, statusPrice: 100n, images: ['charter-job-fetch'],
+  id: 'o1', hostPubkey: 'ab'.repeat(32), ilpBase: 'g.test', sealKey: '0x04' + 'ab'.repeat(64),
+  sealUrl: 'http://x.anyone/ilp', cpu: 1, memoryMiB: 1024, intervalSeconds: 30, firstTickGraceSeconds: 90, tickPrice: 5000n, openPrice: 1000n, statusPrice: 100n, images: ['charter-job-fetch'],
   hiddenHost: true, hiddenEgress: false, expiresAt: 9_999_999_999_000,
 };
 
@@ -20,8 +20,8 @@ export interface TestHost {
   payer: Payer;
   /** Packets sent, by app name (`charter-open` and so on). */
   sent: Record<string, number>;
-  /** Every dest and sealKey the payer was handed. */
-  seen: Array<{ dest: string; sealKey: string; path: string }>;
+  /** Every dest, sealKey and sealUrl the payer was handed. */
+  seen: Array<{ dest: string; sealKey: string; sealUrl: string; path: string }>;
   clock: { t: number };
   sleep: (ms: number) => Promise<void>;
   sleeps: number[];
@@ -70,11 +70,11 @@ export async function testHost(opts: TestHostOpts = {}): Promise<TestHost> {
     payer: undefined as unknown as Payer,
   };
   host.payer = {
-    async send(dest: string, req: PacketRequest, o: { sealKey: string; amount: Micro }): Promise<PacketAnswer> {
+    async send(dest: string, req: PacketRequest, o: { sealKey: string; sealUrl: string; amount: Micro }): Promise<PacketAnswer> {
       const app = dest.slice(dest.lastIndexOf('.') + 1);
       if (dest !== `${OFFER.ilpBase}.${app}` || !urls[app]) throw new Error(`unknown dest ${dest}`);
       sent[app]++;
-      seen.push({ dest, sealKey: o.sealKey, path: req.path });
+      seen.push({ dest, sealKey: o.sealKey, sealUrl: o.sealUrl, path: req.path });
       const res = await fetch(urls[app] + req.path, {
         method: req.method,
         headers: { 'content-type': 'application/json' },

@@ -5,10 +5,15 @@ export interface Offer {
   id: string;
   hostPubkey: string;
   ilpBase: string;
+  /** The terminating connector's public key, `0x04` and 128 hex digits (`toon describe --json` .description.edgeIdentity.publicKey). A payer that seals by key needs no fetch. */
   sealKey: string;
+  /** The terminating connector's `/ilp` URL, usually an onion address. The `toon` CLI seals to a URL only. */
+  sealUrl: string;
   cpu: number;
   memoryMiB: number;
   intervalSeconds: number;
+  /** How long after a lease opens the host waits for its first tick. The container starts only once that tick is paid. */
+  firstTickGraceSeconds: number;
   tickPrice: Micro;
   openPrice: Micro;
   statusPrice: Micro;

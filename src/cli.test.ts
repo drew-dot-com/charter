@@ -106,7 +106,7 @@ test('status resolves the offer from the relay and prints the lease', async () =
   }
 });
 
-const OTHER: Offer = { ...OFFER, hostPubkey: 'cd'.repeat(32), sealKey: 'http://other.example/ilp' };
+const OTHER: Offer = { ...OFFER, hostPubkey: 'cd'.repeat(32), sealKey: '0x04' + 'cd'.repeat(64), sealUrl: 'http://other.example/ilp' };
 const RENT = ['--urls', 'https://example.com', '--max-intervals', '5', '--relay', 'wss://r', '--json'];
 
 test('a bare --offer id shared by two hosts is refused, listing both pubkeys, and nothing is paid', async () => {
@@ -124,14 +124,14 @@ test('--offer <pubkey>:<id> picks that host exactly, and a wrong pubkey pays not
   const r = await cli(['rent', '--offer', `${OTHER.hostPubkey}:o1`, ...RENT], ENV, {}, [OFFER, OTHER]);
   assert.equal(r.code, 0, r.err);
   assert.ok(r.h.seen.length > 0);
-  for (const s of r.h.seen) assert.equal(s.sealKey, OTHER.sealKey);
+  for (const s of r.h.seen) assert.equal(s.sealUrl, OTHER.sealUrl);
 
   const bad = await cli(['rent', '--offer', `${'ee'.repeat(32)}:o1`, ...RENT], ENV, {}, [OFFER, OTHER]);
   assert.equal(bad.code, 1);
   assert.equal(bad.h.sent['charter-open'], 0);
 
   const st = await cli(['status', `${OTHER.hostPubkey}:o1`, 'a'.repeat(32), '--relay', 'wss://r'], ENV, {}, [OFFER, OTHER]);
-  for (const s of st.h.seen) assert.equal(s.sealKey, OTHER.sealKey);
+  for (const s of st.h.seen) assert.equal(s.sealUrl, OTHER.sealUrl);
   assert.ok(st.h.seen.length > 0);
 });
 

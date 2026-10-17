@@ -1,7 +1,15 @@
 import type { CloseReason, JobSpec, Lease, Offer } from './types.js';
 
-/** How long past the paid time (or past boot, before the first tick) a tick may be late. */
+/** How long past the paid time a later tick may be late. */
 export const GRACE_MS = 10_000;
+
+/**
+ * How long after the container is created the first tick may take. The container only starts once
+ * that tick is paid, so this wait costs the host a created container and nothing more. A browser
+ * renter's first payment includes a wallet prompt, so it is far longer than GRACE_MS. Published in
+ * the offer as `firstTickGraceSeconds`.
+ */
+export const FIRST_TICK_GRACE_MS = 90_000;
 
 export class LeaseError extends Error {
   constructor(public readonly code: 'out_of_order' | 'not_running') {

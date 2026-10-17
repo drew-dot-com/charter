@@ -21,15 +21,18 @@ export interface PacketAnswer {
 
 export interface Payer {
   /**
-   * `sealKey` is the terminating connector's `/ilp` URL (the name stays for
-   * compatibility). A packet the app never answers is a thrown error, not a
+   * Seals to the terminating connector: by `sealKey` (its raw hex key, no fetch) or by `sealUrl` (its
+   * `/ilp` URL), whichever this payer can use. A packet the app never answers is a thrown error, not a
    * `PacketAnswer`.
    */
   send(dest: string, req: PacketRequest, opts: SendOpts): Promise<PacketAnswer>;
 }
 
 export interface SendOpts {
+  /** The terminating connector's public key, `0x04...`. ToonClientPayer seals to it with no fetch. */
   sealKey: string;
+  /** The terminating connector's `/ilp` URL. The `toon` CLI seals to a URL only. */
+  sealUrl: string;
   amount: Micro;
   priority?: 'high';
   /**

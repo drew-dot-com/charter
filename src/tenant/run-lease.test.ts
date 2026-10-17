@@ -28,8 +28,11 @@ test('happy path: the job exits after the 3rd tick, output equals the runner byt
     assert.equal(r.spent, 1000n + 3n * 5000n + BigInt(h.sent['charter-status']) * 100n);
     assert.equal(h.sent['charter-status'], 4); // three polls plus one output part
     assert.ok(events.length > 0);
-    // Each app is addressed under ilpBase and sealed to the host's /ilp URL.
-    for (const s of h.seen) assert.equal(s.sealKey, OFFER.sealKey);
+    // Each app is addressed under ilpBase and sealed to the host's connector: its key and its /ilp URL.
+    for (const s of h.seen) {
+      assert.equal(s.sealKey, OFFER.sealKey);
+      assert.equal(s.sealUrl, OFFER.sealUrl);
+    }
     assert.deepEqual(new Set(h.seen.map((s) => s.dest)), new Set(['g.test.charter-open', 'g.test.charter-tick', 'g.test.charter-status']));
     // It sleeps until ten seconds before the paid time runs out. Ticks paid early extend from
     // paidThrough, so: 30 s - 10 s, then a full 30 s each time.
