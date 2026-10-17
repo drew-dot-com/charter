@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DoorLedger, LEDGER_FILE } from './ledger.js';
+import { OFFER } from '../tenant/test-host.js';
+import { DoorLedger, LEDGER_FILE, snapshotOffer } from './ledger.js';
 import { unblockCommand } from './unblock.js';
 
 const ADDR = '0x' + 'ab'.repeat(20);
@@ -11,7 +12,7 @@ const ADDR = '0x' + 'ab'.repeat(20);
 test('charter-door unblock <address> clears a payer block in the data dir ledger', () => {
   const dir = mkdtempSync(join(tmpdir(), 'unblock-'));
   const l = new DoorLedger(join(dir, LEDGER_FILE));
-  l.open({ leaseId: 'a'.repeat(32), offerId: 'x:y', createdAt: 1 });
+  l.open({ leaseId: 'a'.repeat(32), offerId: 'x:y', createdAt: 1, offer: snapshotOffer(OFFER) });
   l.loss('a'.repeat(32), 5000n, 'settle_failed', 1_000, ADDR);
   assert.equal(l.payerHasLoss(ADDR, 2_000), true);
   const lines: string[] = [];

@@ -9,7 +9,7 @@ import type { AddressInfo } from 'node:net';
 import { HostError, hostApi, type HostApi, type OpenResult, type OutputPart, type TickResult } from '../tenant/host-api.js';
 import { OFFER } from '../tenant/test-host.js';
 import type { Lease, Micro, Offer } from '../types.js';
-import { DoorLedger } from './ledger.js';
+import { DoorLedger, offerOfSnapshot, snapshotOffer } from './ledger.js';
 import { doorApp, type DoorDeps } from './server.js';
 import * as payerMod from '../payer.js';
 
@@ -552,6 +552,38 @@ test('the status answer carries the offer the door resolved at open time, which 
   }
 });
 
+test('an existing lease works after its offer leaves the relay and the door restarts: status, output and a tick, with zero relay lookups', async () => {
+  const host = fakeHost({ status: async () => lease({ state: 'running', outputParts: 2 }) });
+  const d1 = await start(host);
+  await d1.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+  assert.equal((await d1.post(`/v1/leases/${LEASE}/ticks`, { index: 0 })).status, 200);
+  d1.close();
+
+  let relay = 0;
+  const seen: Offer[] = [];
+  const d2 = await start(host, {
+    offers: async () => (relay++, []),
+    ledger: new DoorLedger(join(d1.dir, 'ledger.json')),
+    dataDir: d1.dir,
+    api: (o) => (seen.push(o), host.api),
+  });
+  try {
+    const st = await d2.get(`/v1/leases/${LEASE}`);
+    assert.equal(st.status, 200);
+    assert.equal(((await st.json()) as { offer: { tickPrice: string } }).offer.tickPrice, '5000');
+    assert.equal((await d2.get(`/v1/leases/${LEASE}/output/1`)).status, 200);
+    assert.equal((await d2.post(`/v1/leases/${LEASE}/ticks`, { index: 1 })).status, 200);
+    assert.deepEqual(d2.settled, [{ leaseId: LEASE, price: 5000n }], 'the price came from the snapshot');
+    assert.equal(relay, 0, 'no relay lookups for an existing lease');
+    assert.ok(seen.length >= 3);
+    for (const o of seen) assert.deepEqual(o, OFFER, 'the host api is built from the full snapshot');
+    assert.equal((await d2.get('/v1/offers').then((r) => r.json())).length, 0, 'the list still reads the relay');
+    assert.equal(relay, 1);
+  } finally {
+    d2.close();
+  }
+});
+
 test('C1: host reads per lease are capped at 40 + 8 per renter tick; past it the last status is served and uncached output is 429', async () => {
   const host = fakeHost({ status: async () => lease({ outputParts: 2 }) });
   const d = await start(host);
@@ -879,7 +911,7 @@ test('DoorLedger: JSON file, bigint losses, atomic writes, reload', () => {
   const dir = mkdtempSync(join(tmpdir(), 'ledger-'));
   const file = join(dir, 'sub', 'ledger.json');
   const l = new DoorLedger(file);
-  l.open({ leaseId: LEASE, offerId: OFFER_ID, createdAt: 5 });
+  l.open({ leaseId: LEASE, offerId: OFFER_ID, createdAt: 5, offer: snapshotOffer(OFFER) });
   l.renterTick(LEASE, '0xpayer');
   l.hostTick(LEASE);
   l.loss(LEASE, 5000n, 'settle_failed', 7);
@@ -889,8 +921,9 @@ test('DoorLedger: JSON file, bigint losses, atomic writes, reload', () => {
   assert.ok(JSON.stringify(raw).includes('"5000"'), 'bigint stored as a string');
   const again = new DoorLedger(file);
   assert.deepEqual(again.get(LEASE), {
-    leaseId: LEASE, offerId: OFFER_ID, payer: '0xpayer', ticksPaidByRenter: 1, ticksPaidToHost: 1, losses: 5000n, lossKind: 'settle_failed', lossAt: 7, stopped: true, createdAt: 5, nextIndex: 1, hostReads: 0,
+    leaseId: LEASE, offerId: OFFER_ID, payer: '0xpayer', ticksPaidByRenter: 1, ticksPaidToHost: 1, losses: 5000n, lossKind: 'settle_failed', lossAt: 7, stopped: true, createdAt: 5, nextIndex: 1, hostReads: 0, offer: snapshotOffer(OFFER),
   });
+  assert.deepEqual(offerOfSnapshot(again.get(LEASE)!.offer), OFFER, 'the snapshot round-trips the whole offer, bigints included');
   assert.equal(again.get('missing'), undefined);
 });
 

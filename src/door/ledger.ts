@@ -1,19 +1,31 @@
 import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { Micro } from '../types.js';
+import type { Micro, Offer } from '../types.js';
 
-/** An offer as the door shows it: what `GET /v1/offers` lists, and what a lease keeps from its open. */
-export interface PublicOffer {
-  offerId: string;
+/** The whole offer as it was when a lease opened, kept in the ledger: bigint prices as decimal strings. */
+export interface OfferSnapshot {
+  id: string;
+  hostPubkey: string;
+  ilpBase: string;
+  sealKey: string;
   cpu: number;
   memoryMiB: number;
   intervalSeconds: number;
-  /** USDC micro-units as a decimal string. */
   tickPrice: string;
+  openPrice: string;
+  statusPrice: string;
   images: string[];
   hiddenHost: boolean;
   hiddenEgress: boolean;
   expiresAt: number;
+}
+
+export function snapshotOffer(o: Offer): OfferSnapshot {
+  return { ...o, images: [...o.images], tickPrice: o.tickPrice.toString(), openPrice: o.openPrice.toString(), statusPrice: o.statusPrice.toString() };
+}
+
+export function offerOfSnapshot(s: OfferSnapshot): Offer {
+  return { ...s, images: [...s.images], tickPrice: BigInt(s.tickPrice), openPrice: BigInt(s.openPrice), statusPrice: BigInt(s.statusPrice) };
 }
 
 /** One lease the door opened for a renter. */
@@ -41,8 +53,8 @@ export interface DoorLease {
   nextIndex: number;
   /** Paid host status and output calls made for this lease's free reads. */
   hostReads: number;
-  /** The offer as resolved when the lease was opened; the renter's page takes the price it pays from here. */
-  offer?: PublicOffer;
+  /** The offer as resolved when the lease was opened. Every host call and price for this lease comes from here, never the relay. */
+  offer: OfferSnapshot;
 }
 
 /**
@@ -111,7 +123,7 @@ export class DoorLedger {
     return [...this.leases.values()].map((l) => ({ ...l }));
   }
 
-  open(o: { leaseId: string; offerId: string; createdAt: number; offer?: PublicOffer }): void {
+  open(o: { leaseId: string; offerId: string; createdAt: number; offer: OfferSnapshot }): void {
     this.leases.set(o.leaseId, { ...o, ticksPaidByRenter: 0, ticksPaidToHost: 0, losses: 0n, stopped: false, nextIndex: 0, hostReads: 0 });
     this.save();
   }

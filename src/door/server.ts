@@ -7,7 +7,7 @@ import { HostError, type HostApi } from '../tenant/host-api.js';
 import { findOfferExact } from '../tenant/offers.js';
 import type { Lease, Micro, Offer } from '../types.js';
 import { DeadlinePassedError, SendTimeoutError } from '../payer.js';
-import type { DoorLedger, LossKind, PublicOffer } from './ledger.js';
+import { offerOfSnapshot, snapshotOffer, type DoorLedger, type LossKind } from './ledger.js';
 import { MIN_WINDOW_SECONDS, SETTLE_MARGIN_SECONDS, isPayerFault, paymentIdOf, realGate, settleReasonOf, stubGate, type Gate, type TestHooks, type X402Config } from './x402.js';
 
 export interface DoorDeps {
@@ -64,7 +64,8 @@ function slidingLimit(now: () => number, max: number, windowMs: number): (key: s
   };
 }
 
-function publicOffer(o: Offer): PublicOffer {
+/** An offer as the door shows it: what `GET /v1/offers` lists, and what a lease's status carries. */
+function publicOffer(o: Offer) {
   return {
     offerId: `${o.hostPubkey}:${o.id}`,
     cpu: o.cpu,
@@ -106,9 +107,9 @@ export function doorApp(deps: DoorDeps): express.Express {
   const now = deps.now ?? Date.now;
   const webDir = deps.webDir ?? fileURLToPath(new URL('../../web/dist', import.meta.url));
 
-  /** The offer each lease was opened on, so a price never depends on the relay still listing it. */
-  const leaseOffers = new Map<string, Offer>();
-  const priceOf = (leaseId: string): Micro | undefined => leaseOffers.get(leaseId)?.tickPrice;
+  /** The offer a lease was opened on, from the ledger's snapshot: a price or a host call never depends on the relay still listing it. */
+  const leaseOffer = (leaseId: string): Offer => offerOfSnapshot(ledger.get(leaseId)!.offer);
+  const priceOf = (leaseId: string): Micro | undefined => (ledger.get(leaseId) ? leaseOffer(leaseId).tickPrice : undefined);
   const gate: Gate =
     deps.x402 === 'free-for-tests' ? stubGate(priceOf, deps.testHooks) : realGate(deps.x402, priceOf);
 
@@ -150,7 +151,7 @@ export function doorApp(deps: DoorDeps): express.Express {
    * otherwise one paid status call within the lease's budget. A spent budget serves
    * the last answer, however old.
    */
-  const leaseStatus = (id: string, offerFor: () => Promise<Offer>): Promise<Lease> => {
+  const leaseStatus = (id: string): Promise<Lease> => {
     const last = statuses.get(id);
     if (last && now() - last.at < STATUS_TTL_MS) return Promise.resolve(last.lease);
     // A final status is kept for good, except that the host records a landing after a lease is done.
@@ -165,7 +166,7 @@ export function doorApp(deps: DoorDeps): express.Express {
     }
     const p = (async () => {
       try {
-        const lease = await deps.api(await offerFor()).status(id);
+        const lease = await deps.api(leaseOffer(id)).status(id);
         statuses.set(id, { lease, at: now() });
         return lease;
       } catch (e) {
@@ -181,15 +182,6 @@ export function doorApp(deps: DoorDeps): express.Express {
     const clear = () => void statusInflight.delete(id);
     p.then(clear, clear);
     return p;
-  };
-
-  /** The offer behind a door lease, from memory or, after a restart, the relay. */
-  const offerOf = async (leaseId: string, offerId: string): Promise<Offer | undefined> => {
-    const known = leaseOffers.get(leaseId);
-    if (known) return known;
-    const found = findOfferExact(await offers(), offerId);
-    if (found) leaseOffers.set(leaseId, found);
-    return found;
   };
 
   /** Answer for a failed free read: the host's 404 and 409 pass through, anything else is a 502. */
@@ -260,8 +252,7 @@ export function doorApp(deps: DoorDeps): express.Express {
     try {
       const r = await deps.api(offer).open({ image: JOB_IMAGE, args: { URLS: (urls as string[]).join(',') } });
       if (!LEASE_ID.test(r.leaseId) || ledger.get(r.leaseId)) return void res.status(502).json({ error: 'bad_host_answer' });
-      ledger.open({ leaseId: r.leaseId, offerId, createdAt: now(), offer: publicOffer(offer) });
-      leaseOffers.set(r.leaseId, offer);
+      ledger.open({ leaseId: r.leaseId, offerId, createdAt: now(), offer: snapshotOffer(offer) });
       res.json({
         leaseId: r.leaseId,
         state: r.state,
@@ -274,25 +265,17 @@ export function doorApp(deps: DoorDeps): express.Express {
   });
 
   /** Everything that can be refused before the renter is asked to pay. */
-  const tickGuard: express.RequestHandler = async (req, res, next) => {
+  const tickGuard: express.RequestHandler = (req, res, next) => {
     if (!allowTick(req.ip ?? 'unknown')) return void res.status(429).json({ error: 'rate_limited' });
     const id = req.params.id as string;
-    const first = LEASE_ID.test(id) ? ledger.get(id) : undefined;
-    if (!first) return void res.status(404).json({ error: 'not_found' });
+    const rec = LEASE_ID.test(id) ? ledger.get(id) : undefined;
+    if (!rec) return void res.status(404).json({ error: 'not_found' });
     const index = (req.body as { index?: unknown } | undefined)?.index;
     if (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0) {
       return void res.status(400).json({ error: 'bad_request' });
     }
-    let offer: Offer | undefined;
-    try {
-      offer = await offerOf(id, first.offerId);
-    } catch {
-      return void res.status(502).json({ error: 'offers_unavailable' });
-    }
-    // No await from here to next(): the checks and the claim on the lease happen together.
-    const rec = ledger.get(id)!;
+    // The checks and the claim on the lease happen together, with no await before next().
     if (rec.stopped) return void res.status(409).json({ error: 'stopped' });
-    if (!offer) return void res.status(503).json({ error: 'offer_unavailable' });
     // The host already said this lease is over: a tick would only cost the door.
     const seen = statuses.get(id)?.lease.state;
     if (seen === 'done') return void res.status(409).json({ error: 'lease_done' });
@@ -317,7 +300,7 @@ export function doorApp(deps: DoorDeps): express.Express {
       res.locals.deadline = (payment.validBefore - SETTLE_MARGIN_SECONDS) * 1000;
     }
     ticking.add(id);
-    res.locals.offer = offer;
+    res.locals.offer = offerOfSnapshot(rec.offer);
     res.locals.index = index;
     next();
   };
@@ -392,13 +375,6 @@ export function doorApp(deps: DoorDeps): express.Express {
     return undefined;
   };
 
-  /** The lease's offer, for a read that has to go to the host. */
-  const offerFor = async (id: string): Promise<Offer> => {
-    const offer = await offerOf(id, ledger.get(id)!.offerId);
-    if (!offer) throw new HostError(503, 'offer_unavailable');
-    return offer;
-  };
-
   const failRead = (res: express.Response, e: unknown): void => {
     if (e instanceof BudgetError) return void res.status(429).json({ error: 'rate_limited' });
     readFailure(res, e);
@@ -413,9 +389,9 @@ export function doorApp(deps: DoorDeps): express.Express {
     const id = known(req, res);
     if (!id) return;
     try {
-      const lease = await leaseStatus(id, () => offerFor(id));
+      const lease = await leaseStatus(id);
       const rec = ledger.get(id);
-      res.json({ lease, stopped: rec?.stopped ?? false, ...(rec?.offer ? { offer: rec.offer } : {}) });
+      res.json({ lease, stopped: rec?.stopped ?? false, ...(rec ? { offer: publicOffer(offerOfSnapshot(rec.offer)) } : {}) });
     } catch (e) {
       failRead(res, e);
     }
@@ -434,14 +410,14 @@ export function doorApp(deps: DoorDeps): express.Express {
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
       }
-      const parts = (await leaseStatus(id, () => offerFor(id))).outputParts;
+      const parts = (await leaseStatus(id)).outputParts;
       if (parts === undefined || part >= parts) return void res.status(404).json({ error: 'not_found' });
       const key = `${id}:${part}`;
       let fetching = partInflight.get(key);
       if (!fetching) {
         spendRead(id);
         fetching = (async () => {
-          const answer = await deps.api(await offerFor(id)).outputPart(id, part);
+          const answer = await deps.api(leaseOffer(id)).outputPart(id, part);
           mkdirSync(join(deps.dataDir, 'output', id), { recursive: true, mode: 0o700 });
           const file = partFile(id, part);
           writeFileSync(`${file}.tmp`, JSON.stringify(answer), { mode: 0o600 });
