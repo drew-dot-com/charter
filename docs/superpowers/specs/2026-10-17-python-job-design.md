@@ -38,8 +38,16 @@ Arbitrary code is the hardest case, so it sets the bar:
    host that takes code from strangers. On `toon2` a container escape would land in a VM that holds the node's
    wallet, so installing gVisor there before opening Python leases to anyone but Drew is the deploy step to decide.
 
+6. The wrapper also caps the script itself below the container's limits (128 processes, 768 MiB address space, one
+   BLAS thread), so a runaway script gets a clean error and the renter still gets a result.
+
 Residual risk, accepted: a script can burn its paid CPU (that is the product) and can write up to the fsize cap per
-file into `/out` while it runs.
+file into `/out` while it runs. Under gVisor, a raw `os.fork` bomb (Docker's pids limit counts the sandbox's own host
+threads there) or a SIGKILL to PID 1 ends the sandbox with no output: the renter loses their own lease, the host
+loses nothing.
+
+Deployed 2026-10-17 on `toon2` with gVisor `release-20261012.0` (systrap, no KVM). Both images were probed under
+`runsc` with the runner's exact flags; the fetch job still exits through Anyone.
 
 ## What changes
 

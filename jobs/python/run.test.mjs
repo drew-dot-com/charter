@@ -13,7 +13,8 @@ const opts = { skip: python ? false : 'python3 not installed' };
 function run(script, extra = {}) {
   const out = mkdtempSync(join(tmpdir(), 'charter-py-'));
   const r = spawnSync(python, [RUN], {
-    env: { PATH: process.env.PATH, CHARTER_OUT: out, SCRIPT: script, ...extra },
+    // RLIMIT_NPROC counts every process of the uid: in the container that is the job alone, here it is the whole machine.
+    env: { PATH: process.env.PATH, CHARTER_OUT: out, SCRIPT: script, CHARTER_SCRIPT_MAX_PROCS: '100000', ...extra },
     encoding: 'utf8',
     timeout: 30_000,
   });

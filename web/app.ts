@@ -23,7 +23,7 @@ import numpy as np
 
 t = time.time()
 rng = np.random.default_rng()
-n = 20_000_000
+n = 5_000_000
 x, y = rng.random(n), rng.random(n)
 print("pi is about", 4 * np.count_nonzero(x * x + y * y <= 1) / n)
 

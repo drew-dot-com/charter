@@ -5,6 +5,7 @@
 # The container has no network; this wrapper only bounds the script and reports on it.
 import json
 import os
+import resource
 import signal
 import subprocess
 import sys
@@ -17,6 +18,10 @@ MAX_STDOUT_BYTES = 256 * 1024
 MAX_STDERR_BYTES = 64 * 1024
 WALL_SECONDS = 600
 READ_CHUNK = 64 * 1024
+# Below the container's own limits (1 GiB, 256 pids), so a runaway script fails inside itself and this
+# wrapper still reports. Under gVisor, hitting the container limit takes the whole sandbox down with it.
+SCRIPT_MAX_PROCS = 128
+SCRIPT_MAX_ADDRESS_BYTES = 768 * 1024 * 1024
 
 OUT_DIR = os.environ.get('CHARTER_OUT', '/out')
 
@@ -44,6 +49,19 @@ def drain(stream, cap, sink):
     sink['truncated'] = truncated
 
 
+def limit_script():
+    """Runs in the script's process before it starts. Best effort: a platform without a limit keeps the container's."""
+    procs = int(os.environ.get('CHARTER_SCRIPT_MAX_PROCS', SCRIPT_MAX_PROCS))
+    for name, value in (('RLIMIT_NPROC', procs), ('RLIMIT_AS', SCRIPT_MAX_ADDRESS_BYTES)):
+        which = getattr(resource, name, None)
+        if which is None:
+            continue
+        try:
+            resource.setrlimit(which, (value, value))
+        except (ValueError, OSError):
+            pass
+
+
 def main():
     src = os.environ.get('SCRIPT', '')
     raw = src.encode('utf-8', errors='surrogatepass')
@@ -65,6 +83,9 @@ def main():
         'LANG': 'C.UTF-8',
         'PYTHONDONTWRITEBYTECODE': '1',
         'PYTHONUNBUFFERED': '1',
+        # One CPU: one BLAS thread, which also keeps NumPy's address space inside the cap.
+        'OPENBLAS_NUM_THREADS': '1',
+        'OMP_NUM_THREADS': '1',
     }
     started = time.monotonic()
     proc = subprocess.Popen(
@@ -76,6 +97,7 @@ def main():
         stderr=subprocess.PIPE,
         # Its own process group, so every process it starts dies with it.
         start_new_session=True,
+        preexec_fn=limit_script,
     )
     out, err = {}, {}
     readers = [
