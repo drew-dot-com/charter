@@ -11,7 +11,7 @@ export type LeaseEvent =
   | { kind: 'stopped'; reason: 'max_intervals' | 'closed' | 'done' };
 
 export interface RunLeaseOpts {
-  /** The most ticks to pay. After the last one, polling continues only to report where the lease stands. */
+  /** The most ticks to pay. After the last one it waits out the paid time, reads the lease once more and returns. */
   maxIntervals: number;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -97,8 +97,11 @@ export async function runLease(api: HostApi, o: Offer, job: JobSpec, opts: RunLe
     const s = await settle();
     if (s.finished) return result(s.lease, s.output ? { output: s.output } : {});
     if (s.lease.paidIntervals >= opts.maxIntervals) {
-      emit({ kind: 'stopped', reason: 'max_intervals' });
-      return result(s.lease);
+      // No more ticks, but the last interval is paid for: wait it out, then look once more.
+      if (s.lease.paidThrough !== undefined) await sleep(Math.max(0, s.lease.paidThrough - now()));
+      const last = await settle();
+      if (!last.finished) emit({ kind: 'stopped', reason: 'max_intervals' });
+      return result(last.lease, last.output ? { output: last.output } : {});
     }
     paid = await pay(s.lease.paidIntervals);
   }

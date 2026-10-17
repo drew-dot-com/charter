@@ -157,3 +157,29 @@ test('hostApi.output joins every 48 KiB part', async () => {
     h.close();
   }
 });
+
+test('maxIntervals reached: waits out the last paid interval, so a job that exits 5 s before its end is seen', async () => {
+  const h = await testHost({ runner: { output: async () => RESULT } });
+  try {
+    const t0 = h.clock.t;
+    const exitAt = t0 + 55_000; // the 2nd interval ends at t0 + 60_000
+    let exited = false;
+    const sleep = async (ms: number) => {
+      const target = h.clock.t + ms;
+      if (!exited && target >= exitAt) {
+        exited = true;
+        h.clock.t = exitAt;
+        exitJob(h, h.store.all()[0]!.id, RESULT);
+      }
+      await h.sleep(target - h.clock.t);
+    };
+    const r = await runLease(hostApi(h.payer, OFFER), OFFER, JOB, { maxIntervals: 2, now: () => h.clock.t, sleep });
+    assert.equal(h.sent['charter-tick'], 2);
+    assert.equal(r.lease.state, 'done');
+    assert.deepEqual(r.output, RESULT);
+    assert.equal(h.clock.t, t0 + 60_000); // it slept to paidThrough, not paidThrough minus 10 s
+    assert.equal(r.spent, 1000n + 2n * 5000n + BigInt(h.sent['charter-status']) * 100n);
+  } finally {
+    h.close();
+  }
+});
