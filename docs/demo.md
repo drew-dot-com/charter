@@ -47,13 +47,17 @@ In `toon2` only:
 Found in Task 1: a zero-amount packet through the edge to a priced app is served, and the edge pays
 the host. Until the edge prices each app route, anyone can make the edge pay `toon2`.
 
-- [ ] On the Hetzner box, three signed operator writes (as in `docs/spike-notes.md`):
+- [x] On the Hetzner box, three signed operator writes (as in `docs/spike-notes.md`):
   `/opt/refuel/deploy/sign-write.sh -k /root/keys-refuel/operator-write.key -u http://<edge container ip>:4000`
   - `POST /routes/peers {"prefix":"g.toon.69b2a212547e7a9c.charter-open","peer_id":"toon2","price":1000}`
   - `POST /routes/peers {"prefix":"g.toon.69b2a212547e7a9c.charter-tick","peer_id":"toon2","price":5000}`
   - `POST /routes/peers {"prefix":"g.toon.69b2a212547e7a9c.charter-status","peer_id":"toon2","price":100}`
-- [ ] Check: from Edison's node, a zero-amount `toon probe g.toon.69b2a212547e7a9c.charter-open --seal-to <toon2 onion /ilp URL> --json`
+- [x] Check: from Edison's node, a zero-amount `toon probe g.toon.69b2a212547e7a9c.charter-open --seal-to <toon2 onion /ilp URL> --json`
   is **rejected** (expected `F06`, refused by the edge). If it is fulfilled, stop: the gate failed.
+- [x] **Done 2026-10-17.** The edge publishes the three prices (25 routes). Zero-amount probes from
+  Edison to all three apps: `F06` from peer `drew` ("quotes 1000/5000/100 for this packet, which carried
+  only 0"), `paid` 0; `toon2`'s inbound channel `E63r...` watermark stayed 400, so the edge paid nothing.
+  Edison's node got the route `g.toon.69b2a212547e7a9c -> drew` back (step 3 needs it too).
 - [ ] Drew's call: file the zero-amount forwarding bug as a connector issue for Jonathan.
 
 ## 2. Host up (`toon2`), offer publish (gate 2)
@@ -74,7 +78,7 @@ the host. Until the edge prices each app route, anyone can make the edge pay `to
 
 ## 3. Edison's first lease (gate 2, under 0.10 USDC)
 
-- [ ] In the `toon` VM: `toon route add g.toon.69b2a212547e7a9c --peer drew` (removed after Task 1).
+- [x] In the `toon` VM: `toon route add g.toon.69b2a212547e7a9c --peer drew` (re-added 10-17 for gate 1).
 - [ ] `charter rent --offer <pubkey>:<id> --urls https://api.ipify.org?format=json,https://browserleaks.com/webrtc,https://example.com --max-intervals 6 --relay wss://relay.mainnet.toonprotocol.dev --json`
 - [ ] Check: state `done`, `paidIntervals >= 3`, output present. The ipify output and the WebRTC page
   show an exit IP and no candidate that is Drew's home IP.
