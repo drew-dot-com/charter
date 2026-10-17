@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileExec, type Exec } from './exec.js';
-import { decodeBody, relativeTarget, type PacketAnswer, type PacketRequest, type Payer } from './payer.js';
+import { decodeBody, type PacketAnswer, type PacketRequest, type Payer } from './payer.js';
 import type { Micro } from './types.js';
 
 export type { Exec };
@@ -48,9 +48,8 @@ export class ToonCli implements Payer {
   }
 
   async send(dest: string, req: PacketRequest, opts: { sealKey: string; amount: Micro }): Promise<PacketAnswer> {
-    const path = relativeTarget(req.path);
-    const args = ['send', '--json', '--seal-to', opts.sealKey, '--method', req.method];
-    if (path) args.push('--path', path);
+    // The CLI takes the path as given, leading `/` included (verified live).
+    const args = ['send', '--json', '--seal-to', opts.sealKey, '--method', req.method, '--path', req.path];
     // `--body` takes a file path, not inline JSON.
     let dir: string | undefined;
     try {

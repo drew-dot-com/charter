@@ -46,13 +46,14 @@ function fake(stdout: string, code = 0, stderr = ''): { exec: Exec; calls: Call[
 test('send builds the spike-notes argv and maps the JSON to a PacketAnswer', async () => {
   const { exec, calls } = fake(SEND_OK);
   const cli = new ToonCli({ passphraseFile: PASS, exec });
-  const ans = await cli.send(DEST, { method: 'POST', path: '/echo', body: { hi: 1 } }, { sealKey: SEAL, amount: 100n });
+  const ans = await cli.send(DEST, { method: 'POST', path: '/open', body: { hi: 1 } }, { sealKey: SEAL, amount: 100n });
 
   const c = calls[0]!;
   assert.deepEqual(c.args, [
-    'send', '--json', '--seal-to', SEAL, '--method', 'POST', '--path', 'echo',
+    'send', '--json', '--seal-to', SEAL, '--method', 'POST', '--path', '/open',
     '--body', c.bodyFile!, '--amount', '100', '--yes', DEST,
   ]);
+  assert.equal(c.args[c.args.indexOf('--path') + 1], '/open');
   assert.equal(c.bodyAtCall, '{"hi":1}');
   assert.equal(ans.status, 200);
   assert.equal(typeof ans.paid, 'bigint');
@@ -70,10 +71,10 @@ test('send deletes the body temp file afterwards, and on failure too', async () 
   assert.equal(existsSync(bad.calls[0]!.bodyFile!), false);
 });
 
-test('send without a body passes no --body, and a bare / path passes no --path', async () => {
+test('send without a body passes no --body, and the path is passed as given', async () => {
   const { exec, calls } = fake(SEND_503);
   const ans = await new ToonCli({ passphraseFile: PASS, exec }).send(DEST, { method: 'GET', path: '/' }, { sealKey: SEAL, amount: 100n });
-  assert.deepEqual(calls[0]!.args, ['send', '--json', '--seal-to', SEAL, '--method', 'GET', '--amount', '100', '--yes', DEST]);
+  assert.deepEqual(calls[0]!.args, ['send', '--json', '--seal-to', SEAL, '--method', 'GET', '--path', '/', '--amount', '100', '--yes', DEST]);
   assert.equal(ans.status, 503);
   assert.equal(ans.body, 'busy');
   assert.equal(ans.paid, 100n);

@@ -6,7 +6,7 @@ import type { Micro } from './types.js';
 
 export interface PacketRequest {
   method: 'GET' | 'POST';
-  /** With a leading `/`, as callers write it. Payers strip it: the connector refuses an absolute target with F00. */
+  /** With a leading `/`, as callers write it. ToonClientPayer strips it (the connector refuses an absolute envelope target with F00); the CLI takes it as given. */
   path: string;
   body?: unknown;
 }
@@ -28,7 +28,7 @@ export interface Payer {
   send(dest: string, req: PacketRequest, opts: { sealKey: string; amount: Micro }): Promise<PacketAnswer>;
 }
 
-/** The path as a payer sends it: no leading slash. */
+/** The path as a ToonClient envelope target: no leading slash. (The CLI takes it as given.) */
 export function relativeTarget(path: string): string {
   return path.replace(/^\/+/, '');
 }

@@ -49,12 +49,12 @@ test('sealKey and amount reach client.send as sealTo and amount', async () => {
       { connectorUrl: 'https://connector.mainnet.toonprotocol.dev', keyFile: s.keyFile, channelStore: join(s.dir, 'store.json'), chain: 'solana' },
       { createClient: s.createClient },
     );
-    const ans = await payer.send(DEST, { method: 'POST', path: '/tick', body: { n: 1 } }, { sealKey: SEAL, amount: 5000n });
+    const ans = await payer.send(DEST, { method: 'POST', path: '/open', body: { n: 1 } }, { sealKey: SEAL, amount: 5000n });
     assert.equal(s.sent.length, 1);
     assert.equal(s.sent[0]!.dest, DEST);
     assert.deepEqual(s.sent[0]!.opts, { amount: 5000n, sealTo: SEAL });
     // The leading slash is stripped: the connector refuses an absolute target with F00.
-    assert.deepEqual(s.sent[0]!.req, { method: 'POST', target: 'tick', body: { n: 1 } });
+    assert.deepEqual(s.sent[0]!.req, { method: 'POST', target: 'open', body: { n: 1 } });
     assert.equal(ans.status, 200);
     assert.deepEqual(ans.body, { ok: true });
     assert.equal(ans.paid, 5000n);
