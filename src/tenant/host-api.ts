@@ -32,11 +32,13 @@ export interface HostApi {
   status(leaseId: string): Promise<Lease>;
   /** Every part of result.json, joined. Each part is one paid status call. */
   output(leaseId: string): Promise<Buffer>;
+  /** One part of result.json as the host answers it (base64 `data`). One paid status call. */
+  outputPart(leaseId: string, part: number): Promise<OutputPart>;
   /** Everything paid so far through this API, from every answer, 4xx and 5xx included. */
   spent(): Micro;
 }
 
-interface OutputPart {
+export interface OutputPart {
   part: number;
   parts: number;
   data: string;
@@ -67,6 +69,7 @@ export function hostApi(p: Payer, o: Offer): HostApi {
     tick: async (leaseId, index) =>
       (await call('tick', o.tickPrice, { method: 'POST', path: '/tick', body: { leaseId, index } })) as TickResult,
     status,
+    outputPart: part,
     output: async (leaseId) => {
       const first = await part(leaseId, 0);
       const chunks = [Buffer.from(first.data, 'base64')];

@@ -19,3 +19,10 @@ export async function fetchOffers(relayUrl: string, now: number, query: QueryEve
   const events = await query(relayUrl, { kinds: [OFFER_KIND], '#L': ['charter'] });
   return latestOffers(events, now);
 }
+
+/** The live offer named exactly `<pubkey>:<id>`, or undefined. A bare id never matches. */
+export function findOfferExact(offers: Offer[], ref: string): Offer | undefined {
+  const m = /^([0-9a-f]{64}):(.+)$/.exec(ref);
+  if (!m) return undefined;
+  return offers.find((x) => x.hostPubkey === m[1] && x.id === m[2]);
+}
