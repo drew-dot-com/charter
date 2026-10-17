@@ -208,3 +208,16 @@ each publish is a paid relay write of 1000, so a running host costs about 0.14 U
 | --- | --- | --- | --- | --- |
 | Edison, step 3 (10-17 18:17 UTC) | `c73ccd97ab6987023b37c99281f12a34` | 1 (the job finished inside it) | 6500 (open 1000, tick 5000, 5 reads) | land (Solana, finalized): `E6C5MaGtD5PyTURWSM5GYufXdE9boBZGkYiyhyHtFaNBVX2Wbjgk4EFBfDSQreFbcyuDJajkUfVdDsMsKxt535k` |
 | browser, step 5 (10-17 18:53 UTC, Drew's wallet) | `0b4ce38ec3ea43a7172f8df136a68501` | 1 | renter 5000 over x402; door paid host 6600 (open 1000, tick 5000, 6 reads), 0 losses | x402 (Base): `0xaa19e753857fb3347f83d02d0fc84d7024f37a92a734f35756912476a58bf51d`; land (Solana, finalized): `mNmAd7kHpTwM3ep98JzPXKKPJioB2sGhDwGmLpsyPySQKgHc2spFnNoN5o3nEfn1Ewogc93Nadj4AouV8j2B5Sp` |
+
+## 7. The python job (2026-10-17)
+
+- [x] `toon2`: gVisor `runsc` release-20261012.0 from the gVisor apt repo, `sudo runsc install`, then
+  `sudo systemctl reload docker` (a reload, so the relay container stayed up). Systrap platform, no KVM.
+- [x] `docker build -t charter-job-python jobs/python`; both images probed under `runsc` with the runner's
+  exact flags (no network, caps 0, fsize/tmpfs/AS/NPROC caps hold; fetch still exits through Anyone).
+- [x] Source in `~/src/charter` replaced from `python-job` (dist backup `/tmp/charter-dist.bak-*`), env backup
+  `~/.config/charter/env.bak-*-prepython`; env now `CHARTER_ALLOW_IMAGES=charter-job-fetch,charter-job-python`
+  and `CHARTER_RUNTIME=runsc`. Restarted `charter-host`: offer event `b3c9e90a...` lists both images.
+- [x] Door: backup `/opt/charter.bak-20261017-2108`, rsync, `compose up -d --build`; `channel ready, headroom 1993400`.
+- [ ] Drew: one paid python lease from the browser (Run Python, the example script). Check: `done`, the
+  result shows, 0 losses in the door ledger, then `charter-host land` in `toon2` and the tx on Solscan.
