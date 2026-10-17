@@ -3,36 +3,17 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { verifyTypedData } from 'viem';
-import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { decodePaymentSignatureHeader } from '@x402/core/http';
 import type { Request } from 'express';
 import { MIN_WINDOW_SECONDS, paymentIdOf } from '../src/door/x402.js';
+import { account, fakeWallet } from './test-wallet.js';
 import { isUnexpectedPayment } from './format.js';
-import { BASE_USDC, evmSigner, payFetchFor, type Eip1193, type ExpectedPayment } from './wallet.js';
+import { BASE_USDC, evmSigner, payFetchFor, type ExpectedPayment } from './wallet.js';
 
-const account = privateKeyToAccount(generatePrivateKey());
 const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const PAY_TO = '0x' + '2'.repeat(40);
 const EXPECTED: ExpectedPayment = { network: 'eip155:8453' as const, asset: USDC, amount: 5000n, payTo: PAY_TO };
 const ACCEPT = { scheme: 'exact', network: 'eip155:8453', asset: USDC, amount: '5000', payTo: PAY_TO, maxTimeoutSeconds: 300, extra: { name: 'USD Coin', version: '2' } };
-
-/** A wallet that signs EIP-712 requests with a local key, as an injected provider would. */
-function fakeWallet(seen: string[] = []): Eip1193 {
-  return {
-    async request({ method, params }) {
-      seen.push(method);
-      if (method !== 'eth_signTypedData_v4') throw new Error(`unexpected ${method}`);
-      const [from, json] = params as [string, string];
-      assert.equal(from.toLowerCase(), account.address.toLowerCase());
-      const t = JSON.parse(json) as { domain: Record<string, unknown>; types: Record<string, Array<{ name: string; type: string }>>; primaryType: string; message: Record<string, unknown> };
-      const { EIP712Domain: _domain, ...types } = t.types;
-      // The wire form carries uint256 as strings; the signer wants bigints.
-      const message = { ...t.message };
-      for (const f of types[t.primaryType]!) if (f.type.startsWith('uint')) message[f.name] = BigInt(message[f.name] as string);
-      return account.signTypedData({ domain: t.domain, types, primaryType: t.primaryType, message } as never);
-    },
-  };
-}
 
 test('the signer adapter signs typed data through the injected wallet, bigint fields included', async () => {
   const signer = evmSigner(account.address, fakeWallet());

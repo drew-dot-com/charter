@@ -7,7 +7,7 @@ import { HostError, type HostApi } from '../tenant/host-api.js';
 import { findOfferExact } from '../tenant/offers.js';
 import type { Lease, Micro, Offer } from '../types.js';
 import { DeadlinePassedError, SendTimeoutError } from '../payer.js';
-import type { DoorLedger, LossKind } from './ledger.js';
+import type { DoorLedger, LossKind, PublicOffer } from './ledger.js';
 import { MIN_WINDOW_SECONDS, SETTLE_MARGIN_SECONDS, isPayerFault, paymentIdOf, realGate, settleReasonOf, stubGate, type Gate, type TestHooks, type X402Config } from './x402.js';
 
 export interface DoorDeps {
@@ -33,7 +33,7 @@ const MAX_URLS = 5;
 const OFFERS_TTL_MS = 60_000;
 const STATUS_TTL_MS = 5_000;
 /** Paid host reads a lease's free GET routes may cause: this, plus READS_PER_TICK for each tick the renter paid. */
-const READS_BASE = 20;
+const READS_BASE = 40;
 const READS_PER_TICK = 8;
 /** A done lease with paid intervals and no landing yet is read from the host again after this long, at most. */
 const LANDING_REFRESH_MS = 10 * 60_000;
@@ -61,6 +61,20 @@ function slidingLimit(now: () => number, max: number, windowMs: number): (key: s
     if (ok) recent.push(t);
     hits.set(key, recent);
     return ok;
+  };
+}
+
+function publicOffer(o: Offer): PublicOffer {
+  return {
+    offerId: `${o.hostPubkey}:${o.id}`,
+    cpu: o.cpu,
+    memoryMiB: o.memoryMiB,
+    intervalSeconds: o.intervalSeconds,
+    tickPrice: o.tickPrice.toString(),
+    images: o.images,
+    hiddenHost: o.hiddenHost,
+    hiddenEgress: o.hiddenEgress,
+    expiresAt: o.expiresAt,
   };
 }
 
@@ -224,17 +238,7 @@ export function doorApp(deps: DoorDeps): express.Express {
     res.json(
       list
         .filter((o) => o.images.includes(JOB_IMAGE) && o.expiresAt > now())
-        .map((o) => ({
-          offerId: `${o.hostPubkey}:${o.id}`,
-          cpu: o.cpu,
-          memoryMiB: o.memoryMiB,
-          intervalSeconds: o.intervalSeconds,
-          tickPrice: o.tickPrice.toString(),
-          images: o.images,
-          hiddenHost: o.hiddenHost,
-          hiddenEgress: o.hiddenEgress,
-          expiresAt: o.expiresAt,
-        })),
+        .map(publicOffer),
     );
   });
 
@@ -256,7 +260,7 @@ export function doorApp(deps: DoorDeps): express.Express {
     try {
       const r = await deps.api(offer).open({ image: JOB_IMAGE, args: { URLS: (urls as string[]).join(',') } });
       if (!LEASE_ID.test(r.leaseId) || ledger.get(r.leaseId)) return void res.status(502).json({ error: 'bad_host_answer' });
-      ledger.open({ leaseId: r.leaseId, offerId, createdAt: now() });
+      ledger.open({ leaseId: r.leaseId, offerId, createdAt: now(), offer: publicOffer(offer) });
       leaseOffers.set(r.leaseId, offer);
       res.json({
         leaseId: r.leaseId,
@@ -410,7 +414,8 @@ export function doorApp(deps: DoorDeps): express.Express {
     if (!id) return;
     try {
       const lease = await leaseStatus(id, () => offerFor(id));
-      res.json({ lease, stopped: ledger.get(id)?.stopped ?? false });
+      const rec = ledger.get(id);
+      res.json({ lease, stopped: rec?.stopped ?? false, ...(rec?.offer ? { offer: rec.offer } : {}) });
     } catch (e) {
       failRead(res, e);
     }

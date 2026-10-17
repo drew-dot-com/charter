@@ -531,17 +531,38 @@ test('the landing refresh never serves an error: a host that fails, or a spent b
   }
 });
 
-test('C1: host reads per lease are capped at 20 + 8 per renter tick; past it the last status is served and uncached output is 429', async () => {
+test('the status answer carries the offer the door resolved at open time, which the ledger keeps and the relay need not still list', async () => {
+  let listed = true;
+  const host = fakeHost();
+  const d = await start(host, { offers: async () => (listed ? [OFFER] : []) });
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    listed = false;
+    d.clock.t += 24 * 3_600_000;
+    const r = await d.get('/v1/offers');
+    assert.deepEqual(await r.json(), [], 'the offer is gone from the list');
+    const body = (await (await d.get(`/v1/leases/${LEASE}`)).json()) as { offer?: Record<string, unknown> };
+    assert.deepEqual(body.offer, {
+      offerId: OFFER_ID, cpu: OFFER.cpu, memoryMiB: OFFER.memoryMiB, intervalSeconds: 30, tickPrice: '5000',
+      images: ['charter-job-fetch'], hiddenHost: true, hiddenEgress: false, expiresAt: OFFER.expiresAt,
+    });
+    assert.equal(new DoorLedger(join(d.dir, 'ledger.json')).get(LEASE)!.offer?.tickPrice, '5000', 'persisted in the ledger');
+  } finally {
+    d.close();
+  }
+});
+
+test('C1: host reads per lease are capped at 40 + 8 per renter tick; past it the last status is served and uncached output is 429', async () => {
   const host = fakeHost({ status: async () => lease({ outputParts: 2 }) });
   const d = await start(host);
   try {
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 60; i++) {
       const r = await d.get(`/v1/leases/${LEASE}`);
       assert.equal(r.status, 200, `get ${i}`);
       d.clock.t += 6_000;
     }
-    assert.equal(host.calls.filter((c) => c === 'status').length, 20);
+    assert.equal(host.calls.filter((c) => c === 'status').length, 40);
     assert.equal((await d.get(`/v1/leases/${LEASE}/output/0`)).status, 429);
     assert.equal(host.calls.filter((c) => c.startsWith('part:')).length, 0);
     // One renter tick settled buys eight more reads.
@@ -550,8 +571,8 @@ test('C1: host reads per lease are capped at 20 + 8 per renter tick; past it the
       d.clock.t += 6_000;
       await d.get(`/v1/leases/${LEASE}`);
     }
-    assert.equal(host.calls.filter((c) => c === 'status').length, 28);
-    assert.equal(d.ledger.get(LEASE)!.hostReads, 28);
+    assert.equal(host.calls.filter((c) => c === 'status').length, 48);
+    assert.equal(d.ledger.get(LEASE)!.hostReads, 48);
   } finally {
     d.close();
   }

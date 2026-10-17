@@ -2,6 +2,20 @@ import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFil
 import { dirname } from 'node:path';
 import type { Micro } from '../types.js';
 
+/** An offer as the door shows it: what `GET /v1/offers` lists, and what a lease keeps from its open. */
+export interface PublicOffer {
+  offerId: string;
+  cpu: number;
+  memoryMiB: number;
+  intervalSeconds: number;
+  /** USDC micro-units as a decimal string. */
+  tickPrice: string;
+  images: string[];
+  hiddenHost: boolean;
+  hiddenEgress: boolean;
+  expiresAt: number;
+}
+
 /** One lease the door opened for a renter. */
 export interface DoorLease {
   leaseId: string;
@@ -27,6 +41,8 @@ export interface DoorLease {
   nextIndex: number;
   /** Paid host status and output calls made for this lease's free reads. */
   hostReads: number;
+  /** The offer as resolved when the lease was opened; the renter's page takes the price it pays from here. */
+  offer?: PublicOffer;
 }
 
 /**
@@ -95,7 +111,7 @@ export class DoorLedger {
     return [...this.leases.values()].map((l) => ({ ...l }));
   }
 
-  open(o: { leaseId: string; offerId: string; createdAt: number }): void {
+  open(o: { leaseId: string; offerId: string; createdAt: number; offer?: PublicOffer }): void {
     this.leases.set(o.leaseId, { ...o, ticksPaidByRenter: 0, ticksPaidToHost: 0, losses: 0n, stopped: false, nextIndex: 0, hostReads: 0 });
     this.save();
   }

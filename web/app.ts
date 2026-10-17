@@ -1,8 +1,9 @@
 import type { Lease } from '../src/types.js';
-import { decodeOutput, formatUsdc, landingLink, pricePerHour, sizeLabel, UNEXPECTED_PAYMENT, type JobOutput } from './format.js';
+import { decodeOutput, formatUsdc, landingLink, parseOffer, pricePerHour, sizeLabel, type JobOutput, type PublicOffer } from './format.js';
+import { call, makePost, type Answer, type DoorInfo } from './pay.js';
 import { nextTickAt } from './schedule.js';
 import { applyStatus, clearHalt, newTickState, runTick, shouldTick, type TickState } from './ticker.js';
-import { BASE_CHAIN_ID_HEX, BASE_NETWORK, BASE_USDC, payFetchFor, type Eip1193 } from './wallet.js';
+import { BASE_CHAIN_ID_HEX, type Eip1193 } from './wallet.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -55,47 +56,11 @@ function short(e: unknown): string {
 // ---------------------------------------------------------------------------
 // The door's API
 
-interface PublicOffer {
-  offerId: string;
-  cpu: number;
-  memoryMiB: number;
-  intervalSeconds: number;
-  tickPrice: string;
-  hiddenHost: boolean;
-}
-
-interface Answer {
-  status: number;
-  body: unknown;
-}
-
-async function call(f: typeof fetch, path: string, init?: RequestInit): Promise<Answer> {
-  const res = await f(path, init);
-  let body: unknown;
-  try {
-    body = await res.json();
-  } catch {
-    body = undefined;
-  }
-  return { status: res.status, body };
-}
-
 const errorCode = (a: Answer): string => ((a.body as { error?: unknown } | undefined)?.error as string | undefined) ?? 'unknown';
 
 function parseOffers(body: unknown): PublicOffer[] {
   if (!Array.isArray(body)) throw new Error('bad offers answer');
-  return body.filter(
-    (o): o is PublicOffer =>
-      !!o &&
-      typeof o.offerId === 'string' &&
-      typeof o.cpu === 'number' &&
-      typeof o.memoryMiB === 'number' &&
-      typeof o.intervalSeconds === 'number' &&
-      o.intervalSeconds > 0 &&
-      typeof o.tickPrice === 'string' &&
-      /^\d+$/.test(o.tickPrice) &&
-      typeof o.hiddenHost === 'boolean',
-  );
+  return body.map(parseOffer).filter((o): o is PublicOffer => o !== undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -104,12 +69,6 @@ function parseOffers(body: unknown): PublicOffer[] {
 interface Wallet {
   address: `0x${string}`;
   eth: Eip1193;
-}
-
-/** Where the door says payments go. Read once; a 402 naming any other payee is refused. */
-interface DoorInfo {
-  payTo: string;
-  network: string;
 }
 
 let wallet: Wallet | undefined;
@@ -303,8 +262,8 @@ interface LeasePage {
   timer: number | undefined;
   /** What the lease page knows of the lease and its ticks (see ticker.ts). */
   t: TickState;
+  /** The lease's offer as its status carries it (the door's record from open time). */
   offer: PublicOffer | undefined;
-  offerTried: boolean;
   lastPoll: number;
   /** The status read in flight, if any. */
   polling: Promise<void> | undefined;
@@ -347,7 +306,7 @@ async function showLease(id: string, token: number): Promise<void> {
     out: el('div'),
   };
   const page: LeasePage = {
-    id, alive: true, timer: undefined, t: newTickState(), offer: undefined, offerTried: false, lastPoll: 0, polling: undefined,
+    id, alive: true, timer: undefined, t: newTickState(), offer: undefined, lastPoll: 0, polling: undefined,
     notice: undefined, output: { state: 'idle' }, ui,
   };
   current = page;
@@ -371,18 +330,6 @@ async function showLease(id: string, token: number): Promise<void> {
     if (token !== route) return;
   }
   step(page);
-}
-
-/** The offer's tick price turns paid intervals into dollars, and is the one amount the page will pay. The lease's offer id is the host's, the offers list's is `<pubkey>:<id>`. */
-async function loadOffer(p: LeasePage): Promise<void> {
-  try {
-    const a = await call(fetch, '/v1/offers');
-    if (a.status !== 200 || !p.t.lease) return;
-    const hostId = p.t.lease.offerId;
-    p.offer = parseOffers(a.body).find((o) => o.offerId.endsWith(`:${hostId}`));
-  } catch {
-    // Spent stays unknown.
-  }
 }
 
 async function loadDoor(): Promise<void> {
@@ -413,10 +360,8 @@ async function readStatus(p: LeasePage): Promise<void> {
     if (a.status === 200 && lease) {
       applyStatus(p.t, lease);
       p.notice = undefined;
-      if (!p.offerTried) {
-        p.offerTried = true;
-        void loadOffer(p);
-      }
+      const offer = parseOffer((a.body as { offer?: unknown }).offer);
+      if (offer) p.offer = offer;
       if (lease.state === 'done' && p.output.state === 'idle') void loadOutput(p);
     } else if (a.status === 404) {
       p.t.halt = { message: 'The door does not know this lease.', retry: false };
@@ -445,26 +390,18 @@ function step(p: LeasePage): void {
 /** The effects of one tick: the status refresh, the send (with the wallet when the door is gated), the sleep. */
 function payTick(p: LeasePage): Promise<void> {
   return runTick(p.t, {
-    post: async (index) => {
-      let pay: typeof fetch = fetch;
-      if (!dev) {
-        // The page signs one payment only: this lease's tick price, to the door's payTo, in USDC on Base.
+    post: makePost({
+      leaseId: p.id,
+      origin: location.origin,
+      dev,
+      wallet,
+      fetch: window.fetch.bind(window),
+      door: async () => {
         if (!doorInfo) await loadDoor();
-        if (!p.offer) await loadOffer(p);
-        if (!doorInfo || !p.offer || doorInfo.network !== BASE_NETWORK) throw new Error(UNEXPECTED_PAYMENT);
-        pay = payFetchFor(wallet!.address, wallet!.eth, {
-          network: BASE_NETWORK,
-          asset: BASE_USDC,
-          amount: BigInt(p.offer.tickPrice),
-          payTo: doorInfo.payTo,
-        });
-      }
-      return call(pay, `/v1/leases/${p.id}/ticks`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ index }),
-      });
-    },
+        return doorInfo;
+      },
+      offer: () => p.offer,
+    }),
     // A tick sent to a lease that finished since the last look is paid by the door for nothing:
     // look again first, unless the last look was within the poll interval.
     refresh: async () => {

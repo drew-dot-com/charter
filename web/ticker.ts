@@ -1,5 +1,5 @@
 import type { Lease } from '../src/types.js';
-import { isUnexpectedPayment, tickOutcome, UNEXPECTED_PAYMENT } from './format.js';
+import { isPriceUnconfirmed, isUnexpectedPayment, PRICE_UNCONFIRMED, tickOutcome, UNEXPECTED_PAYMENT } from './format.js';
 import { nextTickAt } from './schedule.js';
 
 /** The tick state machine of a lease page. No DOM, no wallet, no clock of its own: `runTick` takes its effects as deps. */
@@ -101,9 +101,11 @@ export async function runTick(s: TickState, deps: TickDeps): Promise<void> {
         a = await deps.post(index);
       } catch (e) {
         if (!deps.alive()) return;
-        stop(s, deps, isUnexpectedPayment(e)
-          ? { message: `${UNEXPECTED_PAYMENT}. Nothing was signed.`, retry: false }
-          : { message: `The payment was not sent: ${short(e)}`, retry: true });
+        stop(s, deps, isPriceUnconfirmed(e)
+          ? { message: `${PRICE_UNCONFIRMED}. Nothing was signed. Try again.`, retry: true }
+          : isUnexpectedPayment(e)
+            ? { message: `${UNEXPECTED_PAYMENT}. Nothing was signed.`, retry: false }
+            : { message: `The payment was not sent: ${short(e)}`, retry: true });
         return;
       }
       if (!deps.alive()) return;

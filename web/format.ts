@@ -143,3 +143,40 @@ export function isUnexpectedPayment(e: unknown): boolean {
   const m = e instanceof Error ? e.message : String(e);
   return m.includes(UNEXPECTED_PAYMENT) || /filtered out by policies|rejected by spendControls|No network\/scheme registered|No payment requirements/.test(m);
 }
+
+/** What the page needs of an offer, as the door shows it (`GET /v1/offers`, and a lease status's `offer`). */
+export interface PublicOffer {
+  offerId: string;
+  cpu: number;
+  memoryMiB: number;
+  intervalSeconds: number;
+  /** USDC micro-units as a decimal string. */
+  tickPrice: string;
+  hiddenHost: boolean;
+}
+
+export function parseOffer(o: unknown): PublicOffer | undefined {
+  const x = o as Partial<PublicOffer> | null;
+  if (
+    x &&
+    typeof x.offerId === 'string' &&
+    typeof x.cpu === 'number' &&
+    typeof x.memoryMiB === 'number' &&
+    typeof x.intervalSeconds === 'number' &&
+    x.intervalSeconds > 0 &&
+    typeof x.tickPrice === 'string' &&
+    /^\d+$/.test(x.tickPrice) &&
+    typeof x.hiddenHost === 'boolean'
+  ) {
+    const { offerId, cpu, memoryMiB, intervalSeconds, tickPrice, hiddenHost } = x;
+    return { offerId, cpu, memoryMiB, intervalSeconds, tickPrice, hiddenHost };
+  }
+  return undefined;
+}
+
+/** The price could not be checked (a failed lookup), as opposed to a payment request that does not match it. */
+export const PRICE_UNCONFIRMED = 'Could not confirm the price';
+
+export function isPriceUnconfirmed(e: unknown): boolean {
+  return (e instanceof Error ? e.message : String(e)).includes(PRICE_UNCONFIRMED);
+}
