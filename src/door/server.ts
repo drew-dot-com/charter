@@ -1,9 +1,11 @@
-import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { HostError, type HostApi } from '../tenant/host-api.js';
 import { findOfferExact } from '../tenant/offers.js';
-import type { Micro, Offer } from '../types.js';
+import type { Lease, Micro, Offer } from '../types.js';
 import type { DoorLedger } from './ledger.js';
 import { realGate, stubGate, type Gate, type TestHooks, type X402Config } from './x402.js';
 
@@ -15,6 +17,8 @@ export interface DoorDeps {
   x402: X402Config | 'free-for-tests';
   /** Epoch ms. */
   now?: () => number;
+  /** The door's data directory: output parts are kept under `output/` here. */
+  dataDir: string;
   /** Where the built web page lives. Default: `web/dist` beside the package. */
   webDir?: string;
   /** Express `trust proxy`, for a door behind a reverse proxy (the rate limit keys on the client IP). */
@@ -27,8 +31,11 @@ export const JOB_IMAGE = 'charter-job-fetch';
 const MAX_URLS = 5;
 const OFFERS_TTL_MS = 60_000;
 const STATUS_TTL_MS = 5_000;
-const OUTPUT_TTL_MS = 60_000;
-const OUTPUT_CACHE_MAX = 256;
+/** Paid host reads a lease's free GET routes may cause: this, plus READS_PER_TICK for each tick the renter paid. */
+const READS_BASE = 20;
+const READS_PER_TICK = 4;
+const GETS_PER_MINUTE = 120;
+const MINUTE_MS = 60_000;
 const OPENS_PER_HOUR = 10;
 const HOUR_MS = 3_600_000;
 const LEASE_ID = /^[0-9a-f]{32}$/;
@@ -37,22 +44,27 @@ const NON_NEG_INT = /^\d+$/;
 const EXPOSED = 'PAYMENT-REQUIRED, PAYMENT-RESPONSE, X-PAYMENT-RESPONSE';
 const ALLOWED = 'Content-Type, PAYMENT-SIGNATURE, X-PAYMENT';
 
-/** Keeps one answer per key for a while, errors included, so a free route cannot spend the door dry. */
-function ttlCache<T>(now: () => number, okMs: number, errMs: number, max: number) {
-  const m = new Map<string, { at: number; ok: boolean | undefined; p: Promise<T> }>();
-  return (key: string, load: () => Promise<T>): Promise<T> => {
-    const hit = m.get(key);
-    if (hit && now() - hit.at < (hit.ok === false ? errMs : okMs)) return hit.p;
-    const e: { at: number; ok: boolean | undefined; p: Promise<T> } = { at: now(), ok: undefined, p: load() };
-    e.p.then(
-      () => void (e.ok = true),
-      () => void (e.ok = false),
-    );
-    m.delete(key);
-    m.set(key, e);
-    if (m.size > max) m.delete(m.keys().next().value!);
-    return e.p;
+/** At most `max` hits per key within `windowMs`. Counts the attempt it allows. */
+function slidingLimit(now: () => number, max: number, windowMs: number): (key: string) => boolean {
+  const hits = new Map<string, number[]>();
+  return (key) => {
+    const t = now();
+    if (hits.size > 256) {
+      for (const [k, v] of hits) if (v[v.length - 1]! <= t - windowMs) hits.delete(k);
+    }
+    const recent = (hits.get(key) ?? []).filter((x) => x > t - windowMs);
+    const ok = recent.length < max;
+    if (ok) recent.push(t);
+    hits.set(key, recent);
+    return ok;
   };
+}
+
+/** The lease's free-read budget is spent. */
+class BudgetError extends Error {}
+
+function final(l: Lease): boolean {
+  return l.state === 'done' || l.state === 'closed';
 }
 
 function isUrl(v: unknown): v is string {
@@ -92,24 +104,49 @@ export function doorApp(deps: DoorDeps): express.Express {
     return entry.p;
   };
 
-  const statusCache = ttlCache<Awaited<ReturnType<HostApi['status']>>>(now, STATUS_TTL_MS, STATUS_TTL_MS, 1024);
-  const outputCache = ttlCache<Awaited<ReturnType<HostApi['outputPart']>>>(now, OUTPUT_TTL_MS, STATUS_TTL_MS, OUTPUT_CACHE_MAX);
+  const allowOpen = slidingLimit(now, OPENS_PER_HOUR, HOUR_MS);
+  const allowGet = slidingLimit(now, GETS_PER_MINUTE, MINUTE_MS);
 
-  const opens = new Map<string, number[]>();
-  /** Counts this attempt. False when the IP already opened its ten within the hour. */
-  const allowOpen = (ip: string): boolean => {
-    const t = now();
-    for (const [k, v] of opens) {
-      if (v[v.length - 1]! <= t - HOUR_MS) opens.delete(k);
+  /** What the door last read from the host for each lease, and any read in flight. */
+  const statuses = new Map<string, { lease: Lease; at: number }>();
+  const statusInflight = new Map<string, Promise<Lease>>();
+  const partInflight = new Map<string, Promise<unknown>>();
+  /** Leases with a tick in flight: one at a time. */
+  const ticking = new Set<string>();
+
+  const partFile = (id: string, part: number): string => join(deps.dataDir, 'output', id, `${part}.json`);
+
+  /** Spends one of the lease's paid host reads, or throws BudgetError. */
+  const spendRead = (id: string): void => {
+    const rec = ledger.get(id)!;
+    if (rec.hostReads >= READS_BASE + READS_PER_TICK * rec.ticksPaidByRenter) throw new BudgetError();
+    ledger.read(id);
+  };
+
+  /**
+   * The host's lease, from memory while fresh (for good once done or closed) and
+   * otherwise one paid status call within the lease's budget. A spent budget serves
+   * the last answer, however old.
+   */
+  const leaseStatus = (id: string, offerOfLease: () => Promise<Offer>): Promise<Lease> => {
+    const last = statuses.get(id);
+    if (last && (final(last.lease) || now() - last.at < STATUS_TTL_MS)) return Promise.resolve(last.lease);
+    const running = statusInflight.get(id);
+    if (running) return running;
+    try {
+      spendRead(id);
+    } catch (e) {
+      return last ? Promise.resolve(last.lease) : Promise.reject(e);
     }
-    const recent = (opens.get(ip) ?? []).filter((x) => x > t - HOUR_MS);
-    if (recent.length >= OPENS_PER_HOUR) {
-      opens.set(ip, recent);
-      return false;
-    }
-    recent.push(t);
-    opens.set(ip, recent);
-    return true;
+    const p = (async () => {
+      const lease = await deps.api(await offerOfLease()).status(id);
+      statuses.set(id, { lease, at: now() });
+      return lease;
+    })();
+    statusInflight.set(id, p);
+    const clear = () => void statusInflight.delete(id);
+    p.then(clear, clear);
+    return p;
   };
 
   /** The offer behind a door lease, from memory or, after a restart, the relay. */
@@ -206,20 +243,29 @@ export function doorApp(deps: DoorDeps): express.Express {
   /** Everything that can be refused before the renter is asked to pay. */
   const tickGuard: express.RequestHandler = async (req, res, next) => {
     const id = req.params.id as string;
-    const rec = LEASE_ID.test(id) ? ledger.get(id) : undefined;
-    if (!rec) return void res.status(404).json({ error: 'not_found' });
-    if (rec.stopped) return void res.status(409).json({ error: 'stopped' });
+    const first = LEASE_ID.test(id) ? ledger.get(id) : undefined;
+    if (!first) return void res.status(404).json({ error: 'not_found' });
     const index = (req.body as { index?: unknown } | undefined)?.index;
     if (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0) {
       return void res.status(400).json({ error: 'bad_request' });
     }
     let offer: Offer | undefined;
     try {
-      offer = await offerOf(id, rec.offerId);
+      offer = await offerOf(id, first.offerId);
     } catch {
       return void res.status(502).json({ error: 'offers_unavailable' });
     }
+    // No await from here to next(): the checks and the claim on the lease happen together.
+    const rec = ledger.get(id)!;
+    if (rec.stopped) return void res.status(409).json({ error: 'stopped' });
     if (!offer) return void res.status(503).json({ error: 'offer_unavailable' });
+    if (index !== rec.nextIndex) return void res.status(409).json({ error: 'out_of_order', expected: rec.nextIndex });
+    if (ticking.has(id)) return void res.status(409).json({ error: 'busy' });
+    const payment = req.get('payment-signature') ?? req.get('x-payment');
+    if (payment && ledger.seenPayment(createHash('sha256').update(payment).digest('hex'))) {
+      return void res.status(409).json({ error: 'payment_reused' });
+    }
+    ticking.add(id);
     res.locals.offer = offer;
     res.locals.index = index;
     next();
@@ -227,11 +273,14 @@ export function doorApp(deps: DoorDeps): express.Express {
 
   /** Runs the payment gate, then books the outcome once the response is final. */
   const paidTick: express.RequestHandler = async (req, res, next) => {
+    const id = req.params.id as string;
     let failure: unknown;
     try {
       await gate(req, res, next);
     } catch (e) {
       failure = e;
+    } finally {
+      ticking.delete(id);
     }
     const paid = res.locals.hostPaid as { leaseId: string; price: Micro } | undefined;
     if (paid) {
@@ -239,7 +288,7 @@ export function doorApp(deps: DoorDeps): express.Express {
         ledger.renterTick(paid.leaseId, res.locals.payer as string | undefined);
       } else {
         // The host has its tick and the renter's payment never settled.
-        ledger.loss(paid.leaseId, paid.price);
+        ledger.loss(paid.leaseId, paid.price, res.locals.payer as string | undefined);
         ledger.stop(paid.leaseId);
       }
     }
@@ -249,6 +298,9 @@ export function doorApp(deps: DoorDeps): express.Express {
   const tick: express.RequestHandler = async (req, res) => {
     const id = req.params.id as string;
     const offer = res.locals.offer as Offer;
+    const payer = res.locals.payer as string | undefined;
+    // The payment has verified, so the payer is known. One that cost the door before does not cost it again.
+    if (payer && ledger.payerHasLoss(payer)) return void res.status(403).json({ error: 'payer_blocked' });
     const api = deps.api(offer);
     const before = api.spent();
     try {
@@ -260,7 +312,7 @@ export function doorApp(deps: DoorDeps): express.Express {
       // A host that answered, even with an error, took the door's money. It will not be paid again.
       const lost = api.spent() - before;
       if (lost > 0n) {
-        ledger.loss(id, lost);
+        ledger.loss(id, lost, payer);
         ledger.stop(id);
       }
       if (e instanceof HostError && e.status === 409 && (e.error === 'lease_done' || e.error === 'not_running')) {
@@ -272,40 +324,76 @@ export function doorApp(deps: DoorDeps): express.Express {
 
   app.post('/v1/leases/:id/ticks', tickGuard, paidTick, tick);
 
-  /** The ledger's lease and its offer, or a 404 written to `res`. */
-  const known = async (req: express.Request, res: express.Response): Promise<{ id: string; offer: Offer } | undefined> => {
+  /** The ledger's lease id, or a 404 written to `res`. */
+  const known = (req: express.Request, res: express.Response): string | undefined => {
     const id = req.params.id as string;
-    const rec = LEASE_ID.test(id) ? ledger.get(id) : undefined;
-    if (!rec) return void res.status(404).json({ error: 'not_found' });
-    try {
-      const offer = await offerOf(id, rec.offerId);
-      if (offer) return { id, offer };
-    } catch {
-      return void res.status(502).json({ error: 'offers_unavailable' });
-    }
-    return void res.status(503).json({ error: 'offer_unavailable' });
+    if (LEASE_ID.test(id) && ledger.get(id)) return id;
+    res.status(404).json({ error: 'not_found' });
+    return undefined;
   };
 
+  /** The lease's offer, for a read that has to go to the host. */
+  const offerFor = async (id: string): Promise<Offer> => {
+    const offer = await offerOf(id, ledger.get(id)!.offerId);
+    if (!offer) throw new HostError(503, 'offer_unavailable');
+    return offer;
+  };
+
+  const failRead = (res: express.Response, e: unknown): void => {
+    if (e instanceof BudgetError) return void res.status(429).json({ error: 'rate_limited' });
+    readFailure(res, e);
+  };
+
+  app.use('/v1/leases', (req, res, next) => {
+    if (req.method === 'GET' && !allowGet(req.ip ?? 'unknown')) return void res.status(429).json({ error: 'rate_limited' });
+    next();
+  });
+
   app.get('/v1/leases/:id', async (req, res) => {
-    const k = await known(req, res);
-    if (!k) return;
+    const id = known(req, res);
+    if (!id) return;
     try {
-      const lease = await statusCache(k.id, () => deps.api(k.offer).status(k.id));
-      res.json({ lease, stopped: ledger.get(k.id)?.stopped ?? false });
+      const lease = await leaseStatus(id, () => offerFor(id));
+      res.json({ lease, stopped: ledger.get(id)?.stopped ?? false });
     } catch (e) {
-      readFailure(res, e);
+      failRead(res, e);
     }
   });
 
   app.get('/v1/leases/:id/output/:part', async (req, res) => {
-    const part = req.params.part as string;
-    if (!NON_NEG_INT.test(part) || !Number.isSafeInteger(Number(part))) return void res.status(404).json({ error: 'not_found' });
-    const k = await known(req, res);
-    if (!k) return;
+    const raw = req.params.part as string;
+    if (!NON_NEG_INT.test(raw) || !Number.isSafeInteger(Number(raw))) return void res.status(404).json({ error: 'not_found' });
+    const id = known(req, res);
+    if (!id) return;
+    const part = Number(raw);
     try {
-      res.json(await outputCache(`${k.id}:${part}`, () => deps.api(k.offer).outputPart(k.id, Number(part))));
+      // A part already fetched is never fetched again, even across a restart.
+      try {
+        return void res.type('json').send(readFileSync(partFile(id, part), 'utf8'));
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+      }
+      const parts = (await leaseStatus(id, () => offerFor(id))).outputParts;
+      if (parts === undefined || part >= parts) return void res.status(404).json({ error: 'not_found' });
+      const key = `${id}:${part}`;
+      let fetching = partInflight.get(key);
+      if (!fetching) {
+        spendRead(id);
+        fetching = (async () => {
+          const answer = await deps.api(await offerFor(id)).outputPart(id, part);
+          mkdirSync(join(deps.dataDir, 'output', id), { recursive: true, mode: 0o700 });
+          const file = partFile(id, part);
+          writeFileSync(`${file}.tmp`, JSON.stringify(answer), { mode: 0o600 });
+          renameSync(`${file}.tmp`, file);
+          return answer;
+        })();
+        partInflight.set(key, fetching);
+        const clear = () => void partInflight.delete(key);
+        fetching.then(clear, clear);
+      }
+      res.json(await fetching);
     } catch (e) {
-      readFailure(res, e);
+      failRead(res, e);
     }
   });
 

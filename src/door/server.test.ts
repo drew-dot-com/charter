@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -42,6 +43,10 @@ function fakeHost(over: Partial<HostApi> = {}, tickFail?: Error) {
     spent: (): Micro => spent,
     ...over,
   };
+  // Overridden reads are counted too.
+  const { status, outputPart } = api;
+  if (over.status) api.status = async (id) => (calls.push('status'), status(id));
+  if (over.outputPart) api.outputPart = async (id, n) => (calls.push(`part:${n}`), outputPart(id, n));
   return { api, calls, opened };
 }
 
@@ -59,6 +64,7 @@ async function start(host: ReturnType<typeof fakeHost>, over: Partial<DoorDeps> 
     x402: 'free-for-tests',
     now: () => clock.t,
     webDir: join(dir, 'no-web'),
+    dataDir: dir,
     ...over,
     testHooks: { onGate: (id) => void gate.push(id), settle: (i) => void settled.push(i), ...over.testHooks },
   };
@@ -201,7 +207,7 @@ test('host 409 lease_done and not_running answer 409 and nothing settles', async
     const d = await start(host);
     try {
       await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
-      const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 3 });
+      const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 });
       assert.equal(r.status, 409);
       assert.deepEqual(await r.json(), { error: code });
       assert.deepEqual(d.settled, []);
@@ -350,8 +356,10 @@ test('status is cached for 5 s; an unknown lease is 404 and never reaches the ho
   }
 });
 
+const DONE = () => lease({ state: 'done', outputParts: 2 });
+
 test('output parts are proxied as the host answers them; a host 409 unpaid passes through; a bad part is 404', async () => {
-  const host = fakeHost();
+  const host = fakeHost({ status: async () => DONE() });
   const d = await start(host);
   try {
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
@@ -363,7 +371,7 @@ test('output parts are proxied as the host answers them; a host 409 unpaid passe
   } finally {
     d.close();
   }
-  const d2 = await start(fakeHost({ outputPart: async () => { throw new HostError(409, 'unpaid'); } }));
+  const d2 = await start(fakeHost({ status: async () => DONE(), outputPart: async () => { throw new HostError(409, 'unpaid'); } }));
   try {
     await d2.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
     const r = await d2.get(`/v1/leases/${LEASE}/output/0`);
@@ -374,14 +382,223 @@ test('output parts are proxied as the host answers them; a host 409 unpaid passe
   }
 });
 
-test('output parts are cached so a free route cannot be made to spend the door dry', async () => {
+test('C1: a part the host never listed, or any part before output exists, is 404 with no host call', async () => {
+  const host = fakeHost({ status: async () => DONE() });
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal((await d.get(`/v1/leases/${LEASE}/output/0`)).status, 200);
+    const before = host.calls.length;
+    for (const n of [2, 3, 50, 99999, 4294967296]) assert.equal((await d.get(`/v1/leases/${LEASE}/output/${n}`)).status, 404);
+    assert.equal(host.calls.length, before, 'enumerating past parts costs nothing');
+  } finally {
+    d.close();
+  }
+  const running = fakeHost();
+  const d2 = await start(running);
+  try {
+    await d2.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal((await d2.get(`/v1/leases/${LEASE}/output/0`)).status, 404);
+    assert.equal(running.calls.filter((c) => c.startsWith('part:')).length, 0);
+  } finally {
+    d2.close();
+  }
+});
+
+test('C1: each output part is fetched once, kept on disk, and served from disk after a restart', async () => {
+  const host = fakeHost({ status: async () => DONE() });
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    const first = await (await d.get(`/v1/leases/${LEASE}/output/0`)).json();
+    d.clock.t += 3_600_000;
+    assert.deepEqual(await (await d.get(`/v1/leases/${LEASE}/output/0`)).json(), first);
+    assert.equal(host.calls.filter((c) => c === 'part:0').length, 1);
+    assert.ok(readdirSync(join(d.dir, 'output', LEASE)).length >= 1);
+  } finally {
+    d.close();
+  }
+  const again = fakeHost({ status: async () => { throw new Error('should not be called'); } });
+  const d2 = await start(again, { dataDir: d.dir, ledger: new DoorLedger(join(d.dir, 'ledger.json')) });
+  try {
+    const r = await d2.get(`/v1/leases/${LEASE}/output/0`);
+    assert.equal(r.status, 200);
+    assert.equal(again.calls.length, 0, 'a stored part needs no host call');
+  } finally {
+    d2.close();
+  }
+});
+
+test('C1: a done lease is served from its cached final status with no further host calls', async () => {
+  for (const state of ['done', 'closed'] as const) {
+    const host = fakeHost({ status: async () => lease({ state }) });
+    const d = await start(host);
+    try {
+      await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+      for (let i = 0; i < 5; i++) {
+        assert.equal((await d.get(`/v1/leases/${LEASE}`)).status, 200);
+        d.clock.t += 24 * 3_600_000;
+      }
+      assert.equal(host.calls.filter((c) => c === 'status').length, 1, state);
+    } finally {
+      d.close();
+    }
+  }
+});
+
+test('C1: host reads per lease are capped at 20 + 4 per renter tick; past it the last status is served and uncached output is 429', async () => {
+  const host = fakeHost({ status: async () => lease({ outputParts: 2 }) });
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    for (let i = 0; i < 40; i++) {
+      const r = await d.get(`/v1/leases/${LEASE}`);
+      assert.equal(r.status, 200, `get ${i}`);
+      d.clock.t += 6_000;
+    }
+    assert.equal(host.calls.filter((c) => c === 'status').length, 20);
+    assert.equal((await d.get(`/v1/leases/${LEASE}/output/0`)).status, 429);
+    assert.equal(host.calls.filter((c) => c.startsWith('part:')).length, 0);
+    // One renter tick settled buys four more reads.
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 })).status, 200);
+    d.clock.t += 6_000;
+    await d.get(`/v1/leases/${LEASE}`);
+    assert.equal(host.calls.filter((c) => c === 'status').length, 21);
+    assert.equal(d.ledger.get(LEASE)!.hostReads, 21);
+  } finally {
+    d.close();
+  }
+});
+
+test('C1: more than 120 GETs a minute from one IP on /v1/leases/* answers 429, and the window slides', async () => {
+  const d = await start(fakeHost());
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    for (let i = 0; i < 120; i++) assert.equal((await d.get(`/v1/leases/${LEASE}`)).status, 200, `get ${i}`);
+    const r = await d.get(`/v1/leases/${LEASE}`);
+    assert.equal(r.status, 429);
+    assert.equal(r.headers.get('access-control-allow-origin'), '*');
+    assert.equal((await d.get('/v1/offers')).status, 200, 'offers are not behind that limit');
+    d.clock.t += 60_001;
+    assert.equal((await d.get(`/v1/leases/${LEASE}`)).status, 200);
+  } finally {
+    d.close();
+  }
+});
+
+function counterOpen() {
+  let n = 0;
+  return async (): Promise<OpenResult> => ({ leaseId: (++n).toString(16).padStart(32, '0'), state: 'awaiting_first_tick' });
+}
+const LEASE_1 = '1'.padStart(32, '0');
+const LEASE_2 = '2'.padStart(32, '0');
+
+test('C2: two concurrent ticks on one lease reach the host once; the second is 409 busy before the gate', async () => {
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  let hostTicks = 0;
+  const host = fakeHost({
+    tick: async (_id, index) => {
+      hostTicks++;
+      await held;
+      return { paidIntervals: index + 1, paidThrough: 31_000, duplicate: false };
+    },
+  });
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    const first = d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': 'sig-a' });
+    while (hostTicks === 0) await new Promise((r) => setTimeout(r, 2));
+    const second = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': 'sig-b' });
+    assert.equal(second.status, 409);
+    assert.deepEqual(await second.json(), { error: 'busy' });
+    assert.equal(d.gate.length, 1, 'the second never reached the gate');
+    release();
+    assert.equal((await first).status, 200);
+    assert.equal(hostTicks, 1);
+    // The lease is free again afterwards.
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 1 }, { 'payment-signature': 'sig-c' })).status, 200);
+  } finally {
+    d.close();
+  }
+});
+
+test('C2: one payment header cannot buy ticks on two leases; the hash survives a restart', async () => {
+  const host = fakeHost({ open: counterOpen() });
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'payment-signature': 'same-sig' })).status, 200);
+    const gated = d.gate.length;
+    host.calls.length = 0;
+    const r = await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': 'same-sig' });
+    assert.equal(r.status, 409);
+    assert.deepEqual(await r.json(), { error: 'payment_reused' });
+    assert.equal(d.gate.length, gated, 'refused before the gate');
+    assert.deepEqual(host.calls, [], 'no host call');
+    // The x-payment spelling of the same header is the same payment only if its bytes are; a different one passes.
+    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': 'other-sig' })).status, 200);
+  } finally {
+    d.close();
+  }
+  const again = new DoorLedger(join(d.dir, 'ledger.json'));
+  assert.equal(again.seenPayment(createHash('sha256').update('same-sig').digest('hex')), true);
+});
+
+test('C2: the hash is added on entering the gate, even when settlement then fails', async () => {
+  const host = fakeHost({ open: counterOpen() });
+  const d = await start(host, { testHooks: { settle: () => { throw new Error('down'); } } });
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'payment-signature': 'sig-x' })).status, 402);
+    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': 'sig-x' })).status, 409);
+  } finally {
+    d.close();
+  }
+});
+
+test('I3: a retry of an accepted index, or a skipped one, is 409 out_of_order with no 402 challenge and no host call', async () => {
   const host = fakeHost();
   const d = await start(host);
   try {
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
-    await d.get(`/v1/leases/${LEASE}/output/0`);
-    await d.get(`/v1/leases/${LEASE}/output/0`);
-    assert.equal(host.calls.filter((c) => c === 'part:0').length, 1);
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 })).status, 200);
+    const gated = d.gate.length;
+    host.calls.length = 0;
+    for (const index of [0, 2, 7]) {
+      const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index });
+      assert.equal(r.status, 409, `index ${index}`);
+      assert.deepEqual(await r.json(), { error: 'out_of_order', expected: 1 });
+    }
+    assert.equal(d.gate.length, gated);
+    assert.deepEqual(host.calls, []);
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 1 })).status, 200);
+  } finally {
+    d.close();
+  }
+});
+
+test('I4: a settlement failure records the payer, and that payer is refused on a new lease before any host call', async () => {
+  const host = fakeHost({ open: counterOpen() });
+  let fail = true;
+  const d = await start(host, { testHooks: { settle: () => { if (fail) throw new Error('down'); } } });
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'x-test-payer': '0xAbC', 'payment-signature': 's1' })).status, 402);
+    assert.equal(d.ledger.get(LEASE_1)!.payer, '0xabc');
+    assert.equal(d.ledger.get(LEASE_1)!.losses, 5000n);
+    fail = false;
+    host.calls.length = 0;
+    const r = await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': '0xABC', 'payment-signature': 's2' });
+    assert.equal(r.status, 403);
+    assert.deepEqual(await r.json(), { error: 'payer_blocked' });
+    assert.deepEqual(host.calls, []);
+    assert.deepEqual(d.settled, [], 'nothing settled for the blocked payer');
+    // A different payer is fine.
+    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': '0xdef', 'payment-signature': 's3' })).status, 200);
   } finally {
     d.close();
   }
@@ -445,7 +662,21 @@ test('DoorLedger: JSON file, bigint losses, atomic writes, reload', () => {
   assert.ok(JSON.stringify(raw).includes('"5000"'), 'bigint stored as a string');
   const again = new DoorLedger(file);
   assert.deepEqual(again.get(LEASE), {
-    leaseId: LEASE, offerId: OFFER_ID, payer: '0xpayer', ticksPaidByRenter: 1, ticksPaidToHost: 1, losses: 5000n, stopped: true, createdAt: 5,
+    leaseId: LEASE, offerId: OFFER_ID, payer: '0xpayer', ticksPaidByRenter: 1, ticksPaidToHost: 1, losses: 5000n, stopped: true, createdAt: 5, nextIndex: 1, hostReads: 0,
   });
   assert.equal(again.get('missing'), undefined);
+});
+
+test('DoorLedger: payment hashes are kept bounded, newest last, and compacted on disk', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ledger-'));
+  const file = join(dir, 'ledger.json');
+  const l = new DoorLedger(file, 3);
+  const h = (n: number) => String(n).padStart(64, '0');
+  for (let i = 1; i <= 10; i++) assert.equal(l.seenPayment(h(i)), false);
+  assert.equal(l.seenPayment(h(10)), true);
+  assert.equal(l.seenPayment(h(1)), false, 'a hash past the bound is forgotten');
+  const again = new DoorLedger(file, 3);
+  assert.equal(again.seenPayment(h(1)), true);
+  assert.equal(again.seenPayment(h(10)), true);
+  assert.ok(readFileSync(`${file}.payments`, 'utf8').split('\n').filter(Boolean).length <= 7, 'file is compacted');
 });

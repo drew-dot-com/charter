@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { join } from 'node:path';
-import { ToonClientPayer } from '../payer.js';
+import { KeyFileError, ToonClientPayer, serialized, type Payer } from '../payer.js';
 import { hostApi } from '../tenant/host-api.js';
 import { fetchOffers } from '../tenant/offers.js';
 import { DoorLedger } from './ledger.js';
@@ -22,18 +22,26 @@ async function main(): Promise<void> {
   const dataDir = need(env, 'CHARTER_DATA_DIR');
   const trustProxy = env.CHARTER_DOOR_TRUST_PROXY?.trim();
 
-  // The door's own TOON wallet pays hosts. The key stays in the file the env names.
-  const payer = await ToonClientPayer.create({
+  // The door's own TOON wallet pays hosts. The key stays in the file the env names, and a failure
+  // here prints a fixed message: nothing the client threw is passed on, in case it quotes the key.
+  const payerConfig: Parameters<typeof ToonClientPayer.create>[0] = {
     connectorUrl: need(env, 'CHARTER_TOON_CONNECTOR_URL'),
     keyFile: need(env, 'CHARTER_TOON_KEY_FILE'),
     channelStore: need(env, 'CHARTER_TOON_CHANNEL_STORE'),
     chain,
-  });
+  };
+  let payer: Payer;
+  try {
+    payer = serialized(await ToonClientPayer.create(payerConfig));
+  } catch (e) {
+    throw new Error(e instanceof KeyFileError ? e.message : 'could not start the TOON payer (details withheld)');
+  }
 
   const app = doorApp({
     offers: () => fetchOffers(relayUrl, Date.now()),
     api: (o) => hostApi(payer, o),
     ledger: new DoorLedger(join(dataDir, 'door-ledger.json')),
+    dataDir,
     x402: {
       payTo: need(env, 'CHARTER_PAY_TO'),
       network: 'eip155:8453',

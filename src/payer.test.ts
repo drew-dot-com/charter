@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ToonClientPayer, PacketRefusedError } from './payer.js';
+import { ToonClientPayer, PacketRefusedError, KeyFileError, serialized, type Payer } from './payer.js';
 
 const SEAL = 'http://ev2ocvzg6ubobqh7mnoskk2boxuo3l5grqbro6wvj4hq2ecnacaqttyd.anyone/ilp';
 const DEST = 'g.toon.69b2a212547e7a9c.charter-echo';
@@ -116,4 +116,58 @@ test('a refused packet throws PacketRefusedError with the reject code', async ()
   } finally {
     rmSync(s.dir, { recursive: true, force: true });
   }
+});
+
+test('a key file of the wrong shape fails with a fixed message that echoes none of its contents', async () => {
+  const secret = 'zq9KEYMATERIALzq9-abcdef0123456789';
+  const dir = mkdtempSync(join(tmpdir(), 'charter-payer-'));
+  try {
+    for (const [chain, body] of [
+      ['solana', secret],
+      ['solana', `[1,2,${secret}]`],
+      ['solana', JSON.stringify(['a', 'b'])],
+      ['evm', secret],
+      ['evm', '0x1234'],
+    ] as const) {
+      const keyFile = join(dir, `k-${chain}.txt`);
+      writeFileSync(keyFile, body);
+      await assert.rejects(
+        ToonClientPayer.create(
+          { connectorUrl: 'https://c.example', keyFile, channelStore: join(dir, 's.json'), chain },
+          { createClient: async () => ({ send: async () => { throw new Error('unreachable'); } }) as never },
+        ),
+        (e: Error) => {
+          assert.ok(e instanceof KeyFileError);
+          assert.equal(e.message, `key file is not a valid ${chain} key`);
+          for (let i = 0; i + 6 <= body.length; i++) assert.ok(!e.message.includes(body.slice(i, i + 6)), body.slice(i, i + 6));
+          return true;
+        },
+      );
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('serialized: concurrent sends never overlap and run in the order they were made', async () => {
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const order: number[] = [];
+  const inner: Payer = {
+    async send(_dest, req) {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      order.push((req.body as { n: number }).n);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      if ((req.body as { n: number }).n === 1) throw new Error('boom');
+      return { status: 200, body: null, paid: 1n };
+    },
+  };
+  const p = serialized(inner);
+  const one = (n: number) => p.send('d', { method: 'POST', path: '/x', body: { n } }, { sealKey: 's', amount: 1n });
+  const results = await Promise.allSettled([one(0), one(1), one(2), one(3)]);
+  assert.equal(maxInFlight, 1);
+  assert.deepEqual(order, [0, 1, 2, 3]);
+  assert.deepEqual(results.map((r) => r.status), ['fulfilled', 'rejected', 'fulfilled', 'fulfilled'], 'a failed send does not block the queue');
 });

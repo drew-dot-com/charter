@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Micro } from '../types.js';
 
@@ -19,7 +19,14 @@ export interface DoorLease {
   stopped: boolean;
   /** Epoch ms. */
   createdAt: number;
+  /** The tick index the door will accept next: one past the last tick the host accepted. */
+  nextIndex: number;
+  /** Paid host status and output calls made for this lease's free reads. */
+  hostReads: number;
 }
+
+/** Payment-header hashes kept, newest last. */
+export const MAX_PAYMENTS = 100_000;
 
 interface Stored extends Omit<DoorLease, 'losses'> {
   losses: string;
@@ -28,16 +35,33 @@ interface Stored extends Omit<DoorLease, 'losses'> {
 /** The door's books: a JSON file, rewritten whole through a temp file and a rename. */
 export class DoorLedger {
   private readonly leases = new Map<string, DoorLease>();
+  /** Payers the door has paid a host for and never been paid back by. */
+  private readonly lossPayers = new Set<string>();
+  /** sha256 hex of every payment header that reached the gate, oldest first. A Set keeps insertion order. */
+  private readonly payments = new Set<string>();
+  private readonly paymentsFile: string;
+  private paymentLines = 0;
 
-  constructor(private readonly file: string) {
-    let raw: string;
-    try {
-      raw = readFileSync(file, 'utf8');
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return;
-      throw e;
+  constructor(
+    private readonly file: string,
+    private readonly maxPayments: number = MAX_PAYMENTS,
+  ) {
+    this.paymentsFile = `${file}.payments`;
+    const raw = readIfThere(file);
+    if (raw !== undefined) {
+      for (const s of JSON.parse(raw) as Array<Stored & Partial<Pick<DoorLease, 'nextIndex' | 'hostReads'>>>) {
+        this.leases.set(s.leaseId, {
+          ...s,
+          losses: BigInt(s.losses),
+          nextIndex: s.nextIndex ?? s.ticksPaidToHost,
+          hostReads: s.hostReads ?? 0,
+        });
+        if (BigInt(s.losses) > 0n && s.payer) this.lossPayers.add(s.payer);
+      }
     }
-    for (const s of JSON.parse(raw) as Stored[]) this.leases.set(s.leaseId, { ...s, losses: BigInt(s.losses) });
+    const lines = readIfThere(this.paymentsFile)?.split('\n').filter((l) => /^[0-9a-f]{64}$/.test(l)) ?? [];
+    for (const h of lines.slice(-maxPayments)) this.payments.add(h);
+    this.paymentLines = lines.length;
   }
 
   get(leaseId: string): DoorLease | undefined {
@@ -50,25 +74,62 @@ export class DoorLedger {
   }
 
   open(o: { leaseId: string; offerId: string; createdAt: number }): void {
-    this.leases.set(o.leaseId, { ...o, ticksPaidByRenter: 0, ticksPaidToHost: 0, losses: 0n, stopped: false });
+    this.leases.set(o.leaseId, { ...o, ticksPaidByRenter: 0, ticksPaidToHost: 0, losses: 0n, stopped: false, nextIndex: 0, hostReads: 0 });
     this.save();
   }
 
   /** The host answered a tick 2xx. */
   hostTick(leaseId: string): void {
-    this.update(leaseId, (l) => void l.ticksPaidToHost++);
+    this.update(leaseId, (l) => {
+      l.ticksPaidToHost++;
+      l.nextIndex++;
+    });
   }
 
   /** The renter's payment for a tick settled. */
   renterTick(leaseId: string, payer?: string): void {
     this.update(leaseId, (l) => {
       l.ticksPaidByRenter++;
-      if (payer) l.payer = payer;
+      if (payer) l.payer = payer.toLowerCase();
     });
   }
 
-  loss(leaseId: string, amount: Micro): void {
-    this.update(leaseId, (l) => void (l.losses += amount));
+  /** Money the door paid a host that the renter did not cover. The payer, when known, is blocked from new ticks. */
+  loss(leaseId: string, amount: Micro, payer?: string): void {
+    this.update(leaseId, (l) => {
+      l.losses += amount;
+      const who = payer?.toLowerCase() ?? l.payer;
+      if (who) {
+        l.payer = who;
+        this.lossPayers.add(who);
+      }
+    });
+  }
+
+  payerHasLoss(payer: string): boolean {
+    return this.lossPayers.has(payer.toLowerCase());
+  }
+
+  /** One paid host status or output call for a free read. */
+  read(leaseId: string): void {
+    this.update(leaseId, (l) => void l.hostReads++);
+  }
+
+  /** Records a payment header's hash. True when it was already recorded: the payment is being reused. */
+  seenPayment(hash: string): boolean {
+    if (this.payments.has(hash)) return true;
+    this.payments.add(hash);
+    mkdirSync(dirname(this.paymentsFile), { recursive: true, mode: 0o700 });
+    appendFileSync(this.paymentsFile, `${hash}\n`, { mode: 0o600 });
+    this.paymentLines++;
+    if (this.payments.size > this.maxPayments) this.payments.delete(this.payments.values().next().value!);
+    if (this.paymentLines > this.maxPayments * 2) {
+      const tmp = `${this.paymentsFile}.tmp`;
+      writeFileSync(tmp, [...this.payments].join('\n') + '\n', { mode: 0o600 });
+      renameSync(tmp, this.paymentsFile);
+      this.paymentLines = this.payments.size;
+    }
+    return false;
   }
 
   stop(leaseId: string): void {
@@ -88,5 +149,14 @@ export class DoorLedger {
     const tmp = `${this.file}.tmp`;
     writeFileSync(tmp, JSON.stringify(rows, null, 2), { mode: 0o600 });
     renameSync(tmp, this.file);
+  }
+}
+
+function readIfThere(file: string): string | undefined {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw e;
   }
 }

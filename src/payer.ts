@@ -77,6 +77,42 @@ export interface ToonClientPayerDeps {
   createClient?: (config: ToonClientConfig) => Promise<SendClient>;
 }
 
+/** A key file that does not parse as the chain's key. The message never carries any of the file. */
+export class KeyFileError extends Error {
+  constructor(chain: string) {
+    super(`key file is not a valid ${chain} key`);
+    this.name = 'KeyFileError';
+  }
+}
+
+/** One `send` in flight at a time, in call order: a channel voucher names the running total, so two at once would race it. */
+export function serialized(p: Payer): Payer {
+  let tail: Promise<unknown> = Promise.resolve();
+  return {
+    send(dest, req, opts) {
+      const run = tail.then(() => p.send(dest, req, opts));
+      tail = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      return run;
+    },
+  };
+}
+
+function solanaKey(raw: string): Uint8Array {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new KeyFileError('solana');
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)) {
+    throw new KeyFileError('solana');
+  }
+  return Uint8Array.from(parsed as number[]);
+}
+
 export class ToonClientPayer implements Payer {
   private constructor(private readonly client: SendClient) {}
 
@@ -85,7 +121,8 @@ export class ToonClientPayer implements Payer {
     const raw = readFileSync(cfg.keyFile, 'utf8').trim();
     // The chain's own key comes from the file. The other chain's key is a
     // throwaway, as in LADING: the client wants both set and pays on `chain`.
-    const solanaSecretKey = cfg.chain === 'solana' ? Uint8Array.from(JSON.parse(raw) as number[]) : randomBytes(64);
+    if (cfg.chain === 'evm' && !/^(0x)?[0-9a-fA-F]{64}$/.test(raw)) throw new KeyFileError('evm');
+    const solanaSecretKey = cfg.chain === 'solana' ? solanaKey(raw) : randomBytes(64);
     const evmPrivateKey = (cfg.chain === 'evm' ? (raw.startsWith('0x') ? raw : '0x' + raw) : '0x' + randomBytes(32).toString('hex')) as `0x${string}`;
     const config: ToonClientConfig = {
       connector: cfg.connectorUrl,
