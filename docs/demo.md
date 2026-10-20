@@ -253,8 +253,11 @@ channels after 10 min. PayAI (`facilitator.payai.network`) submits every transac
   claim hash was not captured). `x402 settle` a minute later →
   **settle tx `0x5abcf2fc8daa68c92fac910e08b4073cfa3555fe7391da6587d1d615fed258d0`** (block 52868505,
   5000 micro-USDC from the contract to `CHARTER_PAY_TO` `0xbD87…2385`).
-- [ ] Refund: the door's timer (10 min idle, then the next 10 min round) refunds the 95000 left, log line
-  `x402 refunded <channel> tx …`; on chain a 95000 USDC transfer from the contract to Drew's wallet.
+- [x] Refund by the door's timer, no hand involved: log `x402 refunded 0x10837ec6…530b tx
+  0xf69dcfcbe87454369ba634550b07a67dcde0da74213869878dfaf174a1d006ca`; on chain (block 52869028) 95000
+  micro-USDC from the contract to Drew's wallet. `x402 status` after: `no channels`. (The settle that
+  follows a refund said `nothing_to_settle`, correct here: the 5000 had been settled by hand already.)
+  Whole loop, first to last: deposit 100000 in, 5000 to CHARTER_PAY_TO, 95000 back. Renter's cost: half a cent.
 - [ ] Second lease from the same wallet after the refund: expected ONE prompt again (the channel was emptied
   by the refund, so a fresh deposit), but no fallback to exact.
 
