@@ -12,6 +12,7 @@ import type { Lease, Micro, Offer } from '../types.js';
 import { DoorLedger, offerOfSnapshot, snapshotOffer } from './ledger.js';
 import { doorApp, type DoorDeps } from './server.js';
 import * as payerMod from '../payer.js';
+import { paymentIdOf } from './x402.js';
 
 
 const b64 = (o: unknown, pretty = false) => Buffer.from(JSON.stringify(o, null, pretty ? 2 : undefined)).toString('base64');
@@ -27,6 +28,19 @@ function pay(from: string, nonce: string, variant: 0 | 1 = 0, window: { validAft
   const { nonce: n, from: f, ...rest } = auth;
   const up = (h: string) => h.toUpperCase().replace('0X', '0x');
   return b64({ extra: { note: 'x' }, payload: { signature: '0xsig', authorization: { nonce: up(n), ...rest, from: up(f) } }, x402Version: 2 }, true);
+}
+
+const CHANNEL = pad('0xc1', 64);
+/** A batch-settlement payment header: a cumulative voucher (or the deposit that opens the channel) from `payer`. */
+function voucher(payer: string, maxClaimable: string, type: 'voucher' | 'deposit' = 'voucher', extra: Record<string, unknown> = {}): string {
+  const payload = {
+    type,
+    channelConfig: { payer: pad(payer, 40), payerAuthorizer: pad('0xee', 40), receiver: '0x' + '2'.repeat(40), receiverAuthorizer: pad('0xdd', 40), token: pad('0xcc', 40), withdrawDelay: 3600, salt: pad('0', 64) },
+    voucher: { channelId: CHANNEL, maxClaimableAmount: maxClaimable, signature: '0xsig' },
+    ...(type === 'deposit' ? { deposit: { amount: '100000', authorization: { from: pad(payer, 40), nonce: pad('0x9', 64) }, signature: '0xsig' } } : {}),
+    ...extra,
+  };
+  return b64({ x402Version: 2, payload });
 }
 const PAYER_FAULT = 'invalid_exact_evm_insufficient_balance';
 const keyOf = (from: string, nonce: string) => createHash('sha256').update(`${pad(from, 40)}:${pad(nonce, 64)}`).digest('hex');
@@ -1644,6 +1658,33 @@ test('Task 11: with no open channel, a refused open starts reopen at most once a
     assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS })).status, 503);
     assert.equal(reopens, 2);
     assert.deepEqual(host.calls, []);
+  } finally {
+    d.close();
+  }
+});
+
+test('paymentIdOf: a batch voucher is identified by its channel payer, channel id and cumulative amount', () => {
+  const req = (h: string) => ({ headers: { 'payment-signature': h } }) as unknown as Parameters<typeof paymentIdOf>[0];
+  assert.deepEqual(paymentIdOf(req(voucher('0xAB', '5000'))), { kind: 'batch', from: pad('0xab', 40), channelId: CHANNEL, maxClaimable: '5000' });
+  assert.deepEqual(paymentIdOf(req(voucher('0xAB', '105000', 'deposit'))), { kind: 'batch', from: pad('0xab', 40), channelId: CHANNEL, maxClaimable: '105000' });
+  assert.equal(paymentIdOf(req(voucher('0xab', '5000', 'voucher', { authorization: { from: pad('0xab', 40) } }))), 'bad', 'a voucher beside an authorization');
+  assert.equal(paymentIdOf(req(voucher('0xab', 'five'))), 'bad', 'a non-decimal amount');
+  const exact = paymentIdOf(req(pay('0xa1', '0x01')));
+  assert.equal(typeof exact === 'object' && exact.kind, 'exact');
+});
+
+test('a batch voucher re-sent for the next index is never payment_reused: the channel state is the authority, not the door', async () => {
+  const d = await start(fakeHost());
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    const v = voucher('0xab', '5000');
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': v })).status, 200);
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 1 }, { 'payment-signature': v })).status, 200);
+    assert.equal(d.ledger.get(LEASE)?.payer, pad('0xab', 40), 'the channel payer is the ledger payer');
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 2 }, { 'payment-signature': pay('0xa1', '0x01') })).status, 200);
+    const again = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 3 }, { 'payment-signature': pay('0xa1', '0x01') });
+    assert.equal(again.status, 409, 'an exact authorization is still one payment');
+    assert.deepEqual(await again.json(), { error: 'payment_reused' });
   } finally {
     d.close();
   }

@@ -51,13 +51,26 @@ export const MIN_WINDOW_SECONDS = 110;
  */
 export const SETTLE_MARGIN_SECONDS = 15;
 
-export interface PaymentId {
+/** One `exact` EIP-3009 authorization: one payment, spent once. */
+export interface ExactPaymentId {
+  kind: 'exact';
   from: string;
   nonce: string;
   /** Seconds since the epoch. */
   validAfter: number;
   validBefore: number;
 }
+/**
+ * A `batch-settlement` voucher or deposit. Vouchers are cumulative per channel, so one is never "spent": the
+ * scheme's channel state decides whether it pays for this request. The door only needs to know who pays.
+ */
+export interface BatchPaymentId {
+  kind: 'batch';
+  from: string;
+  channelId: string;
+  maxClaimable: string;
+}
+export type PaymentId = ExactPaymentId | BatchPaymentId;
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const NONCE = /^0x[0-9a-fA-F]{64}$/;
@@ -91,15 +104,31 @@ export function paymentIdOf(req: Request): PaymentId | 'none' | 'bad' {
     const p = decodePaymentSignatureHeader(h) as { payload?: Record<string, unknown> } | null;
     const payload = p?.payload;
     if (typeof payload !== 'object' || payload === null || 'permit2Authorization' in payload) return 'bad';
+    if (payload.type === 'voucher' || payload.type === 'deposit') return batchIdOf(payload);
     const a = payload.authorization as Record<string, unknown> | undefined;
     if (typeof a !== 'object' || a === null) return 'bad';
     const { from, nonce, validAfter, validBefore } = a;
     if (typeof from !== 'string' || !ADDRESS.test(from) || typeof nonce !== 'string' || !NONCE.test(nonce)) return 'bad';
     if (typeof validAfter !== 'string' || !SECONDS.test(validAfter) || typeof validBefore !== 'string' || !SECONDS.test(validBefore)) return 'bad';
-    return { from: from.toLowerCase(), nonce: nonce.toLowerCase(), validAfter: Number(validAfter), validBefore: Number(validBefore) };
+    return { kind: 'exact', from: from.toLowerCase(), nonce: nonce.toLowerCase(), validAfter: Number(validAfter), validBefore: Number(validBefore) };
   } catch {
     return 'bad';
   }
+}
+
+const DECIMAL = /^\d{1,30}$/;
+
+/** A batch payload names its payer in the channel config and its cumulative amount in the voucher. Anything else beside it is 'bad'. */
+function batchIdOf(payload: Record<string, unknown>): BatchPaymentId | 'bad' {
+  if ('authorization' in payload) return 'bad';
+  const c = payload.channelConfig as Record<string, unknown> | undefined;
+  const v = payload.voucher as Record<string, unknown> | undefined;
+  if (typeof c !== 'object' || c === null || typeof v !== 'object' || v === null) return 'bad';
+  const { payer } = c;
+  const { channelId, maxClaimableAmount } = v;
+  if (typeof payer !== 'string' || !ADDRESS.test(payer) || typeof channelId !== 'string' || !NONCE.test(channelId)) return 'bad';
+  if (typeof maxClaimableAmount !== 'string' || !DECIMAL.test(maxClaimableAmount)) return 'bad';
+  return { kind: 'batch', from: payer.toLowerCase(), channelId: channelId.toLowerCase(), maxClaimable: maxClaimableAmount };
 }
 
 /** The facilitator's reason for a failed settlement, from the PAYMENT-RESPONSE header the failure carried. */
@@ -165,8 +194,6 @@ export function realGate(cfg: X402Config, priceOf: (leaseId: string) => Micro | 
     server,
   );
   return async (req, res, next) => {
-    const id = paymentIdOf(req);
-    if (typeof id === 'object') res.locals.payer = id.from;
     await mw(req, res, next);
   };
 }

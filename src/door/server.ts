@@ -9,7 +9,7 @@ import { JOB_IMAGES, jobFromBody } from '../jobs.js';
 import type { Lease, Micro, Offer } from '../types.js';
 import { DeadlinePassedError, SendTimeoutError } from '../payer.js';
 import { offerOfSnapshot, snapshotOffer, type DoorLedger, type LossKind } from './ledger.js';
-import { MIN_WINDOW_SECONDS, SETTLE_MARGIN_SECONDS, isPayerFault, paymentIdOf, realGate, settleReasonOf, stubGate, type Gate, type TestHooks, type X402Config } from './x402.js';
+import { MAX_TIMEOUT_SECONDS, MIN_WINDOW_SECONDS, SETTLE_MARGIN_SECONDS, isPayerFault, paymentIdOf, realGate, settleReasonOf, stubGate, type Gate, type TestHooks, type X402Config } from './x402.js';
 
 export interface DoorDeps {
   /** Live offers. The door caches the answer for 60 s. */
@@ -367,7 +367,13 @@ export function doorApp(deps: DoorDeps): express.Express {
     // A payment is the authorization it carries, not the bytes of the header that carries it.
     const payment = paymentIdOf(req);
     if (payment === 'bad') return void res.status(400).json({ error: 'bad_payment' });
-    if (payment !== 'none') {
+    // Who pays, for the ledger and the payer block, whichever scheme carries it.
+    if (payment !== 'none') res.locals.payer = payment.from;
+    if (payment !== 'none' && payment.kind === 'batch') {
+      // A cumulative voucher is not a one-shot payment: the scheme's channel state accepts or refuses it,
+      // and a voucher re-sent after a refused tick is the right next voucher. Only the deadline is the door's.
+      res.locals.deadline = now() + (MAX_TIMEOUT_SECONDS - SETTLE_MARGIN_SECONDS) * 1000;
+    } else if (payment !== 'none') {
       const t = Math.floor(now() / 1000);
       if (payment.validAfter > t || payment.validBefore < t + MIN_WINDOW_SECONDS) {
         return void res.status(400).json({ error: 'authorization_window' });
