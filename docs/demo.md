@@ -258,8 +258,13 @@ channels after 10 min. PayAI (`facilitator.payai.network`) submits every transac
   micro-USDC from the contract to Drew's wallet. `x402 status` after: `no channels`. (The settle that
   follows a refund said `nothing_to_settle`, correct here: the 5000 had been settled by hand already.)
   Whole loop, first to last: deposit 100000 in, 5000 to CHARTER_PAY_TO, 95000 back. Renter's cost: half a cent.
-- [ ] Second lease from the same wallet after the refund: expected ONE prompt again (the channel was emptied
-  by the refund, so a fresh deposit), but no fallback to exact.
+- [x] **Second lease from the same wallet after the refund, ~20:30 UTC: ONE prompt, batch, no fallback.**
+  Lease `2663d176c98a0e8490bf232c31ef007d`, 1 interval, 0 losses. Deposit tx
+  `0x390ced3a098df76a32da65abc85080e1579faeb6141121c001f9d64688f9fa2b` (block 52869437, 100000). The page's
+  stored record was stale after the refund; it rebuilt the channel from chain and continued the cumulative:
+  `x402 status` = balance 105000, charged 10000, claimed 5000 (same channel id `0x10837ec6…530b`). No USDC
+  transfer to payTo from the wallet, so no exact payment was made. This is the case the review's critical
+  finding covered, now proven. The timer will claim, settle and refund this one too.
 
 Ops: `docker compose -f deploy/door/docker-compose.yml run --rm charter-door node dist/door/main.js x402 status | claim | refund`
 (safe beside the running door). Channel records: `/root/charter-door/data/x402-channels/server/*.json`.
