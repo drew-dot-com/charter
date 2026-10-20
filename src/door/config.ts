@@ -1,4 +1,6 @@
 /** Parsing for the door's environment. See docs/env.md. */
+import { privateKeyToAccount } from 'viem/accounts';
+import type { AuthorizerSigner } from '@x402/evm/batch-settlement/server';
 
 /**
  * CHARTER_DOOR_TRUST_PROXY: Express `trust proxy` for a door behind a reverse proxy, so the rate limits
@@ -32,4 +34,25 @@ export function parseDoorHosts(v: string | undefined): Map<string, string> {
   }
   if (hosts.size === 0) throw new Error('CHARTER_DOOR_HOSTS is required: the hosts this door pays, <pubkey>=<ilpBase>');
   return hosts;
+}
+
+const CLAIM_KEY = /^0x[0-9a-f]{64}$/i;
+
+/**
+ * CHARTER_CLAIM_KEY_FILE: one 0x-prefixed 64-hex secp256k1 private key, the door's x402 claim authorizer.
+ * It signs claim batches and refunds for the payee and holds no funds. The message never carries key bytes.
+ */
+export function parseClaimKey(fileText: string): `0x${string}` {
+  const s = fileText.trim();
+  if (!CLAIM_KEY.test(s) || s.includes('\n')) throw new Error('CHARTER_CLAIM_KEY_FILE must hold one 0x-prefixed 64-hex private key');
+  return s as `0x${string}`;
+}
+
+/** The claim key as the x402 batch-settlement server's receiver authorizer: an address and a typed-data signer. */
+export function claimSigner(key: `0x${string}`): AuthorizerSigner {
+  const account = privateKeyToAccount(key);
+  return {
+    address: account.address,
+    signTypedData: (params) => account.signTypedData(params as unknown as Parameters<typeof account.signTypedData>[0]),
+  };
 }

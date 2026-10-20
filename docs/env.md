@@ -50,6 +50,7 @@ door stopped (docs/demo.md, channel rotation).
 | `CHARTER_DATA_DIR` | yes | | `door-ledger.json` and its sidecars (`.payments`, `.unblocks`, `.unpaid`), and cached output parts. |
 | `CHARTER_RELAY_URL` | yes | | `wss://` relay to read offers from. |
 | `CHARTER_PAY_TO` | yes | | The door's Base address that renters' x402 payments go to. |
+| `CHARTER_CLAIM_KEY_FILE` | yes | | File holding the door's x402 claim key: one `0x` + 64 hex secp256k1 private key (`deploy/door/new-claim-key.mjs`). It authorizes claims and refunds on renters' batch-settlement channels for `CHARTER_PAY_TO` and holds no funds. Channel records live in `<CHARTER_DATA_DIR>/x402-channels/`. |
 | `X402_FACILITATOR_URL` | no | `https://facilitator.payai.network` | x402 facilitator for verify and settle. |
 | `CHARTER_TOON_CONNECTOR_URL` | yes | | The connector the door's TOON client pays through. |
 | `CHARTER_TOON_KEY_FILE` | yes | | File holding the door's TOON payer key: a hex private key (`evm`) or a JSON array of secret key bytes (`solana`). |

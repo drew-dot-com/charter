@@ -5,7 +5,7 @@ import { ToonClientPayer, serialized } from '../payer.js';
 import { hostApi } from '../tenant/host-api.js';
 import { fetchOffers } from '../tenant/offers.js';
 import { channelCommand } from './channel.js';
-import { parseDoorHosts, parseTrustProxy } from './config.js';
+import { parseClaimKey, parseDoorHosts, parseTrustProxy } from './config.js';
 import { DoorLedger, LEDGER_FILE } from './ledger.js';
 import { doorApp } from './server.js';
 import { unblockCommand } from './unblock.js';
@@ -70,6 +70,8 @@ async function main(): Promise<void> {
       payTo: need(env, 'CHARTER_PAY_TO'),
       network: 'eip155:8453',
       facilitatorUrl: env.X402_FACILITATOR_URL?.trim() || 'https://facilitator.payai.network',
+      claimKey: parseClaimKey(readFileSync(need(env, 'CHARTER_CLAIM_KEY_FILE'), 'utf8')),
+      channelDir: join(dataDir, 'x402-channels'),
     },
     ...(trustProxy === undefined ? {} : { trustProxy }),
   });

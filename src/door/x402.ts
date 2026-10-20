@@ -9,6 +9,10 @@ export interface X402Config {
   payTo: string;
   network: 'eip155:8453';
   facilitatorUrl: string;
+  /** The door's x402 claim authorizer: a hex secp256k1 private key (CHARTER_CLAIM_KEY_FILE). */
+  claimKey: `0x${string}`;
+  /** Where the batch-settlement server keeps its channel records (one JSON file per channel). */
+  channelDir: string;
 }
 
 /**

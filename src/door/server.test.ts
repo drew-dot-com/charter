@@ -916,7 +916,7 @@ test('GET /v1/dev answers 200 only in free-for-tests mode, so the page can skip 
   } finally {
     d.close();
   }
-  const real = await start(fakeHost(), { x402: { payTo: '0x' + '2'.repeat(40), network: 'eip155:8453', facilitatorUrl: 'http://127.0.0.1:1' } });
+  const real = await start(fakeHost(), { x402: { payTo: '0x' + '2'.repeat(40), network: 'eip155:8453', facilitatorUrl: 'http://127.0.0.1:1', claimKey: CLAIM_KEY, channelDir: mkdtempSync(join(tmpdir(), 'ch-')) } });
   try {
     assert.equal((await real.get('/v1/dev')).status, 404);
   } finally {
@@ -932,7 +932,7 @@ async function withRealDoor(run: (d: Awaited<ReturnType<typeof start>>) => Promi
     res.end(JSON.stringify(req.url?.startsWith('/supported') ? { kinds: [{ x402Version: 2, scheme: 'exact', network: 'eip155:8453' }], extensions: [], signers: {} } : {}));
   }).listen(0, '127.0.0.1');
   await new Promise((r) => fac.once('listening', r));
-  const d = await start(fakeHost(), { x402: { payTo: PAY_TO, network: 'eip155:8453', facilitatorUrl: `http://127.0.0.1:${(fac.address() as AddressInfo).port}` } });
+  const d = await start(fakeHost(), { x402: { payTo: PAY_TO, network: 'eip155:8453', facilitatorUrl: `http://127.0.0.1:${(fac.address() as AddressInfo).port}`, claimKey: CLAIM_KEY, channelDir: mkdtempSync(join(tmpdir(), 'ch-')) } });
   try {
     await run(d);
   } finally {
@@ -941,6 +941,7 @@ async function withRealDoor(run: (d: Awaited<ReturnType<typeof start>>) => Promi
   }
 }
 const PAY_TO = '0x' + '2'.repeat(40);
+const CLAIM_KEY = ('0x' + 'ab'.repeat(32)) as `0x${string}`;
 
 test('GET /v1/door tells the page where payments go: payTo and network, free and with CORS; absent in test mode', async () => {
   await withRealDoor(async (d) => {

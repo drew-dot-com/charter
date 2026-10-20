@@ -5,7 +5,8 @@
 # `node` user), mode 700:
 #   door.env          CHARTER_PAY_TO and CHARTER_DOOR_HOSTS (door.env.example)
 #   data/             the ledger, the TOON channel store, cached output
-#   secrets/          toon-payer.json (0400, from new-payer-key.mjs), rpc-url (0400)
+#   secrets/          toon-payer.json (0400, from new-payer-key.mjs), rpc-url (0400),
+#                     claim-key (0400, from new-claim-key.mjs: the x402 claim authorizer, no funds)
 #
 # Losing data/channels.json strands the live channel's deposit: back it up.
 services:
@@ -27,6 +28,7 @@ services:
       CHARTER_TOON_KEY_FILE: /secrets/toon-payer.json
       CHARTER_TOON_RPC_URL_FILE: /secrets/rpc-url
       CHARTER_TOON_CHANNEL_STORE: /data/channels.json
+      CHARTER_CLAIM_KEY_FILE: /secrets/claim-key
     volumes:
       - ${CHARTER_DOOR_HOME:-/root/charter-door}/data:/data
       - ${CHARTER_DOOR_HOME:-/root/charter-door}/secrets:/secrets:ro
