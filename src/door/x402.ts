@@ -171,6 +171,9 @@ function leaseIdOfPath(path: string): string {
  * Real x402: `exact` on Base USDC, priced per request from `priceOf`, settled by
  * the facilitator only after the handler answers 2xx (the middleware's order, as LADING).
  */
+/** USDC on Base mainnet: the only asset the door is paid in. */
+export const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' as const;
+
 /** A renter's channel can be withdrawn unilaterally this long after asking: PayAI's floor, and the door's claim timers run well inside it. */
 export const WITHDRAW_DELAY_SECONDS = 3600;
 

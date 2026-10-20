@@ -9,7 +9,7 @@ import { JOB_IMAGES, jobFromBody } from '../jobs.js';
 import type { Lease, Micro, Offer } from '../types.js';
 import { DeadlinePassedError, SendTimeoutError } from '../payer.js';
 import { offerOfSnapshot, snapshotOffer, type DoorLedger, type LossKind } from './ledger.js';
-import { MAX_TIMEOUT_SECONDS, MIN_WINDOW_SECONDS, SETTLE_MARGIN_SECONDS, isPayerFault, paymentIdOf, realGate, settleReasonOf, stubGate, type Gate, type TestHooks, type X402Config } from './x402.js';
+import { MAX_TIMEOUT_SECONDS, MIN_WINDOW_SECONDS, SETTLE_MARGIN_SECONDS, isPayerFault, paymentIdOf, realGate, settleReasonOf, stubGate, type Gate, type Schemes, type TestHooks, type X402Config } from './x402.js';
 
 export interface DoorDeps {
   /** Live offers. The door caches the answer for 60 s. */
@@ -34,6 +34,8 @@ export interface DoorDeps {
   reopen?: () => Promise<void>;
   ledger: DoorLedger;
   x402: X402Config | 'free-for-tests';
+  /** The x402 schemes built from `x402`, when the caller also runs the claim timers on them. Default: built here. */
+  schemes?: Schemes;
   /** Epoch ms. */
   now?: () => number;
   /** The door's data directory: output parts are kept under `output/` here. */
@@ -130,7 +132,7 @@ export function doorApp(deps: DoorDeps): express.Express {
   const leaseOffer = (leaseId: string): Offer => offerOfSnapshot(ledger.get(leaseId)!.offer);
   const priceOf = (leaseId: string): Micro | undefined => (ledger.get(leaseId) ? leaseOffer(leaseId).tickPrice : undefined);
   const gate: Gate =
-    deps.x402 === 'free-for-tests' ? stubGate(priceOf, deps.testHooks) : realGate(deps.x402, priceOf);
+    deps.x402 === 'free-for-tests' ? stubGate(priceOf, deps.testHooks) : realGate(deps.x402, priceOf, deps.schemes);
 
   let offersCache: { at: number; p: Promise<Offer[]> } | undefined;
   const offers = (): Promise<Offer[]> => {
