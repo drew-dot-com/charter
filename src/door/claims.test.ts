@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { InMemoryChannelStorage, type Channel } from '@x402/evm/batch-settlement/server';
-import { REFUND_IDLE_MS, selectRefundable, x402Command, type ClaimManager } from './claims.js';
+import { REFUND_IDLE_MS, selectClaimable, selectRefundable, startClaims, x402Command, type ClaimManager } from './claims.js';
 
 const NOW = 1_000_000_000;
 const addr = (c: string) => `0x${c.repeat(40)}` as `0x${string}`;
@@ -44,6 +44,8 @@ test('selectRefundable drops a channel that paid a tick within the idle window (
 const silent: ClaimManager = {
   claimAndSettle: async () => { throw new Error('not expected'); },
   refund: async () => { throw new Error('not expected'); },
+  settle: async () => { throw new Error('not expected'); },
+  start: () => {},
 };
 
 test('x402Command status lists one line per channel: id, balance, charged, claimed', async () => {
@@ -86,6 +88,45 @@ test('x402Command refund refunds only the refundable channels and prints each', 
 
 test('x402Command: anything else prints the usage and returns 2', async () => {
   const out: string[] = [];
-  assert.equal(await x402Command(['settle'], silent, new InMemoryChannelStorage(), () => NOW, (m) => out.push(m)), 2);
-  assert.match(out[0]!, /usage: charter-door x402 status \| claim \| refund/);
+  assert.equal(await x402Command(['bogus'], silent, new InMemoryChannelStorage(), () => NOW, (m) => out.push(m)), 2);
+  assert.match(out[0]!, /usage: charter-door x402 status \| claim \| settle \| refund/);
+});
+
+test('selectClaimable: a channel with vouchers past what is claimed is claimed once idle, or at once when its payer asked to withdraw', () => {
+  const idle = channel();
+  const busy = channel({ lastRequestTimestamp: NOW - 1000 });
+  const withdrawing = channel({ lastRequestTimestamp: NOW - 1000, withdrawRequestedAt: NOW - 5000 });
+  const nothing = channel({ totalClaimed: '15000', withdrawRequestedAt: NOW - 5000 });
+  assert.deepEqual(selectClaimable([idle, busy, withdrawing, nothing], NOW), [idle, withdrawing]);
+});
+
+test('x402Command settle moves claimed funds to payTo and prints the transaction', async () => {
+  let settles = 0;
+  const m: ClaimManager = { ...silent, settle: async () => { settles++; return { transaction: '0xsettle' }; } };
+  const out: string[] = [];
+  assert.equal(await x402Command(['settle'], m, new InMemoryChannelStorage(), () => NOW, (msg) => out.push(msg)), 0);
+  assert.equal(settles, 1);
+  assert.deepEqual(out, ['settled tx 0xsettle']);
+});
+
+test('startClaims: a refund claims as it goes, so a settle follows every refund round; a settle failure is logged, not thrown', async () => {
+  let config: Parameters<ClaimManager['start']>[0] | undefined;
+  let settles = 0;
+  const m: ClaimManager = { ...silent, start: (c) => { config = c; }, settle: async () => { settles++; if (settles === 2) throw new Error('nothing to settle'); return { transaction: '0xs' }; } };
+  const timers: Array<() => void> = [];
+  const log: string[] = [];
+  startClaims(m, (msg) => log.push(msg), (fn) => { timers.push(fn); return 0 as unknown as ReturnType<typeof setTimeout>; });
+  assert.ok(config);
+  config.onRefund!({ channel: '0xc1', transaction: '0xr1' });
+  config.onRefund!({ channel: '0xc2', transaction: '0xr2' });
+  assert.equal(timers.length, 1, 'one settle per refund round, not per channel');
+  timers[0]!();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(settles, 1);
+  assert.ok(log.some((l) => l === 'x402 settled tx 0xs'), log.join('|'));
+  config.onRefund!({ channel: '0xc3', transaction: '0xr3' });
+  timers[1]!();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(settles, 2);
+  assert.ok(log.some((l) => l.startsWith('x402 settle after refund: nothing to settle')), log.join('|'));
 });

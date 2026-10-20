@@ -38,6 +38,11 @@ export interface DoorDeps {
   schemes?: Schemes;
   /** Offer `batch-settlement` on ticks. Default true; false when the facilitator does not list it (facilitatorOffersBatch). */
   offerBatch?: boolean;
+  /**
+   * Whether the payer of this batch channel has asked to withdraw it (the door's channel record, synced from
+   * chain). Its vouchers are refused: the payer could take the balance back after the withdraw delay. Default: from `schemes`.
+   */
+  withdrawing?: (channelId: string) => Promise<boolean>;
   /** Epoch ms. */
   now?: () => number;
   /** The door's data directory: output parts are kept under `output/` here. */
@@ -133,6 +138,8 @@ export function doorApp(deps: DoorDeps): express.Express {
   /** The offer a lease was opened on, from the ledger's snapshot: a price or a host call never depends on the relay still listing it. */
   const leaseOffer = (leaseId: string): Offer => offerOfSnapshot(ledger.get(leaseId)!.offer);
   const priceOf = (leaseId: string): Micro | undefined => (ledger.get(leaseId) ? leaseOffer(leaseId).tickPrice : undefined);
+  const withdrawing: (channelId: string) => Promise<boolean> =
+    deps.withdrawing ?? (deps.schemes ? async (id) => ((await deps.schemes!.batch.getStorage().get(id))?.withdrawRequestedAt ?? 0) > 0 : async () => false);
   const gate: Gate =
     deps.x402 === 'free-for-tests' ? stubGate(priceOf, deps.testHooks) : realGate(deps.x402, priceOf, deps.schemes, deps.offerBatch ?? true);
 
@@ -349,7 +356,7 @@ export function doorApp(deps: DoorDeps): express.Express {
   });
 
   /** Everything that can be refused before the renter is asked to pay. */
-  const tickGuard: express.RequestHandler = (req, res, next) => {
+  const tickGuard: express.RequestHandler = async (req, res, next) => {
     if (!allowTick(req.ip ?? 'unknown')) return void res.status(429).json({ error: 'rate_limited' });
     // A tick costs the door a status read no renter pays for, and may cost it a loss.
     if (overCap()) return void res.status(503).json({ error: 'capacity' });
@@ -397,6 +404,11 @@ export function doorApp(deps: DoorDeps): express.Express {
       res.locals.deadline = (payment.validBefore - SETTLE_MARGIN_SECONDS) * 1000;
     }
     ticking.add(id);
+    // The one check that reads a file comes after the claim on the lease, which `ticking` holds meanwhile.
+    if (payment !== 'none' && payment.kind === 'batch' && (await withdrawing(payment.channelId))) {
+      ticking.delete(id);
+      return void res.status(409).json({ error: 'channel_withdrawing' });
+    }
     res.locals.offer = offerOfSnapshot(rec.offer);
     res.locals.index = index;
     next();

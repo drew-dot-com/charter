@@ -1750,3 +1750,18 @@ test('with batch not offered, the 402 lists exact only and the door still answer
     fac.close();
   }
 });
+
+test('a voucher on a channel whose payer asked to withdraw is 409 channel_withdrawing before the gate: the door will not pay a host for it', async () => {
+  const d = await start(fakeHost(), { withdrawing: async (channelId) => channelId === CHANNEL });
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': voucher('0xab', '5000') });
+    assert.equal(r.status, 409);
+    assert.deepEqual(await r.json(), { error: 'channel_withdrawing' });
+    assert.equal(d.gate.length, 0);
+    // An exact payment from the same payer is unaffected.
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': pay('0xab', '0x01') })).status, 200);
+  } finally {
+    d.close();
+  }
+});

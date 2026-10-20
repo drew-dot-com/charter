@@ -38,7 +38,7 @@ a read-only root, no capabilities and `no-new-privileges`.
 
 `charter-door` serves the storefront and pays hosts for browser renters. `charter-door unblock <0x address>`
 reads only `CHARTER_DATA_DIR`.
-`charter-door x402 status | claim | refund` lists renters' batch-settlement channels, or claims and settles their vouchers to `CHARTER_PAY_TO` and refunds idle channels now (the door does both on timers: claims hourly, refunds every 10 min after 10 min idle). Safe beside a running door.
+`charter-door x402 status | claim | settle | refund` lists renters' batch-settlement channels, claims and settles their vouchers to `CHARTER_PAY_TO`, settles what earlier claims (refunds included) left unsettled, or refunds idle channels, now. The door does the same on a 10 min timer: it claims channels idle 10 min or whose payer asked to withdraw (their vouchers are refused as `channel_withdrawing`), refunds idle channels' unspent balance, and settles after every refund round. Safe beside a running door.
 
 `charter-door channel status | rotate | settle` reads only the `CHARTER_TOON_*` variables; run it with the
 door stopped (docs/demo.md, channel rotation).
