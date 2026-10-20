@@ -226,3 +226,27 @@ Done 2026-10-17: lease `ad14ba77f60adba4374e264e0410a4e6`, `charter-job-python` 
 exit 0 in 1.2 s (pi 3.1413, eigenvalue 749.8), 1 interval paid by the renter (`0xa95483d2...6a45`) and to the
 host, 0 losses. Land tx `4vVwtjimF88jfpb8a7KStXewh9id3mew1YFEMViH6uKNuNY2i5c7fSDdkWwmWTSqpxZhjHsmKzZqMs8N5BTwr2ci`
 finalized, no error. First renter-supplied code run on Charter (first-party: Drew on both sides).
+
+## 8. Batch settlement: one prompt per deposit (2026-10-20)
+
+Spec `docs/superpowers/specs/2026-10-20-batch-settlement-design.md`, plan `docs/superpowers/plans/2026-10-20-batch-settlement.md`.
+The door offers x402 `batch-settlement` beside `exact` on the tick route. A browser renter's wallet signs
+once to deposit at least 0.10 USDC into a channel on the x402 contract; the page signs every tick after
+that with a session key it keeps in localStorage; the door claims and settles hourly and refunds idle
+channels after 10 min. PayAI (`facilitator.payai.network`) submits every transaction.
+
+- [x] Door deployed 2026-10-20 18:30 UTC: backup `/opt/charter.bak-20261020-1829-prebatch`, rsync, `compose build`,
+  claim key made inside the image as uid 1000 (`/root/charter-door/secrets/claim-key`, 0400), `compose up -d`.
+  Boot: `channel ready, headroom 1986900`. **Claim authorizer `0x590efEAa332eDc7D58FE2282fC1ef8010cD16C66`** (no funds, ever).
+- [x] Live 402 on lease `4b30a283…` (opened for the check, left to lapse): accepts `batch-settlement` then `exact`,
+  both 5000 to `0xbD87…2385`; batch extra `receiverAuthorizer 0x590e…6C66`, `withdrawDelay 3600`.
+  `charter-door x402 status`: `no channels`.
+- [ ] Drew rents from his browser: ONE prompt (the deposit, 0.10 USDC), 3+ intervals, done. Record: lease id,
+  deposit tx (Basescan, to the x402 contract `0x4020074e…0003`), `x402 status` after.
+- [ ] `charter-door x402 claim`: claim tx + settle tx (USDC into `CHARTER_PAY_TO`).
+- [ ] Refund: within ~10 min of the lease ending the door's timer refunds the remainder (log line
+  `x402 refunded <channel> tx …`), or `charter-door x402 refund` now.
+
+Ops: `docker compose -f deploy/door/docker-compose.yml run --rm charter-door node dist/door/main.js x402 status | claim | refund`
+(safe beside the running door). Channel records: `/root/charter-door/data/x402-channels/server/*.json`.
+Back out: `compose down`, restore the backup dir, `compose up -d --build`; the old door ignores the claim key env.
