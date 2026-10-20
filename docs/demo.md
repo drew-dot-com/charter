@@ -241,11 +241,22 @@ channels after 10 min. PayAI (`facilitator.payai.network`) submits every transac
 - [x] Live 402 on lease `4b30a283…` (opened for the check, left to lapse): accepts `batch-settlement` then `exact`,
   both 5000 to `0xbD87…2385`; batch extra `receiverAuthorizer 0x590e…6C66`, `withdrawDelay 3600`.
   `charter-door x402 status`: `no channels`.
-- [ ] Drew rents from his browser: ONE prompt (the deposit, 0.10 USDC), 3+ intervals, done. Record: lease id,
-  deposit tx (Basescan, to the x402 contract `0x4020074e…0003`), `x402 status` after.
-- [ ] `charter-door x402 claim`: claim tx + settle tx (USDC into `CHARTER_PAY_TO`).
-- [ ] Refund: within ~10 min of the lease ending the door's timer refunds the remainder (log line
-  `x402 refunded <channel> tx …`), or `charter-door x402 refund` now.
+- [x] 🏆 **FIRST BATCH-SETTLED BROWSER LEASE, 2026-10-20 ~19:57 UTC.** Drew's browser, wallet
+  `0x4d7b7960…c8f4`, ONE prompt (MetaMask showed several "unknown site" warnings on the way to it).
+  Lease `811904795c4b68fcfd8a9020dfc03e50`: done, 1 interval (the fetch job finishes inside one), 0 losses.
+  Channel `0x10837ec6…530b` (payer authorizer = the page's session key `0xf10b2D55…CE09`, receiver
+  authorizer `0x590e…6C66`). **Deposit tx `0x0a77f557494f952ee689bf343d45e9b4b1c59fa190e4f5b6728005bb7a691f13`**
+  (block 52868446, 100000 micro-USDC from Drew's wallet to the x402 deposit collector `0x40208060…0004`).
+  `x402 status` after: balance 100000, charged 5000, claimed 0.
+- [x] `x402 claim` → claimed 5000 (status: claimed 5000); the first settle right after said
+  `nothing_to_settle` (claim not mined yet; the command now prints the claim hash before trying, this run's
+  claim hash was not captured). `x402 settle` a minute later →
+  **settle tx `0x5abcf2fc8daa68c92fac910e08b4073cfa3555fe7391da6587d1d615fed258d0`** (block 52868505,
+  5000 micro-USDC from the contract to `CHARTER_PAY_TO` `0xbD87…2385`).
+- [ ] Refund: the door's timer (10 min idle, then the next 10 min round) refunds the 95000 left, log line
+  `x402 refunded <channel> tx …`; on chain a 95000 USDC transfer from the contract to Drew's wallet.
+- [ ] Second lease from the same wallet after the refund: expected ONE prompt again (the channel was emptied
+  by the refund, so a fresh deposit), but no fallback to exact.
 
 Ops: `docker compose -f deploy/door/docker-compose.yml run --rm charter-door node dist/door/main.js x402 status | claim | refund`
 (safe beside the running door). Channel records: `/root/charter-door/data/x402-channels/server/*.json`.
