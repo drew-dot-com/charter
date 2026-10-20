@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Charter</title>
+<meta name="description" content="Charter is a compute marketplace on TOON. Hosts list machines from home behind hidden nodes. Renters pay per 30 second interval from a browser wallet, in USDC on Base. Live on mainnet.">
+<style>
+:root{--bg:#f7f7f5;--surface:#fff;--text:#1b1d1f;--muted:#5d6368;--line:#dcdcd6;--accent:#1f5fd1;--accent-text:#fff;--badge-bg:#e8eefb;--badge-text:#1b3f8f;--ok:#1d7a3a;--code:#eeeeea;color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root{--bg:#14161a;--surface:#1d2025;--text:#e9eaec;--muted:#9aa1a8;--line:#2d3238;--accent:#6ea0ff;--accent-text:#0b1220;--badge-bg:#232d44;--badge-text:#b9cdff;--ok:#62c27e;--code:#111317}}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow-wrap:anywhere}
+.wrap{max-width:44rem;margin:0 auto;padding:0 16px}
+header{padding:22px 0 6px;display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.brand{font-weight:700;font-size:1.25rem;color:var(--text);text-decoration:none}
+.live{display:inline-block;font-size:.8rem;padding:2px 8px;border-radius:999px;background:var(--badge-bg);color:var(--badge-text);white-space:nowrap}
+.live::before{content:"";display:inline-block;width:.5em;height:.5em;border-radius:50%;background:var(--ok);margin-right:.45em;vertical-align:baseline}
+h1{font-size:2rem;line-height:1.15;margin:28px 0 12px;letter-spacing:-.01em}
+h2{font-size:1.2rem;margin:40px 0 10px}
+h3{font-size:1rem;margin:18px 0 6px}
+p{margin:0 0 12px}
+.lede{font-size:1.1rem;color:var(--muted)}
+a{color:var(--accent)}
+.actions{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 8px}
+.btn{display:inline-block;padding:10px 16px;border-radius:8px;background:var(--accent);color:var(--accent-text);font-weight:600;text-decoration:none}
+.btn.alt{background:transparent;color:var(--accent);border:1px solid var(--line)}
+.note{font-size:.9rem;color:var(--muted)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:12px;margin:12px 0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.card b{display:block;margin-bottom:4px}
+table{width:100%;border-collapse:collapse;margin:8px 0 16px;font-size:.95rem}
+th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:600;color:var(--muted);font-size:.85rem}
+td.n{white-space:nowrap}
+code{font:.85em/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);padding:1px 5px;border-radius:4px}
+.flow{counter-reset:s;list-style:none;padding:0;margin:12px 0}
+.flow li{position:relative;padding-left:2.2rem;margin:0 0 10px}
+.flow li::before{counter-increment:s;content:counter(s);position:absolute;left:0;top:.05rem;width:1.5rem;height:1.5rem;border-radius:50%;background:var(--badge-bg);color:var(--badge-text);font-size:.8rem;font-weight:700;display:flex;align-items:center;justify-content:center}
+.honest{border-left:3px solid var(--accent);padding:8px 14px;background:var(--surface);border-radius:0 8px 8px 0;margin:14px 0}
+footer{margin:48px 0 40px;padding-top:16px;border-top:1px solid var(--line);font-size:.85rem;color:var(--muted)}
+footer p{margin:0 0 6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <a class="brand" href="https://charter.ar.io/">Charter</a>
+  <span class="live">Live on Base mainnet</span>
+</header>
+
+<h1>Rent a machine from someone's home. Pay per 30 seconds, from a browser wallet.</h1>
+<p class="lede">Charter is a compute marketplace on <a href="https://toon.ar.io/">TOON</a>. A host lists a machine behind a hidden node and names a price. A renter picks it, pays one interval at a time in USDC on Base, and gets the output back. No account on either side.</p>
+<div class="actions">
+  <a class="btn" href="https://charter.167-233-221-236.sslip.io/">Rent a machine</a>
+  <a class="btn alt" href="#proof">See the receipts</a>
+</div>
+<p class="note">The storefront runs on the operator's own node, so your wallet will warn about an unfamiliar site. The one signature it asks for is a USDC deposit into an x402 channel on Base, explained below.</p>
+
+<h2>What you get</h2>
+<div class="cards">
+  <div class="card"><b>A machine, by the interval</b>A container on the host's machine for as long as you keep paying. Stop paying and it ends. If it never boots, nothing is owed.</div>
+  <div class="card"><b>Two jobs today</b>Run your own Python script (NumPy, no network, sandboxed under gVisor), or fetch pages through an anonymous exit and get back text and a screenshot of each.</div>
+  <div class="card"><b>Hidden on both sides</b>The host is a hidden service with no domain and no open port. The renter is a wallet. Neither learns the other's IP.</div>
+  <div class="card"><b>One signature, not sixty</b>Your wallet signs once to deposit at least 0.10 USDC into a payment channel. Every interval after that is a voucher the page signs silently. What you do not use comes back when the lease ends.</div>
+</div>
+
+<h2>What it costs</h2>
+<table>
+  <tr><th>item</th><th>price</th><th>notes</th></tr>
+  <tr><td>open a lease</td><td class="n">0.001 USDC</td><td>paid by the storefront on your behalf</td></tr>
+  <tr><td>one 30 second interval</td><td class="n">0.005 USDC</td><td>the host sets this; the storefront charges you the same</td></tr>
+  <tr><td>a status read</td><td class="n">0.0001 USDC</td><td>paid by the storefront</td></tr>
+  <tr><td>deposit</td><td class="n">0.10 USDC minimum</td><td>sits in the x402 contract, not with Charter; the unspent part is refunded</td></tr>
+</table>
+<p class="note">A one minute job costs about a cent. Charter takes no fee today.</p>
+
+<h2>How a lease runs</h2>
+<ol class="flow">
+  <li>The host runs a TOON node at home and publishes an offer: CPU, memory, interval price, which jobs it runs.</li>
+  <li>The storefront lists the offer. You connect a wallet holding USDC on Base and click Rent.</li>
+  <li>Your wallet signs one deposit into a <code>batch-settlement</code> channel on the x402 contract. The storefront opens the lease on the host and starts the clock.</li>
+  <li>Every 30 seconds the page signs a cumulative voucher. The storefront checks it and pays the host the same interval over TOON, from its own channel. It never holds more than one interval of your money.</li>
+  <li>The job finishes or you stop. The host's vouchers land on chain in a batch. The storefront claims yours, settles to the operator, and refunds the rest of your deposit.</li>
+</ol>
+<p>Underneath: ILP routes every packet between the storefront and the host, and x402 channels settle them. Charter reuses that network rather than running its own payments. A renter who already runs a TOON node can skip the storefront and pay the host directly from the command line.</p>
+
+<h2 id="proof">Proof</h2>
+<p>Every lease below ran on mainnet with real USDC. Nothing here is a testnet or a simulation.</p>
+<table>
+  <tr><th>date</th><th>what</th><th>on chain</th></tr>
+  <tr><td class="n">2026-10-17</td><td>First paid lease: an agent rented the fetch job over TOON, one interval, host vouchers landed on Solana.</td><td><a href="https://solscan.io/tx/E6C5MaGtD5PyTURWSM5GYufXdE9boBZGkYiyhyHtFaNBVX2Wbjgk4EFBfDSQreFbcyuDJajkUfVdDsMsKxt535k">landing tx</a></td></tr>
+  <tr><td class="n">2026-10-17</td><td>First browser lease: a wallet paid the storefront over x402 on Base; the storefront paid the host over TOON.</td><td><a href="https://basescan.org/tx/0xaa19e753857fb3347f83d02d0fc84d7024f37a92a734f35756912476a58bf51d">payment</a>, <a href="https://solscan.io/tx/mNmAd7kHpTwM3ep98JzPXKKPJioB2sGhDwGmLpsyPySQKgHc2spFnNoN5o3nEfn1Ewogc93Nadj4AouV8j2B5Sp">landing tx</a></td></tr>
+  <tr><td class="n">2026-10-17</td><td>First real compute: a renter's Python script ran under gVisor on the host, exit 0.</td><td><a href="https://solscan.io/tx/4vVwtjimF88jfpb8a7KStXewh9id3mew1YFEMViH6uKNuNY2i5c7fSDdkWwmWTSqpxZhjHsmKzZqMs8N5BTwr2ci">landing tx</a></td></tr>
+  <tr><td class="n">2026-10-20</td><td>Batch settlement, whole loop: one signature deposited 0.10 USDC, the lease ran, 0.005 settled to the operator, 0.095 refunded by the storefront's timer with nobody touching it.</td><td><a href="https://basescan.org/tx/0x0a77f557494f952ee689bf343d45e9b4b1c59fa190e4f5b6728005bb7a691f13">deposit</a>, <a href="https://basescan.org/tx/0x5abcf2fc8daa68c92fac910e08b4073cfa3555fe7391da6587d1d615fed258d0">settle</a>, <a href="https://basescan.org/tx/0xf69dcfcbe87454369ba634550b07a67dcde0da74213869878dfaf174a1d006ca">refund</a></td></tr>
+  <tr><td class="n">2026-10-20</td><td>Second lease from the same wallet after the refund: one signature again, the channel picked up from chain, no fallback.</td><td><a href="https://basescan.org/tx/0x390ced3a098df76a32da65abc85080e1579faeb6141121c001f9d64688f9fa2b">deposit</a></td></tr>
+</table>
+<div class="honest">
+  <p><b>What this is not yet.</b> One host, the founder's machine. The renters so far are the two founders. The storefront is at a raw address until it gets a domain. Lease state and output are per host; there is no marketplace fee, no reputation, no SLA. This page exists so the next host and the next renter can see exactly where things stand.</p>
+</div>
+
+<h2>For hosts</h2>
+<p>Any machine behind a TOON node can list. Install the node, add three paid apps (open, tick, status), point them at the Charter host service, publish an offer. The storefront lists offers only from hosts the operator has added by hand, which is the whole vetting process today. The code is MIT; the commands are in its README.</p>
+
+<h2>Who</h2>
+<p>Built and run by <a href="https://www.linkedin.com/in/drewpierson/">Drew Pierson</a>, cofounder and COO of TOON Protocol and the operator of the mainnet node behind <a href="https://toon.ar.io/">toon.ar.io</a>. Charter is its own repository under its own license, running on TOON the way any third-party app does.</p>
+
+<footer>
+  <p>This page is a single file on Arweave, written through the same node that runs the storefront, and served under the ArNS name <code>charter.ar.io</code>. Built 2026-10-20. No scripts, no tracking.</p>
+  <p><a href="https://charter.167-233-221-236.sslip.io/">Storefront</a> · <a href="https://toon.ar.io/">TOON</a></p>
+</footer>
+</div>
+</body>
+</html>
