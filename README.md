@@ -31,7 +31,9 @@ v1 prices: open 0.001 USDC, one interval 0.005 USDC, a status read 0.0001 USDC.
 ## Rent
 
 From a browser: open the storefront, connect a wallet holding USDC on Base, pick a machine, enter
-URLs and click Rent. The wallet asks to sign each interval.
+URLs and click Rent. Your wallet signs once to put a deposit (at least 0.10 USDC) into an x402
+channel. Each interval after that is signed by the page, silently. What you do not use comes back
+when the lease ends.
 
 From a `toon` node:
 

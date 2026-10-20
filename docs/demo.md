@@ -120,8 +120,8 @@ user, so make the dirs with `install -d -m 700` then `chown -R 1000:1000`.
 ## 5. Browser lease (Drew clicks Rent)
 
 - [x] Drew opens `https://charter.167-233-221-236.sslip.io` with his own browser wallet (USDC on Base),
-  picks the machine, enters URLs, clicks Rent and signs each interval (one prompt per interval until
-  Task 12's batch settlement).
+  picks the machine, enters URLs, clicks Rent and signs each interval (one prompt per interval; section 8
+  replaces this with one deposit prompt).
 - [x] Check: the lease page reaches `done`; the x402 payments show on Basescan to `CHARTER_PAY_TO`;
   `door-ledger.json` shows 0 losses for the lease; `charter-host land` and its tx on Solscan.
 - [x] Record below.

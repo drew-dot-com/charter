@@ -1,11 +1,13 @@
 import { createWalletClient, custom } from 'viem';
 import { base } from 'viem/chains';
 import type { ClientEvmSigner } from '@x402/evm';
+import { BatchSettlementEvmScheme, type ClientChannelStorage } from '@x402/evm/batch-settlement/client';
 import { ExactEvmScheme } from '@x402/evm/exact/client';
+import { depositFor } from './channel.js';
 import { wrapFetchWithPayment, x402Client, type Network, type PaymentRequirements } from '@x402/fetch';
 import { UNEXPECTED_PAYMENT } from './format.js';
 
-/** The door asks for exact-scheme USDC on Base. */
+/** The door asks for USDC on Base: batch-settlement (a channel) or exact (one authorization per tick). */
 export const BASE_NETWORK = 'eip155:8453' as const;
 export const BASE_CHAIN_ID_HEX = '0x2105';
 /** USDC on Base mainnet. */
@@ -36,9 +38,19 @@ export interface ExpectedPayment {
 
 const sameAddress = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
 
+/** The renter's batch-settlement channel: a session key for vouchers and the channel records, or batch off. */
+export interface ChannelOptions {
+  session: ClientEvmSigner;
+  storage: ClientChannelStorage;
+  /** False after the door refused a batch payment: this page then pays exact only. */
+  batch: boolean;
+}
+
+const SCHEMES = ['batch-settlement', 'exact'] as const;
+
 function matches(r: PaymentRequirements, e: ExpectedPayment): boolean {
   return (
-    r.scheme === 'exact' &&
+    (SCHEMES as readonly string[]).includes(r.scheme) &&
     r.network === e.network &&
     sameAddress(r.asset, e.asset) &&
     sameAddress(r.payTo, e.payTo) &&
@@ -51,11 +63,26 @@ function matches(r: PaymentRequirements, e: ExpectedPayment): boolean {
  * fetch that answers a 402 by signing a fresh EIP-3009 authorization with the wallet and resending.
  * It signs only a request for exactly `expected`: any other 402 throws before the wallet is asked.
  */
-export function payFetchFor(address: `0x${string}`, eth: Eip1193, expected: ExpectedPayment, fetchImpl: typeof fetch = fetch): typeof fetch {
-  const client = new x402Client()
-    .register(expected.network, new ExactEvmScheme(evmSigner(address, eth)))
-    // Only entries for this exact payment can be chosen; none left is an error from the client.
-    .registerPolicy((_version, reqs) => reqs.filter((r) => matches(r, expected)))
+export function payFetchFor(address: `0x${string}`, eth: Eip1193, expected: ExpectedPayment, fetchImpl: typeof fetch = fetch, channel?: ChannelOptions): typeof fetch {
+  const signer = evmSigner(address, eth);
+  const batch = channel?.batch === true;
+  const client = new x402Client().register(expected.network, new ExactEvmScheme(signer));
+  if (batch && channel) {
+    client.register(
+      expected.network,
+      new BatchSettlementEvmScheme(signer, {
+        voucherSigner: channel.session,
+        storage: channel.storage,
+        depositStrategy: ({ minimumDepositAmount }) => depositFor(expected.amount, BigInt(minimumDepositAmount)),
+      }),
+    );
+  }
+  client
+    // Only entries for this exact payment can be chosen, batch before exact; none left is an error from the client.
+    .registerPolicy((_version, reqs) =>
+      reqs
+        .filter((r) => matches(r, expected) && (batch || r.scheme === 'exact'))
+        .sort((a, b) => SCHEMES.indexOf(a.scheme as (typeof SCHEMES)[number]) - SCHEMES.indexOf(b.scheme as (typeof SCHEMES)[number])))
     // And once one is chosen, check it again before anything is signed.
     .onBeforePaymentCreation(async ({ selectedRequirements }) =>
       matches(selectedRequirements, expected) ? undefined : { abort: true, reason: UNEXPECTED_PAYMENT });

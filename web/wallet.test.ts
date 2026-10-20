@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { verifyTypedData } from 'viem';
-import { decodePaymentSignatureHeader } from '@x402/core/http';
+import { decodePaymentSignatureHeader, encodePaymentResponseHeader, encodePaymentSignatureHeader } from '@x402/core/http';
 import type { Request } from 'express';
 import { MIN_WINDOW_SECONDS, paymentIdOf } from '../src/door/x402.js';
 import { account, fakeWallet } from './test-wallet.js';
 import { isUnexpectedPayment } from './format.js';
+import { channelStorage, sessionSigner } from './channel.js';
 import { BASE_USDC, evmSigner, payFetchFor, type ExpectedPayment } from './wallet.js';
 
 const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
@@ -137,4 +138,95 @@ test('the page signs the one matching entry of several, whatever order they come
 
 test('BASE_USDC is the Base mainnet USDC contract', () => {
   assert.equal(BASE_USDC, '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
+});
+
+// ---------------------------------------------------------------------------
+// batch-settlement: one deposit prompt, then vouchers signed by the page's session key.
+
+const RECEIVER_AUTHORIZER = '0x' + 'd'.repeat(40);
+const BATCH = { scheme: 'batch-settlement', network: 'eip155:8453', asset: USDC, amount: '5000', payTo: PAY_TO, maxTimeoutSeconds: 300, extra: { name: 'USD Coin', version: '2', receiverAuthorizer: RECEIVER_AUTHORIZER, withdrawDelay: 3600 } };
+
+function memoryStore(): Storage {
+  const m = new Map<string, string>();
+  return { get length() { return m.size; }, clear: () => m.clear(), getItem: (k) => m.get(k) ?? null, key: (i) => [...m.keys()][i] ?? null, removeItem: (k) => void m.delete(k), setItem: (k, v) => void m.set(k, String(v)) };
+}
+
+/** A door that settles batch payments the way the real scheme answers: charged this much, channel state after. */
+async function withBatchDoor(accepts: object[], run: (url: string, seen: Array<Record<string, unknown>>) => Promise<void>): Promise<void> {
+  const seen: Array<Record<string, unknown>> = [];
+  let charged = 0n;
+  const server = createServer((req, res) => {
+    const h = req.headers['payment-signature'];
+    if (h) {
+      const p = decodePaymentSignatureHeader(h as string) as { payload: Record<string, unknown> };
+      seen.push(p.payload);
+      charged += 5000n;
+      const response = encodePaymentResponseHeader({ success: true, transaction: '', network: 'eip155:8453', payer: account.address, extra: { chargedAmount: '5000', channelState: { chargedCumulativeAmount: charged.toString() } } });
+      return void res.writeHead(200, { 'content-type': 'application/json', 'PAYMENT-RESPONSE': response }).end('{"paidIntervals":1,"paidThrough":1}');
+    }
+    const required = { x402Version: 2, resource: { url: 'http://127.0.0.1/t' }, accepts };
+    res.writeHead(402, { 'content-type': 'application/json', 'PAYMENT-REQUIRED': Buffer.from(JSON.stringify(required)).toString('base64') }).end('{}');
+  }).listen(0, '127.0.0.1');
+  await new Promise((r) => server.once('listening', r));
+  try {
+    await run(`http://127.0.0.1:${(server.address() as AddressInfo).port}/t`, seen);
+  } finally {
+    server.close();
+  }
+}
+
+test('batch: the first tick deposits the floor with one wallet prompt, bound to the session key; the next tick is a voucher with no prompt', async () => {
+  await withBatchDoor([ACCEPT, BATCH], async (url, seen) => {
+    const store = memoryStore();
+    const session = sessionSigner(account.address, store);
+    const storage = channelStorage(account.address, store);
+    const methods: string[] = [];
+    const pay = payFetchFor(account.address, fakeWallet(methods), EXPECTED, fetch, { session, storage, batch: true });
+    assert.equal((await post(pay, url)).status, 200);
+    assert.deepEqual(methods, ['eth_signTypedData_v4'], 'the deposit authorization is the one prompt');
+    const first = seen[0] as { type: string; deposit: { amount: string }; channelConfig: { payer: string; payerAuthorizer: string; receiver: string; receiverAuthorizer: string }; voucher: { maxClaimableAmount: string } };
+    assert.equal(first.type, 'deposit');
+    assert.equal(first.deposit.amount, '100000');
+    assert.equal(first.channelConfig.payer.toLowerCase(), account.address.toLowerCase());
+    assert.equal(first.channelConfig.payerAuthorizer.toLowerCase(), session.address.toLowerCase(), 'vouchers are signed by the session key');
+    assert.equal(first.channelConfig.receiver.toLowerCase(), PAY_TO);
+    assert.equal(first.channelConfig.receiverAuthorizer.toLowerCase(), RECEIVER_AUTHORIZER);
+    assert.equal(first.voucher.maxClaimableAmount, '5000');
+    // The door's reader sees a batch payment from the wallet.
+    const id = paymentIdOf({ headers: { 'payment-signature': encodePaymentSignatureHeader({ x402Version: 2, accepted: BATCH, payload: first } as never) } } as unknown as Request);
+    assert.ok(typeof id === 'object' && id.kind === 'batch' && id.from === account.address.toLowerCase());
+
+    assert.equal((await post(pay, url)).status, 200);
+    assert.deepEqual(methods, ['eth_signTypedData_v4'], 'no second prompt');
+    const second = seen[1] as { type: string; voucher: { maxClaimableAmount: string } };
+    assert.equal(second.type, 'voucher');
+    assert.equal(second.voucher.maxClaimableAmount, '10000', 'cumulative');
+    // A fresh page over the same store carries on without depositing.
+    const again = payFetchFor(account.address, fakeWallet(methods), EXPECTED, fetch, { session: sessionSigner(account.address, store), storage: channelStorage(account.address, store), batch: true });
+    assert.equal((await post(again, url)).status, 200);
+    assert.equal((seen[2] as { type: string }).type, 'voucher');
+    assert.deepEqual(methods, ['eth_signTypedData_v4']);
+  });
+});
+
+test('batch off: the page pays exact even when the door offers batch first', async () => {
+  await withBatchDoor([BATCH, ACCEPT], async (url, seen) => {
+    const store = memoryStore();
+    const pay = payFetchFor(account.address, fakeWallet(), EXPECTED, fetch, { session: sessionSigner(account.address, store), storage: channelStorage(account.address, store), batch: false });
+    assert.equal((await post(pay, url)).status, 200);
+    assert.ok('authorization' in seen[0]!, 'an EIP-3009 authorization, not a voucher');
+  });
+});
+
+test('batch: a batch entry with another amount or payTo is never signed, exact or not', async () => {
+  for (const bad of [{ ...BATCH, amount: '5001' }, { ...BATCH, payTo: '0x' + '3'.repeat(40) }]) {
+    await with402([bad], async (url, paid) => {
+      const store = memoryStore();
+      const methods: string[] = [];
+      const pay = payFetchFor(account.address, fakeWallet(methods), EXPECTED, fetch, { session: sessionSigner(account.address, store), storage: channelStorage(account.address, store), batch: true });
+      await assert.rejects(post(pay, url), (e: unknown) => isUnexpectedPayment(e));
+      assert.deepEqual(methods, []);
+      assert.equal(paid(), 0);
+    });
+  }
 });

@@ -208,7 +208,7 @@ async function showHome(token: number): Promise<void> {
     el('h1', undefined, 'Machines for rent'),
     el('p', 'lede', 'Rent a container on a hidden host, paid in USDC on Base every 30 seconds while it runs. Run your own Python script on it (NumPy included, no network), or have it fetch pages and send back a screenshot and the text of each.'),
     list,
-    el('p', 'note', 'No account. Pay from a browser wallet with USDC on Base.'),
+    el('p', 'note', 'No account. Pay from a browser wallet with USDC on Base: your wallet signs once to put a deposit (at least 0.10 USDC) into an x402 channel, each interval after that is signed by this page silently, and what you do not use comes back when the lease ends.'),
     dev ? el('p', 'note', 'Local test mode: payments are skipped.') : null,
   );
   list.append(el('li', 'muted', 'Loading machines'));
@@ -544,6 +544,13 @@ function payTick(p: LeasePage): Promise<void> {
         return doorInfo;
       },
       offer: () => p.offer,
+      store: (() => {
+        try {
+          return window.localStorage;
+        } catch {
+          return undefined;
+        }
+      })(),
     }),
     // A tick sent to a lease that finished since the last look is paid by the door for nothing:
     // look again first, unless the last look was within the poll interval.
