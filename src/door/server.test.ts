@@ -13,6 +13,7 @@ import { DoorLedger, offerOfSnapshot, snapshotOffer } from './ledger.js';
 import { doorApp, type DoorDeps } from './server.js';
 import * as payerMod from '../payer.js';
 import { paymentIdOf } from './x402.js';
+import { privateKeyToAccount } from 'viem/accounts';
 
 
 const b64 = (o: unknown, pretty = false) => Buffer.from(JSON.stringify(o, null, pretty ? 2 : undefined)).toString('base64');
@@ -943,7 +944,7 @@ test('GET /v1/dev answers 200 only in free-for-tests mode, so the page can skip 
 async function withRealDoor(run: (d: Awaited<ReturnType<typeof start>>) => Promise<void>): Promise<void> {
   const fac = createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(req.url?.startsWith('/supported') ? { kinds: [{ x402Version: 2, scheme: 'exact', network: 'eip155:8453' }], extensions: [], signers: {} } : {}));
+    res.end(JSON.stringify(req.url?.startsWith('/supported') ? { kinds: [{ x402Version: 2, scheme: 'exact', network: 'eip155:8453' }, { x402Version: 2, scheme: 'batch-settlement', network: 'eip155:8453', extra: { experimental: true, batchPolicy: { minInitialDeposit: '100000' } } }], extensions: [], signers: {} } : {}));
   }).listen(0, '127.0.0.1');
   await new Promise((r) => fac.once('listening', r));
   const d = await start(fakeHost(), { x402: { payTo: PAY_TO, network: 'eip155:8453', facilitatorUrl: `http://127.0.0.1:${(fac.address() as AddressInfo).port}`, claimKey: CLAIM_KEY, channelDir: mkdtempSync(join(tmpdir(), 'ch-')) } });
@@ -972,20 +973,24 @@ test('GET /v1/door tells the page where payments go: payTo and network, free and
   }
 });
 
-test('the 402 challenge offers exact USDC on Base for the tick price, to payTo, valid for 300 s', async () => {
+test('the 402 challenge offers batch-settlement first, then exact, both USDC on Base for the tick price, to payTo, valid for 300 s', async () => {
   await withRealDoor(async (d) => {
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
     const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 });
     assert.equal(r.status, 402);
     const required = JSON.parse(Buffer.from(r.headers.get('payment-required')!, 'base64').toString()) as { accepts: Array<Record<string, unknown>> };
-    assert.equal(required.accepts.length, 1);
-    const a = required.accepts[0]!;
-    assert.equal(a.scheme, 'exact');
-    assert.equal(a.network, 'eip155:8453');
-    assert.equal(a.asset, '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
-    assert.equal(a.amount, '5000');
-    assert.equal((a.payTo as string).toLowerCase(), PAY_TO);
-    assert.equal(a.maxTimeoutSeconds, 300);
+    assert.deepEqual(required.accepts.map((a) => a.scheme), ['batch-settlement', 'exact']);
+    for (const a of required.accepts) {
+      assert.equal(a.network, 'eip155:8453');
+      assert.equal(a.asset, '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
+      assert.equal(a.amount, '5000');
+      assert.equal((a.payTo as string).toLowerCase(), PAY_TO);
+      assert.equal(a.maxTimeoutSeconds, 300);
+    }
+    const extra = required.accepts[0]!.extra as Record<string, unknown>;
+    // The door's own claim key authorizes claims and refunds for payTo; the renter's channel is bound to it.
+    assert.equal(extra.receiverAuthorizer, privateKeyToAccount(CLAIM_KEY).address);
+    assert.equal(extra.withdrawDelay, 3600);
   });
 });
 

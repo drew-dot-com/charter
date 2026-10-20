@@ -1,9 +1,12 @@
 import type { NextFunction, Request, Response } from 'express';
 import { HTTPFacilitatorClient } from '@x402/core/server';
 import { decodePaymentResponseHeader, decodePaymentSignatureHeader } from '@x402/core/http';
+import { BatchSettlementEvmScheme } from '@x402/evm/batch-settlement/server';
+import { FileChannelStorage } from '@x402/evm/batch-settlement/server/file-storage';
 import { ExactEvmScheme } from '@x402/evm/exact/server';
 import { paymentMiddleware, x402ResourceServer } from '@x402/express';
 import type { Micro } from '../types.js';
+import { claimSigner } from './config.js';
 
 export interface X402Config {
   payTo: string;
@@ -168,30 +171,50 @@ function leaseIdOfPath(path: string): string {
  * Real x402: `exact` on Base USDC, priced per request from `priceOf`, settled by
  * the facilitator only after the handler answers 2xx (the middleware's order, as LADING).
  */
-export function realGate(cfg: X402Config, priceOf: (leaseId: string) => Micro | undefined): Gate {
+/** A renter's channel can be withdrawn unilaterally this long after asking: PayAI's floor, and the door's claim timers run well inside it. */
+export const WITHDRAW_DELAY_SECONDS = 3600;
+
+export interface Schemes {
+  server: x402ResourceServer;
+  batch: BatchSettlementEvmScheme;
+  facilitator: HTTPFacilitatorClient;
+}
+
+/**
+ * The two schemes the door accepts: `batch-settlement` (a channel the renter deposits into once, then
+ * signs cumulative vouchers against) and `exact` (one EIP-3009 authorization per tick). The batch
+ * scheme keeps one JSON record per channel under `cfg.channelDir`; the claim key signs claims and refunds.
+ */
+export function buildSchemes(cfg: X402Config): Schemes {
   const facilitator = new HTTPFacilitatorClient({ url: cfg.facilitatorUrl });
-  const server = new x402ResourceServer(facilitator).register(cfg.network, new ExactEvmScheme());
+  const batch = new BatchSettlementEvmScheme(cfg.payTo as `0x${string}`, {
+    storage: new FileChannelStorage({ directory: cfg.channelDir }),
+    receiverAuthorizerSigner: claimSigner(cfg.claimKey),
+    withdrawDelay: WITHDRAW_DELAY_SECONDS,
+  });
+  const server = new x402ResourceServer(facilitator).register(cfg.network, batch).register(cfg.network, new ExactEvmScheme());
+  return { server, batch, facilitator };
+}
+
+export function realGate(cfg: X402Config, priceOf: (leaseId: string) => Micro | undefined, schemes: Schemes = buildSchemes(cfg)): Gate {
+  const price = async (ctx: { path: string }) => {
+    const p = priceOf(leaseIdOfPath(ctx.path));
+    // The route guard has already resolved the lease, so this is a bug, not a user error.
+    if (p === undefined) throw new Error('no price for this lease');
+    return microToUsdc(p);
+  };
+  const option = (scheme: 'batch-settlement' | 'exact') => ({ scheme, network: cfg.network, payTo: cfg.payTo, maxTimeoutSeconds: MAX_TIMEOUT_SECONDS, price });
   const mw = paymentMiddleware(
     {
       'POST /v1/leases/:id/ticks': {
-        accepts: {
-          scheme: 'exact',
-          network: cfg.network,
-          payTo: cfg.payTo,
-          maxTimeoutSeconds: MAX_TIMEOUT_SECONDS,
-          price: async (ctx) => {
-            const price = priceOf(leaseIdOfPath(ctx.path));
-            // The route guard has already resolved the lease, so this is a bug, not a user error.
-            if (price === undefined) throw new Error('no price for this lease');
-            return microToUsdc(price);
-          },
-        },
+        // Batch first: a client that speaks both deposits once and signs ticks silently.
+        accepts: [option('batch-settlement'), option('exact')],
         description: 'One Charter interval: the door pays the host the same interval over TOON.',
         mimeType: 'application/json',
         serviceName: 'charter',
       },
     },
-    server,
+    schemes.server,
   );
   return async (req, res, next) => {
     await mw(req, res, next);
