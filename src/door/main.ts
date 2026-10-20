@@ -10,7 +10,7 @@ import { startClaims, x402Command } from './claims.js';
 import { parseClaimKey, parseDoorHosts, parseTrustProxy } from './config.js';
 import { DoorLedger, LEDGER_FILE } from './ledger.js';
 import { doorApp } from './server.js';
-import { BASE_USDC, buildSchemes, type Schemes, type X402Config } from './x402.js';
+import { BASE_USDC, buildSchemes, facilitatorOffersBatch, type Schemes, type X402Config } from './x402.js';
 import { unblockCommand } from './unblock.js';
 
 function need(env: NodeJS.ProcessEnv, name: string): string {
@@ -78,6 +78,9 @@ async function main(): Promise<void> {
   const x402 = x402Config(env);
   const schemes = buildSchemes(x402);
   const claims = claimManager(x402, schemes);
+  // Batch is offered only when the facilitator lists it: otherwise every tick, exact included, would fail.
+  const offerBatch = await facilitatorOffersBatch(x402.facilitatorUrl, x402.network);
+  if (!offerBatch) console.error(`charter-door: ${x402.facilitatorUrl} does not list batch-settlement on ${x402.network}; ticks are exact only until a restart`);
 
   const app = doorApp({
     offers: () => fetchOffers(relayUrl, Date.now()),
@@ -89,6 +92,7 @@ async function main(): Promise<void> {
     dataDir,
     x402,
     schemes,
+    offerBatch,
     ...(trustProxy === undefined ? {} : { trustProxy }),
   });
   const host = env.CHARTER_DOOR_HOST?.trim() || '127.0.0.1';

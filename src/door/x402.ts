@@ -72,6 +72,9 @@ export interface BatchPaymentId {
   from: string;
   channelId: string;
   maxClaimable: string;
+  /** A deposit's EIP-3009 window, seconds since the epoch; absent on a voucher, which has no window. */
+  validAfter?: number;
+  validBefore?: number;
 }
 export type PaymentId = ExactPaymentId | BatchPaymentId;
 
@@ -131,7 +134,17 @@ function batchIdOf(payload: Record<string, unknown>): BatchPaymentId | 'bad' {
   const { channelId, maxClaimableAmount } = v;
   if (typeof payer !== 'string' || !ADDRESS.test(payer) || typeof channelId !== 'string' || !NONCE.test(channelId)) return 'bad';
   if (typeof maxClaimableAmount !== 'string' || !DECIMAL.test(maxClaimableAmount)) return 'bad';
-  return { kind: 'batch', from: payer.toLowerCase(), channelId: channelId.toLowerCase(), maxClaimable: maxClaimableAmount };
+  const id: BatchPaymentId = { kind: 'batch', from: payer.toLowerCase(), channelId: channelId.toLowerCase(), maxClaimable: maxClaimableAmount };
+  if (payload.type === 'voucher') return id;
+  // A deposit moves the renter's USDC by an EIP-3009 authorization with a window, as an exact payment does.
+  // The door offers EIP-3009 only: a Permit2 deposit is refused, as for exact.
+  const deposit = payload.deposit as Record<string, unknown> | undefined;
+  const authorization = (deposit?.authorization ?? {}) as Record<string, unknown>;
+  const auth = authorization.erc3009Authorization as Record<string, unknown> | undefined;
+  if (typeof auth !== 'object' || auth === null || 'permit2Authorization' in authorization) return 'bad';
+  const { validAfter, validBefore } = auth;
+  if (typeof validAfter !== 'string' || !SECONDS.test(validAfter) || typeof validBefore !== 'string' || !SECONDS.test(validBefore)) return 'bad';
+  return { ...id, validAfter: Number(validAfter), validBefore: Number(validBefore) };
 }
 
 /** The facilitator's reason for a failed settlement, from the PAYMENT-RESPONSE header the failure carried. */
@@ -153,6 +166,9 @@ export function settleReasonOf(res: Response): string | undefined {
  * while the tick waited) is not, so it never blocks.
  */
 const PAYER_FAULT_REASONS: ReadonlySet<string> = new Set([
+  'invalid_batch_settlement_evm_insufficient_balance',
+  'invalid_batch_settlement_evm_receive_authorization_signature',
+  'invalid_batch_settlement_evm_voucher_signature',
   'invalid_exact_evm_insufficient_balance',
   'invalid_exact_evm_nonce_already_used',
   'invalid_exact_evm_signature',
@@ -199,7 +215,21 @@ export function buildSchemes(cfg: X402Config): Schemes {
   return { server, batch, facilitator };
 }
 
-export function realGate(cfg: X402Config, priceOf: (leaseId: string) => Micro | undefined, schemes: Schemes = buildSchemes(cfg)): Gate {
+/**
+ * Whether the facilitator lists `batch-settlement` on the network. A door that offers batch against a
+ * facilitator that does not would fail every tick, exact included (the route cannot be built), so the
+ * door asks at boot and offers batch only on a yes. Unreachable counts as no.
+ */
+export async function facilitatorOffersBatch(facilitatorUrl: string, network: string): Promise<boolean> {
+  try {
+    const kinds = (await new HTTPFacilitatorClient({ url: facilitatorUrl }).getSupported()).kinds;
+    return kinds.some((k) => k.scheme === 'batch-settlement' && k.network === network);
+  } catch {
+    return false;
+  }
+}
+
+export function realGate(cfg: X402Config, priceOf: (leaseId: string) => Micro | undefined, schemes: Schemes = buildSchemes(cfg), offerBatch = true): Gate {
   const price = async (ctx: { path: string }) => {
     const p = priceOf(leaseIdOfPath(ctx.path));
     // The route guard has already resolved the lease, so this is a bug, not a user error.
@@ -211,7 +241,7 @@ export function realGate(cfg: X402Config, priceOf: (leaseId: string) => Micro | 
     {
       'POST /v1/leases/:id/ticks': {
         // Batch first: a client that speaks both deposits once and signs ticks silently.
-        accepts: [option('batch-settlement'), option('exact')],
+        accepts: offerBatch ? [option('batch-settlement'), option('exact')] : [option('exact')],
         description: 'One Charter interval: the door pays the host the same interval over TOON.',
         mimeType: 'application/json',
         serviceName: 'charter',

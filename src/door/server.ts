@@ -36,6 +36,8 @@ export interface DoorDeps {
   x402: X402Config | 'free-for-tests';
   /** The x402 schemes built from `x402`, when the caller also runs the claim timers on them. Default: built here. */
   schemes?: Schemes;
+  /** Offer `batch-settlement` on ticks. Default true; false when the facilitator does not list it (facilitatorOffersBatch). */
+  offerBatch?: boolean;
   /** Epoch ms. */
   now?: () => number;
   /** The door's data directory: output parts are kept under `output/` here. */
@@ -132,7 +134,7 @@ export function doorApp(deps: DoorDeps): express.Express {
   const leaseOffer = (leaseId: string): Offer => offerOfSnapshot(ledger.get(leaseId)!.offer);
   const priceOf = (leaseId: string): Micro | undefined => (ledger.get(leaseId) ? leaseOffer(leaseId).tickPrice : undefined);
   const gate: Gate =
-    deps.x402 === 'free-for-tests' ? stubGate(priceOf, deps.testHooks) : realGate(deps.x402, priceOf, deps.schemes);
+    deps.x402 === 'free-for-tests' ? stubGate(priceOf, deps.testHooks) : realGate(deps.x402, priceOf, deps.schemes, deps.offerBatch ?? true);
 
   let offersCache: { at: number; p: Promise<Offer[]> } | undefined;
   const offers = (): Promise<Offer[]> => {
@@ -373,8 +375,13 @@ export function doorApp(deps: DoorDeps): express.Express {
     if (payment !== 'none') res.locals.payer = payment.from;
     if (payment !== 'none' && payment.kind === 'batch') {
       // A cumulative voucher is not a one-shot payment: the scheme's channel state accepts or refuses it,
-      // and a voucher re-sent after a refused tick is the right next voucher. Only the deadline is the door's.
-      res.locals.deadline = now() + (MAX_TIMEOUT_SECONDS - SETTLE_MARGIN_SECONDS) * 1000;
+      // and a voucher re-sent after a refused tick is the right next voucher. A deposit, though, moves
+      // USDC by an authorization with a window, which must outlast verify-to-settle as an exact one must.
+      const t = Math.floor(now() / 1000);
+      if (payment.validBefore !== undefined && ((payment.validAfter ?? 0) > t || payment.validBefore < t + MIN_WINDOW_SECONDS)) {
+        return void res.status(400).json({ error: 'authorization_window' });
+      }
+      res.locals.deadline = ((payment.validBefore ?? t + MAX_TIMEOUT_SECONDS) - SETTLE_MARGIN_SECONDS) * 1000;
     } else if (payment !== 'none') {
       const t = Math.floor(now() / 1000);
       if (payment.validAfter > t || payment.validBefore < t + MIN_WINDOW_SECONDS) {

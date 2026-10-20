@@ -12,7 +12,7 @@ import type { Lease, Micro, Offer } from '../types.js';
 import { DoorLedger, offerOfSnapshot, snapshotOffer } from './ledger.js';
 import { doorApp, type DoorDeps } from './server.js';
 import * as payerMod from '../payer.js';
-import { paymentIdOf } from './x402.js';
+import { facilitatorOffersBatch, isPayerFault, MIN_WINDOW_SECONDS, paymentIdOf } from './x402.js';
 import { privateKeyToAccount } from 'viem/accounts';
 
 
@@ -33,12 +33,12 @@ function pay(from: string, nonce: string, variant: 0 | 1 = 0, window: { validAft
 
 const CHANNEL = pad('0xc1', 64);
 /** A batch-settlement payment header: a cumulative voucher (or the deposit that opens the channel) from `payer`. */
-function voucher(payer: string, maxClaimable: string, type: 'voucher' | 'deposit' = 'voucher', extra: Record<string, unknown> = {}): string {
+function voucher(payer: string, maxClaimable: string, type: 'voucher' | 'deposit' = 'voucher', extra: Record<string, unknown> = {}, window: { validAfter?: string; validBefore?: string } = {}): string {
   const payload = {
     type,
     channelConfig: { payer: pad(payer, 40), payerAuthorizer: pad('0xee', 40), receiver: '0x' + '2'.repeat(40), receiverAuthorizer: pad('0xdd', 40), token: pad('0xcc', 40), withdrawDelay: 3600, salt: pad('0', 64) },
     voucher: { channelId: CHANNEL, maxClaimableAmount: maxClaimable, signature: '0xsig' },
-    ...(type === 'deposit' ? { deposit: { amount: '100000', authorization: { from: pad(payer, 40), nonce: pad('0x9', 64) }, signature: '0xsig' } } : {}),
+    ...(type === 'deposit' ? { deposit: { amount: '100000', authorization: { erc3009Authorization: { validAfter: window.validAfter ?? '0', validBefore: window.validBefore ?? '9999999999', salt: pad('0x9', 64), signature: '0xsig' } } } } : {}),
     ...extra,
   };
   return b64({ x402Version: 2, payload });
@@ -1671,7 +1671,10 @@ test('Task 11: with no open channel, a refused open starts reopen at most once a
 test('paymentIdOf: a batch voucher is identified by its channel payer, channel id and cumulative amount', () => {
   const req = (h: string) => ({ headers: { 'payment-signature': h } }) as unknown as Parameters<typeof paymentIdOf>[0];
   assert.deepEqual(paymentIdOf(req(voucher('0xAB', '5000'))), { kind: 'batch', from: pad('0xab', 40), channelId: CHANNEL, maxClaimable: '5000' });
-  assert.deepEqual(paymentIdOf(req(voucher('0xAB', '105000', 'deposit'))), { kind: 'batch', from: pad('0xab', 40), channelId: CHANNEL, maxClaimable: '105000' });
+  // A deposit carries an EIP-3009 authorization with a window, like an exact payment; a voucher has none.
+  assert.deepEqual(paymentIdOf(req(voucher('0xAB', '105000', 'deposit'))), { kind: 'batch', from: pad('0xab', 40), channelId: CHANNEL, maxClaimable: '105000', validAfter: 0, validBefore: 9999999999 });
+  assert.equal(paymentIdOf(req(voucher('0xab', '105000', 'deposit', { deposit: { amount: '1', authorization: { permit2Authorization: {} } } }))), 'bad', 'a permit2 deposit');
+  assert.equal(paymentIdOf(req(voucher('0xab', '105000', 'deposit', { deposit: { amount: '1', authorization: { erc3009Authorization: { validAfter: '0', validBefore: 'soon' } } } }))), 'bad', 'a non-numeric window');
   assert.equal(paymentIdOf(req(voucher('0xab', '5000', 'voucher', { authorization: { from: pad('0xab', 40) } }))), 'bad', 'a voucher beside an authorization');
   assert.equal(paymentIdOf(req(voucher('0xab', 'five'))), 'bad', 'a non-decimal amount');
   const exact = paymentIdOf(req(pay('0xa1', '0x01')));
@@ -1692,5 +1695,58 @@ test('a batch voucher re-sent for the next index is never payment_reused: the ch
     assert.deepEqual(await again.json(), { error: 'payment_reused' });
   } finally {
     d.close();
+  }
+});
+
+test('a deposit whose authorization window cannot outlast verify-to-settle is 400 authorization_window, like an exact payment', async () => {
+  const d = await start(fakeHost());
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    const t = Math.floor(d.clock.t / 1000);
+    const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': voucher('0xab', '105000', 'deposit', {}, { validBefore: String(t + MIN_WINDOW_SECONDS - 1) }) });
+    assert.equal(r.status, 400);
+    assert.deepEqual(await r.json(), { error: 'authorization_window' });
+    assert.equal(d.gate.length, 0, 'refused before the gate');
+    const ok = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': voucher('0xab', '105000', 'deposit', {}, { validBefore: String(t + MIN_WINDOW_SECONDS + 1) }) });
+    assert.equal(ok.status, 200);
+  } finally {
+    d.close();
+  }
+});
+
+test('isPayerFault: the batch codes for a payer with no balance or a bad signature count against the payer; a lapsed window does not', () => {
+  for (const fault of ['invalid_batch_settlement_evm_insufficient_balance', 'invalid_batch_settlement_evm_receive_authorization_signature', 'invalid_batch_settlement_evm_voucher_signature']) assert.equal(isPayerFault(fault), true, fault);
+  for (const transient of ['invalid_batch_settlement_evm_payload_authorization_valid_before', 'invalid_batch_settlement_evm_deposit_transaction_failed', 'invalid_batch_settlement_evm_rpc_read_failed']) assert.equal(isPayerFault(transient), false, transient);
+});
+
+test('facilitatorOffersBatch: true when /supported lists batch-settlement on the network, false when it does not or the facilitator is unreachable', async () => {
+  const fac = (kinds: object[]) => createServer((req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(req.url?.startsWith('/supported') ? { kinds, extensions: [], signers: {} } : {})); }).listen(0, '127.0.0.1');
+  const url = (s: ReturnType<typeof createServer>) => `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
+  const both = fac([{ x402Version: 2, scheme: 'exact', network: 'eip155:8453' }, { x402Version: 2, scheme: 'batch-settlement', network: 'eip155:8453' }]);
+  const exactOnly = fac([{ x402Version: 2, scheme: 'exact', network: 'eip155:8453' }, { x402Version: 2, scheme: 'batch-settlement', network: 'eip155:84532' }]);
+  await Promise.all([both, exactOnly].map((s) => new Promise((r) => s.once('listening', r))));
+  try {
+    assert.equal(await facilitatorOffersBatch(url(both), 'eip155:8453'), true);
+    assert.equal(await facilitatorOffersBatch(url(exactOnly), 'eip155:8453'), false);
+    assert.equal(await facilitatorOffersBatch('http://127.0.0.1:1', 'eip155:8453'), false);
+  } finally {
+    both.close();
+    exactOnly.close();
+  }
+});
+
+test('with batch not offered, the 402 lists exact only and the door still answers (never a 500)', async () => {
+  const fac = createServer((req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(req.url?.startsWith('/supported') ? { kinds: [{ x402Version: 2, scheme: 'exact', network: 'eip155:8453' }], extensions: [], signers: {} } : {})); }).listen(0, '127.0.0.1');
+  await new Promise((r) => fac.once('listening', r));
+  const d = await start(fakeHost(), { x402: { payTo: PAY_TO, network: 'eip155:8453', facilitatorUrl: `http://127.0.0.1:${(fac.address() as AddressInfo).port}`, claimKey: CLAIM_KEY, channelDir: mkdtempSync(join(tmpdir(), 'ch-')) }, offerBatch: false });
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 });
+    assert.equal(r.status, 402);
+    const required = JSON.parse(Buffer.from(r.headers.get('payment-required')!, 'base64').toString()) as { accepts: Array<Record<string, unknown>> };
+    assert.deepEqual(required.accepts.map((a) => a.scheme), ['exact']);
+  } finally {
+    d.close();
+    fac.close();
   }
 });
