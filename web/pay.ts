@@ -1,6 +1,6 @@
 import { PRICE_UNCONFIRMED, UNEXPECTED_PAYMENT, type PublicOffer } from './format.js';
 import type { Answer } from './ticker.js';
-import { channelStorage, sessionSigner } from './channel.js';
+import { channelStorage, forgetChannels, sessionSigner } from './channel.js';
 import { BASE_NETWORK, BASE_USDC, payFetchFor, type Eip1193 } from './wallet.js';
 
 export type { Answer } from './ticker.js';
@@ -39,8 +39,9 @@ export interface PayDeps {
 }
 
 /**
- * Batch off for the rest of this page: set when the door answered a batch payment with a 402 (the
- * facilitator would not take the deposit, or the channel is out of step). The ticker's retry then pays exact.
+ * Batch off for the rest of this page: set when the door answered a batch payment with a 402 twice in a
+ * row, once with the page's record and once rebuilt from chain (the facilitator would not take the
+ * deposit, or the channel is out of step in a way the chain does not explain). The ticker's retry then pays exact.
  */
 export const batchState = { disabled: false };
 
@@ -58,20 +59,19 @@ export function makePost(d: PayDeps): (index: number) => Promise<Answer> {
       if (!door || !offer || !d.wallet) throw new Error(PRICE_UNCONFIRMED);
       if (door.network !== BASE_NETWORK) throw new Error(UNEXPECTED_PAYMENT);
       const batch = d.store !== undefined && !batchState.disabled;
-      pay = payFetchFor(
-        d.wallet.address,
-        d.wallet.eth,
-        { network: BASE_NETWORK, asset: BASE_USDC, amount: BigInt(offer.tickPrice), payTo: door.payTo },
-        d.fetch,
-        d.store === undefined ? undefined : { session: sessionSigner(d.wallet.address, d.store), storage: channelStorage(d.wallet.address, d.store), batch },
-      );
-      const answer = await call(pay, new URL(`/v1/leases/${d.leaseId}/ticks`, d.origin).href, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ index }),
-      });
-      // A 402 after paying means the batch payment was refused: this page pays exact from here on.
-      if (batch && answer.status === 402) batchState.disabled = true;
+      const expected = { network: BASE_NETWORK, asset: BASE_USDC, amount: BigInt(offer.tickPrice), payTo: door.payTo };
+      const channel = d.store === undefined ? undefined : { session: sessionSigner(d.wallet.address, d.store), storage: channelStorage(d.wallet.address, d.store), batch };
+      const url = new URL(`/v1/leases/${d.leaseId}/ticks`, d.origin).href;
+      const init = { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ index }) };
+      let answer = await call(payFetchFor(d.wallet.address, d.wallet.eth, expected, d.fetch, channel), url, init);
+      if (batch && answer.status === 402 && d.store !== undefined) {
+        // The batch payment was refused. The page's record of the channel is the usual reason (the door
+        // refunded it after the last lease): forget it and pay once more, this time from the chain's view.
+        forgetChannels(d.wallet.address, d.store);
+        answer = await call(payFetchFor(d.wallet.address, d.wallet.eth, expected, d.fetch, channel), url, init);
+        // Refused again with the chain's own numbers: this page pays exact from here on.
+        if (answer.status === 402) batchState.disabled = true;
+      }
       return answer;
     }
     return call(pay, new URL(`/v1/leases/${d.leaseId}/ticks`, d.origin).href, {

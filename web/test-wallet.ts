@@ -5,10 +5,17 @@ import type { Eip1193 } from './wallet.js';
 export const account = privateKeyToAccount(generatePrivateKey());
 
 /** A wallet that signs EIP-712 requests with a local key, as an injected provider would. */
-export function fakeWallet(seen: string[] = []): Eip1193 {
+/** A chain where this wallet has no channel yet: `channels(id)` answers zero balance and zero claimed. */
+const freshChain = (): string => '0x' + '0'.repeat(128);
+
+export function fakeWallet(seen: string[] = [], call: (to: string, data: string) => string = freshChain): Eip1193 {
   return {
     async request({ method, params }) {
       seen.push(method);
+      if (method === 'eth_call') {
+        const [{ to, data }] = params as [{ to: string; data: string }];
+        return call(to, data);
+      }
       if (method !== 'eth_signTypedData_v4') throw new Error(`unexpected ${method}`);
       const [from, json] = params as [string, string];
       if (from.toLowerCase() !== account.address.toLowerCase()) throw new Error('wrong account');

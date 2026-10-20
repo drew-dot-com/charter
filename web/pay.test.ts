@@ -6,6 +6,7 @@ import { applyStatus, newTickState, runTick, type TickDeps, type TickState } fro
 import { batchState, makePost, type PayDeps } from './pay.js';
 import type { PublicOffer } from './format.js';
 import { account, fakeWallet } from './test-wallet.js';
+import { encodeAbiParameters } from 'viem';
 
 const PAY_TO = '0x' + '2'.repeat(40);
 const LEASE_ID = 'a'.repeat(32);
@@ -137,7 +138,7 @@ function batchRefusingDoor() {
   return { f, payloads };
 }
 
-test('a 402 to a batch payment turns batch off for this page: the retry pays exact, and nothing is lost but one prompt', async () => {
+test('a 402 to a batch payment, twice (with the stored record, then from chain), turns batch off for this page: the next try pays exact', async () => {
   batchState.disabled = false;
   const door = batchRefusingDoor();
   const signed: string[] = [];
@@ -147,12 +148,12 @@ test('a 402 to a batch payment turns batch off for this page: the retry pays exa
   });
   const first = await post(0);
   assert.equal(first.status, 402);
-  assert.equal(door.payloads[0]!.type, 'deposit', 'batch was tried first');
+  assert.deepEqual(door.payloads.map((p) => p.type), ['deposit', 'deposit'], 'batch was tried with the stored record, then rebuilt from chain');
   assert.equal(batchState.disabled, true);
   const second = await post(0);
   assert.equal(second.status, 200);
-  assert.ok('authorization' in door.payloads[1]!, 'the retry is an exact authorization');
-  assert.deepEqual(signed, ['eth_signTypedData_v4', 'eth_signTypedData_v4']);
+  assert.ok('authorization' in door.payloads[2]!, 'the next try is an exact authorization');
+  assert.deepEqual(signed.filter((m) => m !== 'eth_call'), ['eth_signTypedData_v4', 'eth_signTypedData_v4', 'eth_signTypedData_v4'], 'two deposit prompts, then the exact one');
   batchState.disabled = false;
 });
 
@@ -179,8 +180,69 @@ test('with a store, ticks go out as batch vouchers after one deposit; without on
   assert.equal((await post(0)).status, 200);
   assert.equal((await post(1)).status, 200);
   assert.deepEqual(payloads.map((p) => p.type), ['deposit', 'voucher']);
-  assert.deepEqual(signed, ['eth_signTypedData_v4'], 'one prompt for two ticks');
+  assert.deepEqual(signed.filter((m) => m !== 'eth_call'), ['eth_signTypedData_v4'], 'one prompt for two ticks');
   const noStore = makePost({ ...deps, store: undefined });
   assert.equal((await noStore(2)).status, 200);
   assert.ok('authorization' in payloads[2]!, 'no store, no channel: exact');
 });
+
+/** The x402 contract as the page reads it: `channels(id)` answers balance and totalClaimed. */
+const chainState = (balance: bigint, totalClaimed: bigint) => (to: string, _data: string) => {
+  assert.equal(to.toLowerCase(), '0x4020074e9dF2ce1deE5A9C1b5c3f541D02a10003'.toLowerCase(), 'reads the batch-settlement contract');
+  return encodeAbiParameters([{ type: 'uint128' }, { type: 'uint128' }], [balance, totalClaimed]);
+};
+
+/** A door whose channel record is gone (it refunded the channel): a voucher built on the page's old balance is refused once, then the chain is the truth. */
+function doorAfterRefund() {
+  const payloads: Array<Record<string, unknown>> = [];
+  let charged = 15000n;
+  const f = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const req = new Request(input, init);
+    const h = req.headers.get('payment-signature');
+    const challenge = (error?: string) => new Response('{}', { status: 402, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': Buffer.from(JSON.stringify({ x402Version: 2, resource: { url: req.url }, accepts: [BATCH_ACCEPT, ACCEPT], ...(error ? { error } : {}) })).toString('base64') } });
+    if (!h) return challenge();
+    const p = (JSON.parse(Buffer.from(h, 'base64').toString()) as { payload: Record<string, unknown> }).payload;
+    payloads.push(p);
+    // The page thought it had balance: a plain voucher on a refunded channel. The facilitator would say so.
+    if (p.type === 'voucher') return challenge('invalid_batch_settlement_evm_cumulative_exceeds_balance');
+    charged += 5000n;
+    const response = Buffer.from(JSON.stringify({ success: true, transaction: '0xdeposit', network: 'eip155:8453', payer: account.address, extra: { chargedAmount: '5000', channelState: { chargedCumulativeAmount: charged.toString() } } })).toString('base64');
+    return new Response(JSON.stringify({ paidIntervals: 1, paidThrough: 130_000, duplicate: false }), { status: 200, headers: { 'content-type': 'application/json', 'PAYMENT-RESPONSE': response } });
+  }) as typeof fetch;
+  return { f, payloads };
+}
+
+test('after the door refunded the channel, a stale page record is forgotten and the next tick rebuilds the channel from chain: one deposit prompt, no exact fallback', async () => {
+  batchState.disabled = false;
+  const store = memoryStore();
+  // What the page kept from the last lease: 0.10 deposited, 15000 charged. On chain, after the refund: balance 15000, claimed 15000.
+  const door = doorAfterRefund();
+  const signed: string[] = [];
+  const wallet = fakeWallet(signed, chainState(15000n, 15000n));
+  const probe = makePost({ leaseId: LEASE_ID, origin: 'http://door.test', dev: false, wallet: { address: account.address, eth: wallet }, fetch: door.f, door: async () => ({ payTo: PAY_TO, network: 'eip155:8453' }), offer: () => OFFER, store });
+  const first = await probe(0);
+  assert.equal(first.status, 200);
+  assert.deepEqual(door.payloads.map((p) => p.type), ['deposit'], 'a fresh page with nothing stored reads the chain and deposits');
+  const deposit = door.payloads[0] as { deposit: { amount: string }; voucher: { maxClaimableAmount: string } };
+  assert.equal(deposit.voucher.maxClaimableAmount, '20000', 'cumulative continues from what the chain says was claimed');
+  assert.equal(deposit.deposit.amount, '100000');
+  assert.deepEqual(signed.filter((m) => m !== 'eth_call'), ['eth_signTypedData_v4']);
+  assert.ok(signed.includes('eth_call'), 'the chain was read');
+
+  // Now the stale case: the page holds a record that says there is balance, the door has refunded. Overwrite the record the client just stored.
+  const key = Object.keys(storeKeys(store)).find((k) => k.includes('.ch.'))!;
+  store.setItem(key, JSON.stringify({ balance: '100000', chargedCumulativeAmount: '15000', totalClaimed: '0' }));
+  door.payloads.length = 0;
+  signed.length = 0;
+  const second = await probe(1);
+  assert.equal(second.status, 200);
+  assert.deepEqual(door.payloads.map((p) => p.type), ['voucher', 'deposit'], 'the stale voucher is refused once, then the chain decides');
+  assert.equal(batchState.disabled, false, 'batch stays on');
+  assert.deepEqual(signed.filter((m) => m !== 'eth_call'), ['eth_signTypedData_v4'], 'one prompt, for the new deposit');
+});
+
+function storeKeys(store: Storage): Record<string, true> {
+  const keys: Record<string, true> = {};
+  for (let i = 0; i < store.length; i++) keys[store.key(i)!] = true;
+  return keys;
+}

@@ -16,7 +16,14 @@ channel on the x402 contract (`0x4020074e9dF2ce1deE5A9C1b5c3f541D02a10003` on Ba
 that is a cumulative voucher signed by a session key the page generated: no prompt. One channel per
 wallet, kept in `localStorage`, so later leases from the same wallet deposit nothing until it runs low;
 a top-up is one more prompt. When a lease is over, the door refunds the unspent balance within
-about ten minutes, cooperatively, so the renter never waits out the withdraw delay.
+about twenty minutes (ten idle, then the next timer round), cooperatively, so the renter never waits
+out the withdraw delay. The page then reads the channel from chain and carries on from there.
+
+**After review (10-20):** the page reads the channel from chain (eth_call through the wallet) and, when
+the door refuses a batch payment, forgets its record and pays once more from the chain's view before
+falling back to exact; a deposit's EIP-3009 window is checked like an exact payment's; a channel whose
+payer asked to withdraw is refused (`channel_withdrawing`) and claimed at once; a settle follows every
+refund round; batch is offered only when the facilitator lists it.
 
 **Money.** Deposit = max(0.10 USDC (PayAI's floor), 20 x tick price, what this tick needs). The deposit
 sits in the contract; the door can claim only what vouchers cover. The door claims and settles hourly in
@@ -46,8 +53,8 @@ when the lease ends."
 
 ## Limits (documented, not solved)
 
-- One running lease per wallet at a time: two leases share one channel and a concurrent tick is refused
-  as busy, which the ticker retries.
+- One running lease per wallet at a time: two leases share one channel, a concurrent tick comes back as
+  a 402, and that page falls back to exact (one prompt per tick) for the rest of its session.
 - Losing `localStorage` loses the session key: the page opens a fresh channel (a new deposit); the old
   channel's balance comes back by the door's idle refund.
 - PayAI marks batch-settlement experimental.

@@ -183,7 +183,8 @@ test('batch: the first tick deposits the floor with one wallet prompt, bound to 
     const methods: string[] = [];
     const pay = payFetchFor(account.address, fakeWallet(methods), EXPECTED, fetch, { session, storage, batch: true });
     assert.equal((await post(pay, url)).status, 200);
-    assert.deepEqual(methods, ['eth_signTypedData_v4'], 'the deposit authorization is the one prompt');
+    const prompts = () => methods.filter((m) => m !== 'eth_call');
+    assert.deepEqual(prompts(), ['eth_signTypedData_v4'], 'the deposit authorization is the one prompt');
     const first = seen[0] as { type: string; deposit: { amount: string }; channelConfig: { payer: string; payerAuthorizer: string; receiver: string; receiverAuthorizer: string }; voucher: { maxClaimableAmount: string } };
     assert.equal(first.type, 'deposit');
     assert.equal(first.deposit.amount, '100000');
@@ -197,7 +198,7 @@ test('batch: the first tick deposits the floor with one wallet prompt, bound to 
     assert.ok(typeof id === 'object' && id.kind === 'batch' && id.from === account.address.toLowerCase());
 
     assert.equal((await post(pay, url)).status, 200);
-    assert.deepEqual(methods, ['eth_signTypedData_v4'], 'no second prompt');
+    assert.deepEqual(prompts(), ['eth_signTypedData_v4'], 'no second prompt');
     const second = seen[1] as { type: string; voucher: { maxClaimableAmount: string } };
     assert.equal(second.type, 'voucher');
     assert.equal(second.voucher.maxClaimableAmount, '10000', 'cumulative');
@@ -205,7 +206,7 @@ test('batch: the first tick deposits the floor with one wallet prompt, bound to 
     const again = payFetchFor(account.address, fakeWallet(methods), EXPECTED, fetch, { session: sessionSigner(account.address, store), storage: channelStorage(account.address, store), batch: true });
     assert.equal((await post(again, url)).status, 200);
     assert.equal((seen[2] as { type: string }).type, 'voucher');
-    assert.deepEqual(methods, ['eth_signTypedData_v4']);
+    assert.deepEqual(prompts(), ['eth_signTypedData_v4']);
   });
 });
 

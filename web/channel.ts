@@ -78,3 +78,22 @@ export function channelStorage(address: `0x${string}`, store: Storage): ClientCh
     },
   };
 }
+
+/**
+ * Drops this wallet's channel records (not its session key). After the door refused a batch payment the
+ * record is wrong, most often because the door refunded the channel: the next payment then reads the
+ * channel from chain and carries on from there.
+ */
+export function forgetChannels(address: `0x${string}`, store: Storage): void {
+  const head = `${prefix(address)}.ch.`;
+  const keys: string[] = [];
+  try {
+    for (let i = 0; i < store.length; i++) {
+      const k = store.key(i);
+      if (k && k.startsWith(head)) keys.push(k);
+    }
+  } catch {
+    return;
+  }
+  for (const k of keys) write(store, k, undefined);
+}

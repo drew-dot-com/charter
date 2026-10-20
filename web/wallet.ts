@@ -1,4 +1,4 @@
-import { createWalletClient, custom } from 'viem';
+import { createPublicClient, createWalletClient, custom } from 'viem';
 import { base } from 'viem/chains';
 import type { ClientEvmSigner } from '@x402/evm';
 import { BatchSettlementEvmScheme, type ClientChannelStorage } from '@x402/evm/batch-settlement/client';
@@ -18,13 +18,22 @@ export interface Eip1193 {
   request(args: { method: string; params?: unknown }): Promise<unknown>;
 }
 
-/** viem's wallet client over the injected provider, as the x402 EVM scheme's signer. */
-export function evmSigner(address: `0x${string}`, eth: Eip1193): ClientEvmSigner {
+/**
+ * viem's wallet client over the injected provider, as the x402 EVM scheme's signer. With `reads`, it also
+ * reads contracts through the same provider (eth_call), which the batch scheme needs to rebuild a channel
+ * from chain when the page's record is missing or stale.
+ */
+export function evmSigner(address: `0x${string}`, eth: Eip1193, reads = false): ClientEvmSigner {
   const client = createWalletClient({ account: address, chain: base, transport: custom(eth) });
-  return {
+  const signer: ClientEvmSigner = {
     address,
     signTypedData: (m) => client.signTypedData(m as unknown as Parameters<typeof client.signTypedData>[0]),
   };
+  if (reads) {
+    const reader = createPublicClient({ chain: base, transport: custom(eth) });
+    signer.readContract = (args) => reader.readContract(args as unknown as Parameters<typeof reader.readContract>[0]);
+  }
+  return signer;
 }
 
 /** The only payment the page will sign for a tick. */
@@ -64,8 +73,8 @@ function matches(r: PaymentRequirements, e: ExpectedPayment): boolean {
  * It signs only a request for exactly `expected`: any other 402 throws before the wallet is asked.
  */
 export function payFetchFor(address: `0x${string}`, eth: Eip1193, expected: ExpectedPayment, fetchImpl: typeof fetch = fetch, channel?: ChannelOptions): typeof fetch {
-  const signer = evmSigner(address, eth);
   const batch = channel?.batch === true;
+  const signer = evmSigner(address, eth, batch);
   const client = new x402Client().register(expected.network, new ExactEvmScheme(signer));
   if (batch && channel) {
     client.register(
