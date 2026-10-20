@@ -42,7 +42,7 @@ test('selectRefundable drops a channel that paid a tick within the idle window (
 });
 
 const silent: ClaimManager = {
-  claimAndSettle: async () => { throw new Error('not expected'); },
+  claim: async () => { throw new Error('not expected'); },
   refund: async () => { throw new Error('not expected'); },
   settle: async () => { throw new Error('not expected'); },
   start: () => {},
@@ -62,16 +62,25 @@ test('x402Command status with no channels says so', async () => {
   assert.deepEqual(out, ['no channels']);
 });
 
-test('x402Command claim claims every channel now and settles; the transactions are printed', async () => {
+test('x402Command claim claims every channel now, prints each claim, then settles; a settle that fails (the claim not yet mined) still leaves the claim printed and exits 1', async () => {
   const calls: unknown[] = [];
   const m: ClaimManager = {
-    claimAndSettle: async (opts) => { calls.push(opts); return { claims: [{ vouchers: 2, transaction: '0xclaim' }], settle: { transaction: '0xsettle' } }; },
-    refund: silent.refund,
+    ...silent,
+    claim: async (opts) => { calls.push(opts); return [{ vouchers: 2, transaction: '0xclaim' }]; },
+    settle: async () => ({ transaction: '0xsettle' }),
   };
   const out: string[] = [];
   assert.equal(await x402Command(['claim'], m, new InMemoryChannelStorage(), () => NOW, (msg) => out.push(msg)), 0);
   assert.deepEqual(calls, [{ idleSecs: 0 }]);
   assert.deepEqual(out, ['claimed 2 vouchers tx 0xclaim', 'settled tx 0xsettle']);
+  const late: ClaimManager = { ...m, settle: async () => { throw new Error('Settle failed: invalid_batch_settlement_evm_nothing_to_settle'); } };
+  const out2: string[] = [];
+  assert.equal(await x402Command(['claim'], late, new InMemoryChannelStorage(), () => NOW, (msg) => out2.push(msg)), 1);
+  assert.deepEqual(out2, ['claimed 2 vouchers tx 0xclaim', 'settle: Settle failed: invalid_batch_settlement_evm_nothing_to_settle (the claim may not be mined yet: run x402 settle in a minute)']);
+  const nothing: ClaimManager = { ...m, claim: async () => [] };
+  const out3: string[] = [];
+  assert.equal(await x402Command(['claim'], nothing, new InMemoryChannelStorage(), () => NOW, (msg) => out3.push(msg)), 0);
+  assert.deepEqual(out3, ['nothing to claim']);
 });
 
 test('x402Command refund refunds only the refundable channels and prints each', async () => {

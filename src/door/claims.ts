@@ -12,7 +12,7 @@ export const CLAIM_INTERVAL_SECONDS = 600;
 export const REFUND_INTERVAL_SECONDS = 600;
 
 /** The slice of BatchSettlementChannelManager the command and the timers use. */
-export type ClaimManager = Pick<BatchSettlementChannelManager, 'claimAndSettle' | 'refund' | 'settle' | 'start'>;
+export type ClaimManager = Pick<BatchSettlementChannelManager, 'claim' | 'refund' | 'settle' | 'start'>;
 
 const unspent = (c: Channel): bigint => BigInt(c.balance) - BigInt(c.chargedCumulativeAmount);
 const unclaimed = (c: Channel): bigint => BigInt(c.chargedCumulativeAmount) - BigInt(c.totalClaimed);
@@ -87,11 +87,20 @@ export async function x402Command(args: string[], m: ClaimManager, storage: Chan
     return 0;
   }
   if (cmd === 'claim') {
-    const r = await m.claimAndSettle({ idleSecs: 0 });
-    for (const c of r.claims) out(`claimed ${c.vouchers} vouchers tx ${c.transaction}`);
-    if (r.claims.length === 0) out('nothing to claim');
-    if (r.settle) out(`settled tx ${r.settle.transaction}`);
-    return 0;
+    // Claims are printed before the settle is tried: a settle that fails must not hide a claim that went out.
+    const claims = await m.claim({ idleSecs: 0 });
+    for (const c of claims) out(`claimed ${c.vouchers} vouchers tx ${c.transaction}`);
+    if (claims.length === 0) {
+      out('nothing to claim');
+      return 0;
+    }
+    try {
+      out(`settled tx ${(await m.settle()).transaction}`);
+      return 0;
+    } catch (e) {
+      out(`settle: ${String(e instanceof Error ? e.message : e).slice(0, 200)} (the claim may not be mined yet: run x402 settle in a minute)`);
+      return 1;
+    }
   }
   const targets = selectRefundable(await storage.list(), now());
   if (targets.length === 0) out('nothing to refund');
