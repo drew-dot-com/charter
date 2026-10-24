@@ -1,5 +1,5 @@
 import type { JobSpec, Lease, Micro, Offer } from '../types.js';
-import { GRACE_MS } from '../lease.js';
+import { tickLeadMs } from '../lease.js';
 import { HostError, type HostApi } from './host-api.js';
 
 export type LeaseEvent =
@@ -26,9 +26,6 @@ export interface RunLeaseResult {
   error?: string;
 }
 
-/** Ten seconds early: the host closes a lease 10 s past its paid time. */
-const EARLY_MS = GRACE_MS;
-
 /**
  * Open a lease, pay tick 0 at once (the host creates the container at open and starts it only when
  * tick 0 is paid), then keep paying one tick per interval until the job finishes, the lease closes,
@@ -40,6 +37,8 @@ export async function runLease(api: HostApi, o: Offer, job: JobSpec, opts: RunLe
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const emit = opts.onEvent ?? (() => undefined);
   const intervalMs = o.intervalSeconds * 1000;
+  /** The read and the next tick go out this long before the paid time ends (see tickLeadMs). */
+  const leadMs = tickLeadMs(o.intervalSeconds);
   const spent0 = api.spent();
   const result = (lease: Lease, extra: { output?: Buffer; error?: string } = {}): RunLeaseResult => ({
     lease,
@@ -77,7 +76,10 @@ export async function runLease(api: HostApi, o: Offer, job: JobSpec, opts: RunLe
     return { lease, finished: false };
   };
 
-  /** Local (tenant clock) estimate of when the paid time runs out. Never taken from the host. */
+  /**
+   * Local (tenant clock) estimate of when the paid time runs out. Never taken from the host, and
+   * counted from when a tick was SENT: the host's clock runs while the packet travels.
+   */
   let paidUntil: number | undefined;
   /** Ticks sent, whatever the host reports. This, not the host's count, is the spend cap. */
   let ticksSent = 0;
@@ -85,12 +87,13 @@ export async function runLease(api: HostApi, o: Offer, job: JobSpec, opts: RunLe
   /** Pay the next tick. A 409 means the lease is no longer running: read it, never retry the tick. */
   const pay = async (): Promise<{ ended: RunLeaseResult } | { hostPaidThrough: boolean }> => {
     const index = ticksSent++;
+    const sentAt = now();
     try {
       const t = await api.tick(leaseId, index);
       emit({ kind: 'ticked', index, paidIntervals: t.paidIntervals });
       // The host extends the paid time by one interval from its current end, so the local estimate
-      // does the same, starting from when the first tick went through.
-      if (!t.duplicate || paidUntil === undefined) paidUntil = (paidUntil ?? now()) + intervalMs;
+      // does the same, starting from when the first tick was sent.
+      if (!t.duplicate || paidUntil === undefined) paidUntil = (paidUntil ?? sentAt) + intervalMs;
       return { hostPaidThrough: t.paidThrough !== undefined };
     } catch (e) {
       if (e instanceof HostError && e.status === 409 && (e.error === 'lease_done' || e.error === 'not_running')) {
@@ -110,7 +113,7 @@ export async function runLease(api: HostApi, o: Offer, job: JobSpec, opts: RunLe
       if (!s.finished) emit({ kind: 'stopped', reason: 'no_paid_through' });
       return result(s.lease, s.output ? { output: s.output } : {});
     }
-    await sleep(Math.max(0, paidUntil! - EARLY_MS - now()));
+    await sleep(Math.max(0, paidUntil! - leadMs - now()));
     const s = await settle();
     if (s.finished) return result(s.lease, s.output ? { output: s.output } : {});
     if (ticksSent >= opts.maxIntervals) {

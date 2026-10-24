@@ -504,7 +504,10 @@ async function readStatus(p: LeasePage): Promise<void> {
       applyStatus(p.t, lease);
       p.notice = undefined;
       const offer = parseOffer((a.body as { offer?: unknown }).offer);
-      if (offer) p.offer = offer;
+      if (offer) {
+        p.offer = offer;
+        p.t.intervalSeconds = offer.intervalSeconds;
+      }
       if (lease.state === 'done' && p.output.state === 'idle') void loadOutput(p);
     } else if (a.status === 404) {
       p.t.halt = { message: 'The door does not know this lease.', retry: false };
@@ -619,7 +622,7 @@ function render(p: LeasePage): void {
   const now = Date.now();
   let next = '';
   if (lease && !isFinal(lease)) {
-    const due = nextTickAt(lease, now);
+    const due = nextTickAt(lease, now, p.offer?.intervalSeconds);
     if (p.t.ticking) next = 'Paying now';
     else if (p.t.halt) next = 'Payments are paused.';
     else if (!dev && !wallet) next = 'Payments are waiting for your wallet.';

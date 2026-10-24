@@ -43,9 +43,16 @@ function started(over: Partial<Lease> = {}): TickState {
   return s;
 }
 
-test('shouldTick: an awaiting lease is due at once, a running one ten seconds before the paid time runs out', () => {
+test('shouldTick: an awaiting lease is due at once, a running one halfway through its interval once the offer is known', () => {
   const s = started();
   assert.equal(shouldTick(s, 100_000), true);
+  const r = started({ state: 'running', paidIntervals: 1, paidThrough: 130_000 });
+  r.intervalSeconds = 30;
+  assert.equal(shouldTick(r, 114_999), false);
+  assert.equal(shouldTick(r, 115_000), true);
+});
+
+test('shouldTick: ten seconds before the paid time runs out while the offer is not known', () => {
   const r = started({ state: 'running', paidIntervals: 1, paidThrough: 130_000 });
   assert.equal(shouldTick(r, 119_999), false);
   assert.equal(shouldTick(r, 120_000), true);

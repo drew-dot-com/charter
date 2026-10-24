@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FIRST_TICK_GRACE_MS, GRACE_MS, LeaseError, due, newLease, onBootFailed, onBooted, onJobExit, onTick } from './lease.js';
+import { FIRST_TICK_GRACE_MS, GRACE_MS, LeaseError, due, newLease, onBootFailed, onBooted, onJobExit, onTick, tickLeadMs } from './lease.js';
 import type { Offer, JobSpec } from './types.js';
 
 const t0 = 1_000_000;
@@ -135,4 +135,11 @@ test('transitions do not mutate their input', () => {
   onBooted(before, t0 + 5000);
   onBootFailed(before);
   assert.deepEqual(before, snapshot);
+});
+
+test('tickLeadMs: half the interval, never under the 10 s grace', () => {
+  assert.equal(tickLeadMs(30), 15_000);
+  assert.equal(tickLeadMs(120), 60_000);
+  assert.equal(tickLeadMs(16), 10_000);
+  assert.equal(tickLeadMs(1), 10_000);
 });

@@ -34,9 +34,9 @@ test('happy path: the job exits after the 3rd tick, output equals the runner byt
       assert.equal(s.sealUrl, OFFER.sealUrl);
     }
     assert.deepEqual(new Set(h.seen.map((s) => s.dest)), new Set(['g.test.charter-open', 'g.test.charter-tick', 'g.test.charter-status']));
-    // It sleeps until ten seconds before the paid time runs out. Ticks paid early extend from
-    // paidThrough, so: 30 s - 10 s, then a full 30 s each time.
-    assert.deepEqual(h.sleeps, [20_000, 30_000, 30_000]);
+    // It sleeps until halfway through the paid interval (15 s before the paid time runs out on a
+    // 30 s interval). Ticks paid early extend from paidThrough, so: 30 s - 15 s, then a full 30 s each time.
+    assert.deepEqual(h.sleeps, [15_000, 30_000, 30_000]);
   } finally {
     h.close();
   }
@@ -232,8 +232,39 @@ test('a host clock far in the past: ticks are still spaced by the interval (loca
     const r = await runLease(hostApi(h.payer, OFFER), OFFER, JOB, { maxIntervals: 10, now: () => h.clock.t, sleep: h.sleep });
     assert.equal(r.lease.state, 'done');
     assert.equal(h.sent['charter-tick'], 4);
-    // Ten seconds before the paid time runs out, then a full interval each time.
-    assert.deepEqual(h.sleeps, [20_000, 30_000, 30_000, 30_000]);
+    // Halfway through the first interval (15 s before the paid time runs out), then a full interval each time.
+    assert.deepEqual(h.sleeps, [15_000, 30_000, 30_000, 30_000]);
+  } finally {
+    h.close();
+  }
+});
+
+test('a slow tick send: the paid time counts from when the tick was sent, not from when the answer came', async () => {
+  // Each tick takes 12 s to come back (a hidden host over an onion hop). The paid interval still
+  // started when the tick left, so the next read and tick go out 15 s before THAT end: 3 s after
+  // the answer, not 15 s after it.
+  const h = await testHost();
+  try {
+    const orig = h.payer.send.bind(h.payer);
+    h.payer.send = async (d, r, o) => {
+      const a = await orig(d, r, o);
+      if (d.endsWith('charter-tick')) h.clock.t += 12_000;
+      return a;
+    };
+    await runLease(hostApi(h.payer, OFFER), OFFER, JOB, { maxIntervals: 3, now: () => h.clock.t, sleep: h.sleep });
+    assert.deepEqual(h.sleeps.slice(0, 2), [3_000, 18_000]);
+  } finally {
+    h.close();
+  }
+});
+
+test('the lead before the paid time ends is half the interval, and never under the 10 s grace', async () => {
+  const h = await testHost();
+  try {
+    // A 16 s interval: half is 8 s, under the grace, so the lead is 10 s and the first sleep 6 s.
+    const short = { ...OFFER, intervalSeconds: 16 };
+    await runLease(hostApi(h.payer, short), short, JOB, { maxIntervals: 1, now: () => h.clock.t, sleep: h.sleep });
+    assert.equal(h.sleeps[0], 6_000);
   } finally {
     h.close();
   }

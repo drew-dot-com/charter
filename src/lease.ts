@@ -4,6 +4,16 @@ import type { CloseReason, JobSpec, Lease, Offer } from './types.js';
 export const GRACE_MS = 10_000;
 
 /**
+ * How long before the paid time runs out a tenant reads the lease and pays the next tick: half the
+ * interval, never under the grace. One packet to a hidden host can take 15 s, and the host gives
+ * only GRACE_MS past the paid time, so a tick started 10 s before the end arrives too late. A tick
+ * paid early extends the paid time from its current end, so being early costs nothing.
+ */
+export function tickLeadMs(intervalSeconds: number): number {
+  return Math.max(intervalSeconds * 500, GRACE_MS);
+}
+
+/**
  * How long after the container is created the first tick may take. The container only starts once
  * that tick is paid, so this wait costs the host a created container and nothing more. A browser
  * renter's first payment includes a wallet prompt, so it is far longer than GRACE_MS. Published in

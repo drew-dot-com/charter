@@ -18,6 +18,8 @@ export interface TickState {
   lease: Lease | undefined;
   /** The index of the next tick to send. */
   nextIndex: number;
+  /** The offer's interval, once the status has carried the offer; it sets how early a tick is paid. */
+  intervalSeconds: number | undefined;
   /** Out-of-sync answers in a row. */
   resyncs: number;
   /** After any refused or unsettled tick, no further tick until a fresh status has been read. */
@@ -44,7 +46,7 @@ export interface TickDeps {
   alive(): boolean;
 }
 
-export const newTickState = (): TickState => ({ lease: undefined, nextIndex: 0, resyncs: 0, holdTicks: false, halt: undefined, ticking: false });
+export const newTickState = (): TickState => ({ lease: undefined, nextIndex: 0, intervalSeconds: undefined, resyncs: 0, holdTicks: false, halt: undefined, ticking: false });
 
 const isFinal = (l: Lease | undefined): boolean => l?.state === 'done' || l?.state === 'closed';
 
@@ -71,7 +73,7 @@ export function clearHalt(s: TickState): void {
 /** The next tick is due and nothing holds it back. */
 function ready(s: TickState, now: number): boolean {
   if (!s.lease || s.halt || s.holdTicks) return false;
-  const due = nextTickAt(s.lease, now);
+  const due = nextTickAt(s.lease, now, s.intervalSeconds);
   return due !== null && now >= due;
 }
 
