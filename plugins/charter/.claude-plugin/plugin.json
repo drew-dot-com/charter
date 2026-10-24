@@ -1,0 +1,12 @@
+{
+  "name": "charter",
+  "version": "0.1.0",
+  "description": "Rent Charter compute from an agent node: read the kind 31390 offers, open a lease, pay each interval and fetch the output with toon_cli.",
+  "author": {
+    "name": "Drew Pierson",
+    "url": "https://github.com/drew-dot-com"
+  },
+  "repository": "https://github.com/drew-dot-com/charter",
+  "license": "MIT",
+  "keywords": ["toon", "charter", "compute", "lease", "ilp"]
+}

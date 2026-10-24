@@ -1,0 +1,17 @@
+{
+  "name": "charter",
+  "owner": {
+    "name": "Drew Pierson",
+    "url": "https://github.com/drew-dot-com"
+  },
+  "description": "Agent skills for Charter, the compute marketplace on TOON: find an offer, open a lease, pay it by the interval and collect the job's output with the toon CLI.",
+  "plugins": [
+    {
+      "name": "charter",
+      "source": "./plugins/charter",
+      "description": "Rent Charter compute from an agent node: read the kind 31390 offers, open a lease, pay each interval and fetch the output with toon_cli.",
+      "category": "protocol",
+      "keywords": ["toon", "charter", "compute", "lease", "ilp"]
+    }
+  ]
+}

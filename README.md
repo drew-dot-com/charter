@@ -44,6 +44,18 @@ charter rent --offer <pubkey>:<id> --urls https://example.com --max-intervals 6 
 
 `TOON_PASSPHRASE_FILE` names the file with the node wallet's passphrase.
 
+From an agent (Claude Code) with a `toon` node: the `charter` plugin in this repo is a skill that
+says what each packet holds and how `toon` 0.3 sends it, in the shape of
+[toon-protocol/toon-plugins](https://github.com/toon-protocol/toon-plugins).
+
+```sh
+/plugin marketplace add drew-dot-com/charter
+/plugin install charter@charter
+```
+
+The skill is `plugins/charter/skills/renting-charter-compute/SKILL.md`; its `references/lease-loop.sh`
+runs one whole lease as one command.
+
 ## Host
 
 Next to a running `toon` node, with Docker and Node 22 or later:
