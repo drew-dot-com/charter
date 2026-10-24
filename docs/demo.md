@@ -269,3 +269,18 @@ channels after 10 min. PayAI (`facilitator.payai.network`) submits every transac
 Ops: `docker compose -f deploy/door/docker-compose.yml run --rm charter-door node dist/door/main.js x402 status | claim | refund`
 (safe beside the running door). Channel records: `/root/charter-door/data/x402-channels/server/*.json`.
 Back out: `compose down`, restore the backup dir, `compose up -d --build`; the old door ignores the claim key env.
+
+## 10. Tick timing deploy (2026-10-24)
+
+One packet over the onion hop to `toon2` took 2 to 15 s on 2026-10-24, so a tick paid 10 s before
+the paid time ran out could land after the host's grace (lease `c04ced6f…`, `missed_tick`). Fix
+`c5e3f1c`: `tickLeadMs` = half the interval, never under 10 s, for the tenant loop and the page;
+the loop counts paid time from when the tick was sent.
+
+- [x] Door: backup `/opt/charter.bak-20261024-2118-pretick`, rsync, `compose up -d --build`;
+  `channel ready, headroom 1964000`, healthy, `/v1/door` 200, served `app.js` equals the local build.
+- [x] `toon` VM (Edison's `charter` CLI): source backup `~/src/charter.bak-20261024-2119-pretick`,
+  fresh source from `git archive c5e3f1c`, `npm ci && npm run build`; `dist/cli.js` needs `chmod +x`
+  after an archive extract. `charter offers` lists the live offer.
+- Back out: restore either backup directory and rebuild as in section 5.
+- The Claude Code plugin's `references/lease-loop.sh` (section-less; `plugins/charter`) already used this timing.
