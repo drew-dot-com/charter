@@ -83,7 +83,7 @@ footer p{margin:0 0 6px}
   <li>Every 30 seconds the page signs a cumulative voucher. The storefront checks it and pays the host the same interval over TOON, from its own channel. It never holds more than one interval of your money.</li>
   <li>The job finishes or you stop. The host's vouchers land on chain in a batch. The storefront claims yours, settles to the operator, and refunds the rest of your deposit.</li>
 </ol>
-<p>Underneath: ILP routes every packet between the storefront and the host, and x402 channels settle them. Charter reuses that network rather than running its own payments. A renter who already runs a TOON node can skip the storefront and pay the host directly from the command line.</p>
+<p>Underneath: ILP routes every packet between the storefront and the host, and x402 channels settle them. Charter reuses that network rather than running its own payments. A renter who already runs a TOON node can skip the storefront and pay the host directly from the command line. An agent can do the same: the <a href="https://github.com/drew-dot-com/charter">Charter repository</a> ships a Claude Code skill that reads the offers, opens a lease and pays it by the interval with the <code>toon</code> CLI.</p>
 
 <h2 id="proof">Proof</h2>
 <p>Every lease below ran on mainnet with real USDC. Nothing here is a testnet or a simulation.</p>
@@ -106,7 +106,7 @@ footer p{margin:0 0 6px}
 <p>Built and run by <a href="https://www.linkedin.com/in/drewpierson/">Drew Pierson</a>, cofounder and COO of TOON Protocol and the operator of the mainnet node behind <a href="https://toon.ar.io/">toon.ar.io</a>. Charter is its own repository under its own license, running on TOON the way any third-party app does.</p>
 
 <footer>
-  <p>This page is a single file on Arweave, written through the same node that runs the storefront, and served under the ArNS name <code>charter.ar.io</code>. Built 2026-10-20. No scripts, no tracking.</p>
+  <p>This page is a single file on Arweave, written through the same node that runs the storefront, and served under the ArNS name <code>charter.ar.io</code>. Built 2026-10-20, updated 2026-10-25. No scripts, no tracking.</p>
   <p><a href="https://charter.167-233-221-236.sslip.io/">Storefront</a> · <a href="https://toon.ar.io/">TOON</a></p>
 </footer>
 </div>
