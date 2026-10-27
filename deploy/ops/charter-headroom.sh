@@ -18,7 +18,15 @@
 set -uo pipefail
 export PATH="/usr/local/bin:/usr/bin:/bin"
 ENV_FILE="${CHARTER_OPS_ENV:-/etc/charter-ops/env}"
-[ -r "$ENV_FILE" ] && set -a && . "$ENV_FILE" && set +a
+# The env file fills in what the environment did not set, so a variable given on the
+# command line (CHARTER_DOOR_URL=... for a test) wins over the file.
+if [ -r "$ENV_FILE" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    k="${line%%=*}"; v="${line#*=}"
+    [ -z "${!k+x}" ] && export "$k=$v"
+  done < "$ENV_FILE"
+fi
 DATA="${CHARTER_DOOR_DATA:-/root/charter-door/data}"
 HEADROOM_MIN="${HEADROOM_MIN:-300000}"
 UNPAID_MAX="${UNPAID_MAX:-400000}"
