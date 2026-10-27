@@ -4,7 +4,7 @@ Status: first-party. Drew is on both sides of every lease below: he runs the hos
 door, the edge, and both renters (Edison and his own browser wallet). Charter has no outside users.
 
 ```
-browser wallet --x402 (Base USDC)--> door (Hetzner, charter.167-233-221-236.sslip.io)
+browser wallet --x402 (Base USDC)--> door (Hetzner, charter.mainnet.toonprotocol.dev)
                                        --TOON, door's Solana channel--> edge (connector.mainnet.toonprotocol.dev)
 Edison's node (toon VM) --TOON--------->   --over Anyone--> toon2 (hidden host) --> charter-open / -tick / -status
 ```
@@ -106,7 +106,7 @@ On the Hetzner box (`ssh -i ~/.ssh/toon_node root@167.233.221.236`):
 - [x] Caddy: back up `/opt/toon-relay/deploy/Caddyfile`, append `deploy/door/Caddy.snippet` by writing
   the file in place (never `sed -i`), `docker cp` it to `deploy-caddy-1:/tmp/Caddyfile`, then
   `docker exec deploy-caddy-1 caddy reload --config /tmp/Caddyfile`.
-- [x] Check: `curl https://charter.167-233-221-236.sslip.io/v1/offers` lists the offer, and `/v1/door`
+- [x] Check: `curl https://charter.mainnet.toonprotocol.dev/v1/offers` lists the offer, and `/v1/door`
   shows Drew's `payTo` on `eip155:8453`.
 
 Done 2026-10-17: payer `DRSB3XhJxzDmtcVmPNZv9J1KnkgRXXM2aeaFPE7QEHUn` funded 2.11 USDC + 0.01 SOL
@@ -119,7 +119,7 @@ user, so make the dirs with `install -d -m 700` then `chown -R 1000:1000`.
 
 ## 5. Browser lease (Drew clicks Rent)
 
-- [x] Drew opens `https://charter.167-233-221-236.sslip.io` with his own browser wallet (USDC on Base),
+- [x] Drew opens `https://charter.mainnet.toonprotocol.dev` with his own browser wallet (USDC on Base),
   picks the machine, enters URLs, clicks Rent and signs each interval (one prompt per interval; section 8
   replaces this with one deposit prompt).
 - [x] Check: the lease page reaches `done`; the x402 payments show on Basescan to `CHARTER_PAY_TO`;
@@ -284,3 +284,22 @@ the loop counts paid time from when the tick was sent.
   after an archive extract. `charter offers` lists the live offer.
 - Back out: restore either backup directory and rebuild as in section 5.
 - The Claude Code plugin's `references/lease-loop.sh` (section-less; `plugins/charter`) already used this timing.
+
+## 11. A name and security headers (2026-10-27)
+
+The door answers at `charter.mainnet.toonprotocol.dev` once Jonathan adds the A record (the zone
+has a wildcard to Porkbun parking, so the name resolves elsewhere until then). The sslip name keeps
+working through the cut-over; both are in `deploy/door/Caddy.snippet`, which also sets HSTS,
+`X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy` and a CSP (`default-src 'self'`,
+`img-src 'self' data:` for job screenshots, `connect-src 'self'`, `frame-ancestors 'none'`). The
+page calls only its own origin: wallet RPC and signing go through the injected wallet.
+
+- [x] Caddy: backup `Caddyfile.bak-20261027-preheaders`, the block replaced in place, `docker cp`,
+  `caddy reload`; `curl -sI` shows the headers, `/v1/offers` lists the offer, relay, connector,
+  l402, lading and ipfs answer as before. A local dev lease (fetch job, screenshot, output) under the
+  same headers and a live page load plus the rent form show no CSP violation in the console.
+- [ ] **Jonathan:** A record `charter.mainnet.toonprotocol.dev` to `167.233.221.236`, TTL 600.
+  Caddy retries the certificate in the background and gets it once the name resolves here.
+- [ ] After the record resolves: republish `site/index.html` to Arweave (it links the new name),
+  then drop the sslip name from the Caddy block if nothing still links it.
+- Back out: `cat Caddyfile.bak-20261027-preheaders > Caddyfile`, `docker cp`, `caddy reload`.

@@ -1,5 +1,7 @@
 # charter-door on Drew's node (Hetzner). Nothing is host-published: the door
 # joins the node's network so Caddy reaches it as http://charter-door:3701.
+# Public names and security headers are in Caddy.snippet: charter.mainnet.toonprotocol.dev
+# (once its A record exists) and charter.167-233-221-236.sslip.io until the cut-over.
 #
 # CHARTER_DOOR_HOME (default /root/charter-door), owned by uid 1000 (the image's
 # `node` user), mode 700:

@@ -2,10 +2,30 @@
 # bind mount: back it up, write in place (cat new > Caddyfile, never sed -i),
 # then docker cp it to deploy-caddy-1:/tmp/Caddyfile and
 # caddy reload --config /tmp/Caddyfile. The door is on relay_deploy_net.
-charter.167-233-221-236.sslip.io {
+#
+# Two names, one site. charter.mainnet.toonprotocol.dev needs an A record to
+# 167.233.221.236 in Jonathan's zone (the zone has a wildcard to Porkbun
+# parking, so until then the name resolves elsewhere and Caddy's certificate
+# attempts for it fail and retry in the background; the sslip name is not
+# affected). Once the record resolves, the next attempt gets the certificate.
+#
+# The page is one module script, one stylesheet and self-hosted fonts, all
+# from this origin; job screenshots arrive as data: images; every fetch is to
+# this origin (wallet RPC and signing go through the injected wallet, not the
+# page). Links to Basescan and Solscan are navigations, which CSP does not
+# govern. Anything else is a bug and shows up as a CSP violation in the console.
+charter.167-233-221-236.sslip.io, charter.mainnet.toonprotocol.dev {
 	encode zstd gzip
 	request_body {
 		max_size 64KB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+		-Server
 	}
 	reverse_proxy charter-door:3701
 }
