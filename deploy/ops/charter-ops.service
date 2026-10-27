@@ -1,0 +1,7 @@
+[Unit]
+Description=Charter door canary, headroom and daily-spend checks (alerts via charter-alert.sh)
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/charter-ops-check.sh

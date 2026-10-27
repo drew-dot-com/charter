@@ -21,7 +21,7 @@ Secrets never go in these variables: a variable names the file that holds one.
 | `CHARTER_PROXY` | no | none | SOCKS proxy for job egress (for example `socks5://172.17.0.1:9150`). Set means the offer says `hiddenEgress`. A loopback host is rewritten to `host.docker.internal` for the container. |
 | `CHARTER_RUNTIME` | no | docker's own | OCI runtime for every job container. `runsc` runs jobs under gVisor: recommended on any host that runs `charter-job-python` for anyone but its owner, since that job runs the renter's own code. |
 | `CHARTER_HIDDEN_HOST` | no | false | `1`, `true` or `yes`: the offer carries the hidden-host badge. |
-| `CHARTER_MAX_LEASES` | no | `1` | Live leases at once (booting, awaiting the first tick, running). An open past it answers `closed`, `busy`, before any container is made. |
+| `CHARTER_MAX_LEASES` | no | `1` | Live leases at once (booting, awaiting the first tick, running). An open past it answers `closed`, `busy`, before any container is made. Size it to the VM: each live lease is one job container of 1 CPU and 1 GiB beside the toon node and the host (toon2, 4 CPUs and 3 GiB, runs 2). Changing it needs a restart of `charter-host`, which closes every live lease as `host_restart`: restart only when none is live (docs/ops.md). |
 | `CHARTER_INTERVAL_SECONDS` | no | `30` | Length of one paid interval. |
 | `CHARTER_TICK_PRICE` | no | `5000` | Price of one interval (the `charter-tick` app's price). |
 | `CHARTER_OPEN_PRICE` | no | `1000` | Price of an open (the `charter-open` app's price). |

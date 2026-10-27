@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.drew.charter-backup</string>
+<key>ProgramArguments</key><array><string>/bin/bash</string><string>/Users/drewpierson/bin/charter-backup-pull.sh</string></array>
+<key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>40</integer></dict>
+<key>StandardOutPath</key><string>/Users/drewpierson/charter-backups/launchd.log</string>
+<key>StandardErrorPath</key><string>/Users/drewpierson/charter-backups/launchd.log</string>
+</dict></plist>
