@@ -4,17 +4,27 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Charter: rent a machine from someone's home, paid per 30 seconds in USDC on Base, from a browser wallet. Runs on TOON.">
   <title>Charter</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header class="top">
+  <header class="top wrap">
     <a class="brand" href="#/">Charter</a>
+    <span class="chip live" id="net">Base mainnet</span>
+    <nav>
+      <a href="https://charter.ar.io/">About</a>
+      <a href="https://github.com/drew-dot-com/charter">Code</a>
+    </nav>
   </header>
-  <main id="app" aria-live="polite">
-    <p class="muted">Loading</p>
+  <main id="app" class="wrap" aria-live="polite">
+    <span class="skeleton w1"></span>
+    <span class="skeleton w2"></span>
   </main>
-  <noscript><p class="gutter">Charter needs JavaScript to rent a machine.</p></noscript>
+  <footer>
+    <p>Charter runs on <a href="https://toon.ar.io/">TOON</a>: ILP routes each packet, x402 settles it. The code is MIT; the receipts are on <a href="https://charter.ar.io/#proof">charter.ar.io</a>.</p>
+  </footer>
+  <noscript><p class="wrap">Charter needs JavaScript to rent a machine.</p></noscript>
   <script type="module" src="app.js"></script>
 </body>
 </html>

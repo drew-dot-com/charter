@@ -414,7 +414,7 @@ test('GET /v1/offers is free, CORS-open, trimmed to what a renter needs, and cac
     assert.equal(body.length, 1, 'an offer without the fetch image is not listed');
     assert.deepEqual(body[0], {
       offerId: OFFER_ID, cpu: 1, memoryMiB: 1024, intervalSeconds: 30, tickPrice: '5000', images: ['charter-job-fetch'],
-      hiddenHost: true, hiddenEgress: false, expiresAt: OFFER.expiresAt,
+      hiddenHost: true, hiddenEgress: false, expiresAt: OFFER.expiresAt, leases: 0,
     });
     assert.ok(!JSON.stringify(body).includes('sealKey') && !JSON.stringify(body).includes('ilpBase'));
   } finally {
@@ -1761,6 +1761,36 @@ test('a voucher on a channel whose payer asked to withdraw is 409 channel_withdr
     assert.equal(d.gate.length, 0);
     // An exact payment from the same payer is unaffected.
     assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': pay('0xab', '0x01') })).status, 200);
+  } finally {
+    d.close();
+  }
+});
+
+test('GET /v1/offers carries the leases served per host, and GET /v1/recent lists paid leases newest first with a short id', async () => {
+  const host = fakeHost();
+  const d = await start(host);
+  try {
+    const before = (await (await d.get('/v1/offers')).json()) as Array<{ leases: number; lastLeaseAt?: number }>;
+    assert.equal(before[0]!.leases, 0);
+    assert.equal(before[0]!.lastLeaseAt, undefined);
+    assert.deepEqual(await (await d.get('/v1/recent')).json(), []);
+
+    // An open alone is not a lease served.
+    assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS })).status, 200);
+    assert.equal(((await (await d.get('/v1/offers')).json()) as Array<{ leases: number }>)[0]!.leases, 0);
+    assert.deepEqual(await (await d.get('/v1/recent')).json(), []);
+
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'x-test-payer': '0xAbC' })).status, 200);
+    const after = (await (await d.get('/v1/offers')).json()) as Array<{ leases: number; lastLeaseAt?: number }>;
+    assert.equal(after[0]!.leases, 1);
+    assert.equal(after[0]!.lastLeaseAt, 1_000_000);
+
+    const recent = (await (await d.get('/v1/recent')).json()) as Array<Record<string, unknown>>;
+    assert.equal(recent.length, 1);
+    assert.deepEqual(recent[0], { id: LEASE.slice(0, 8), createdAt: 1_000_000, ticks: 1, payer: '0xabc', state: 'running' });
+    assert.ok(!JSON.stringify(recent).includes(LEASE), 'the full lease id is a capability and never listed');
+    const cors = await fetch(`${d.base}/v1/recent`, { headers: { origin: 'https://elsewhere.example' } });
+    assert.equal(cors.headers.get('access-control-allow-origin'), '*');
   } finally {
     d.close();
   }

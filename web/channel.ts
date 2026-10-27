@@ -97,3 +97,52 @@ export function forgetChannels(address: `0x${string}`, store: Storage): void {
   }
   for (const k of keys) write(store, k, undefined);
 }
+
+/** This wallet's stored channel records (unreadable ones skipped). */
+export function readChannels(address: `0x${string}`, store: Storage): BatchSettlementClientContext[] {
+  const head = `${prefix(address)}.ch.`;
+  const out: BatchSettlementClientContext[] = [];
+  try {
+    for (let i = 0; i < store.length; i++) {
+      const k = store.key(i);
+      if (!k || !k.startsWith(head)) continue;
+      const raw = read(store, k);
+      if (!raw) continue;
+      try {
+        const c = JSON.parse(raw) as BatchSettlementClientContext;
+        if (c && typeof c === 'object') out.push(c);
+      } catch {
+        // Not a record.
+      }
+    }
+  } catch {
+    return out;
+  }
+  return out;
+}
+
+/** The renter's channels folded into three numbers, micro-USDC, as this page last saw them. */
+export interface ChannelSummary {
+  channels: number;
+  /** On chain, in the channels. */
+  balance: bigint;
+  /** Vouchered to the door and not yet claimed on chain. */
+  owed: bigint;
+  /** What is left once the door claims what it is owed: refunded when the channel goes idle. */
+  back: bigint;
+}
+
+const micro = (s: string | undefined): bigint => (s !== undefined && /^\d+$/.test(s) ? BigInt(s) : 0n);
+
+export function channelSummary(channels: BatchSettlementClientContext[]): ChannelSummary | undefined {
+  if (channels.length === 0) return undefined;
+  let balance = 0n;
+  let owed = 0n;
+  for (const c of channels) {
+    balance += micro(c.balance);
+    const unclaimed = micro(c.chargedCumulativeAmount) - micro(c.totalClaimed);
+    if (unclaimed > 0n) owed += unclaimed;
+  }
+  const back = balance > owed ? balance - owed : 0n;
+  return { channels: channels.length, balance, owed, back };
+}

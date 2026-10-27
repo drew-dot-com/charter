@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decodeOutput, formatUsdc, landingLink, pricePerHour, sizeLabel, tickOutcome } from './format.js';
+import { ago, clock, decodeOutput, duration, formatUsdc, landingLink, offerFreshness, parseOffer, pricePerHour, shortHex, sizeLabel, tickOutcome } from './format.js';
 
 const b64 = (s: string | Uint8Array) => Buffer.from(s).toString('base64');
 
@@ -121,4 +121,49 @@ test('final review: the authorization_window message no longer says ten seconds,
   assert.ok(c.kind === 'halt' && c.retry && /limit/i.test(c.message), JSON.stringify(c));
   const d = tickOutcome(409, { error: 'duplicate' });
   assert.ok(d.kind === 'halt' && !d.retry && d.final && /not charged/i.test(d.message), JSON.stringify(d));
+});
+
+test('shortHex keeps the head and the tail', () => {
+  assert.equal(shortHex('0xdfbd5e0ad9596c9f34c9f11813acfdc5b1b348af'), '0xdfbd5e…48af');
+  assert.equal(shortHex('3929eec2b6f9cdbe95838b3edc185430', 8, 0), '3929eec2…');
+  assert.equal(shortHex('abc'), 'abc');
+});
+
+test('ago reads in seconds, minutes, hours and days', () => {
+  const now = 1_000_000_000;
+  assert.equal(ago(now - 3_000, now), 'just now');
+  assert.equal(ago(now - 45_000, now), '45 s ago');
+  assert.equal(ago(now - 4 * 60_000, now), '4 min ago');
+  assert.equal(ago(now - 3 * 3_600_000, now), '3 h ago');
+  assert.equal(ago(now - 6 * 86_400_000, now), '6 days ago');
+  assert.equal(ago(now - 86_400_000, now), '1 day ago');
+});
+
+test('duration reads in seconds, minutes and hours', () => {
+  assert.equal(duration(30), '30 s');
+  assert.equal(duration(60), '1 min');
+  assert.equal(duration(150), '2 min 30 s');
+  assert.equal(duration(7_380), '2 h 3 min');
+  assert.equal(duration(3 * 86_400), '3 days');
+});
+
+test('offerFreshness: published is the expiry less the offer lifetime', () => {
+  const now = 1_000_000_000;
+  assert.deepEqual(offerFreshness(now + 20 * 60_000, now), { publishedMs: 10 * 60_000, expiresInMs: 20 * 60_000 });
+  assert.deepEqual(offerFreshness(now - 1, now), { publishedMs: 30 * 60_000 + 1, expiresInMs: 0 });
+});
+
+test('clock formats a local time of day with seconds', () => {
+  assert.match(clock(1_000_000_000), /^\d\d:\d\d:\d\d$/);
+});
+
+test('parseOffer keeps the door-side stats and the egress flag when they are there', () => {
+  const o = parseOffer({ offerId: 'a:b', cpu: 1, memoryMiB: 1024, intervalSeconds: 30, tickPrice: '5000', hiddenHost: true, hiddenEgress: true, images: [], expiresAt: 5, leases: 7, lastLeaseAt: 4 });
+  assert.equal(o?.hiddenEgress, true);
+  assert.equal(o?.expiresAt, 5);
+  assert.equal(o?.leases, 7);
+  assert.equal(o?.lastLeaseAt, 4);
+  const bare = parseOffer({ offerId: 'a:b', cpu: 1, memoryMiB: 1024, intervalSeconds: 30, tickPrice: '5000', hiddenHost: false, leases: 'x' });
+  assert.equal(bare?.hiddenEgress, false);
+  assert.equal(bare?.leases, undefined);
 });

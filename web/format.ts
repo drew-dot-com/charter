@@ -192,8 +192,15 @@ export interface PublicOffer {
   /** USDC micro-units as a decimal string. */
   tickPrice: string;
   hiddenHost: boolean;
+  hiddenEgress: boolean;
   /** The job images it runs. Empty when the door did not say. */
   images: string[];
+  /** Epoch ms the offer lapses, when the door said. */
+  expiresAt?: number;
+  /** Leases this host has served through the door, with at least one paid interval, when the door said. */
+  leases?: number;
+  /** Epoch ms the newest of those opened. */
+  lastLeaseAt?: number;
 }
 
 export function parseOffer(o: unknown): PublicOffer | undefined {
@@ -211,7 +218,16 @@ export function parseOffer(o: unknown): PublicOffer | undefined {
   ) {
     const { offerId, cpu, memoryMiB, intervalSeconds, tickPrice, hiddenHost } = x;
     const images = Array.isArray(x.images) ? x.images.filter((i): i is string => typeof i === 'string') : [];
-    return { offerId, cpu, memoryMiB, intervalSeconds, tickPrice, hiddenHost, images };
+    const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+    const expiresAt = num(x.expiresAt);
+    const leases = num(x.leases);
+    const lastLeaseAt = num(x.lastLeaseAt);
+    return {
+      offerId, cpu, memoryMiB, intervalSeconds, tickPrice, hiddenHost, hiddenEgress: x.hiddenEgress === true, images,
+      ...(expiresAt !== undefined ? { expiresAt } : {}),
+      ...(leases !== undefined ? { leases } : {}),
+      ...(lastLeaseAt !== undefined ? { lastLeaseAt } : {}),
+    };
   }
   return undefined;
 }
@@ -221,4 +237,49 @@ export const PRICE_UNCONFIRMED = 'Could not confirm the price';
 
 export function isPriceUnconfirmed(e: unknown): boolean {
   return (e instanceof Error ? e.message : String(e)).includes(PRICE_UNCONFIRMED);
+}
+
+/** A hex id with its head and tail kept: `0xdfbd5e…48af`. */
+export function shortHex(s: string, head = 8, tail = 4): string {
+  if (s.length <= head + tail + 1) return s;
+  return `${s.slice(0, head)}…${tail > 0 ? s.slice(-tail) : ''}`;
+}
+
+/** "45 s ago", "4 min ago", "3 h ago", "6 days ago". */
+export function ago(at: number, now: number): string {
+  const s = Math.max(0, Math.round((now - at) / 1000));
+  if (s < 10) return 'just now';
+  if (s < 60) return `${s} s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} h ago`;
+  const d = Math.round(h / 24);
+  return d === 1 ? '1 day ago' : `${d} days ago`;
+}
+
+/** "30 s", "2 min 30 s", "2 h 3 min". */
+export function duration(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return s % 60 === 0 ? `${m} min` : `${m} min ${s % 60} s`;
+  const h = Math.floor(m / 60);
+  if (h >= 48) return `${Math.round(h / 24)} days`;
+  return m % 60 === 0 ? `${h} h` : `${h} h ${m % 60} min`;
+}
+
+/** Local time of day, hh:mm:ss. */
+export function clock(at: number): string {
+  const d = new Date(at);
+  const two = (n: number) => String(n).padStart(2, '0');
+  return `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
+}
+
+/** A host's offer lives this long after it is published (src/host/loop.ts OFFER_LIFETIME_MS). */
+export const OFFER_LIFETIME_MS = 30 * 60_000;
+
+/** How long ago the offer was published, and how long until it lapses, from its expiry. */
+export function offerFreshness(expiresAt: number, now: number): { publishedMs: number; expiresInMs: number } {
+  return { publishedMs: Math.max(0, now - (expiresAt - OFFER_LIFETIME_MS)), expiresInMs: Math.max(0, expiresAt - now) };
 }

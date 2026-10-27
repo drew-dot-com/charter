@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { channelStorage, depositFor, MIN_DEPOSIT, sessionSigner } from './channel.js';
+import { channelStorage, channelSummary, depositFor, MIN_DEPOSIT, readChannels, sessionSigner } from './channel.js';
 
 /** The part of localStorage the page uses. */
 function memoryStore(): Storage {
@@ -52,4 +52,18 @@ test('channelStorage: get, set and delete round-trip per wallet, and two wallets
   assert.deepEqual(await channelStorage(A, store).get(id), { balance: '100000', chargedCumulativeAmount: '5000' }, 'another instance over the same store sees it');
   await a.delete(id);
   assert.equal(await a.get(id), undefined);
+});
+
+test('readChannels and channelSummary: deposited, owed (charged minus claimed) and what comes back, per wallet', async () => {
+  const store = memoryStore();
+  const a = channelStorage(A, store);
+  await a.set('0x' + 'c1'.repeat(32), { balance: '100000', chargedCumulativeAmount: '15000', totalClaimed: '5000' });
+  await a.set('0x' + 'c2'.repeat(32), { balance: '200000', chargedCumulativeAmount: '20000' });
+  await channelStorage(B, store).set('0x' + 'c3'.repeat(32), { balance: '999' });
+  store.setItem(`charter.x402.${A}.ch.0x${'c4'.repeat(32)}`, '{not json');
+  assert.equal(readChannels(A, store).length, 2);
+  assert.deepEqual(channelSummary(readChannels(A, store)), { channels: 2, balance: 300000n, owed: 30000n, back: 270000n });
+  assert.equal(channelSummary(readChannels(B, store))?.balance, 999n);
+  assert.equal(channelSummary([]), undefined);
+  assert.deepEqual(channelSummary([{ chargedCumulativeAmount: '50', balance: '10' }]), { channels: 1, balance: 10n, owed: 50n, back: 0n }, 'never negative');
 });

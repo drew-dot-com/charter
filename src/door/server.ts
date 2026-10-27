@@ -66,6 +66,8 @@ const GETS_PER_MINUTE = 120;
 const TICKS_PER_MINUTE = 30;
 const MINUTE_MS = 60_000;
 const OPENS_PER_HOUR = 10;
+/** Leases `GET /v1/recent` lists. */
+const RECENT_LEASES = 12;
 const HOUR_MS = 3_600_000;
 /** Opens across every IP in an hour. */
 export const DOOR_OPENS_PER_HOUR = 30;
@@ -304,6 +306,18 @@ export function doorApp(deps: DoorDeps): express.Express {
     app.get('/v1/door', (_req, res) => void res.json({ payTo, network }));
   }
 
+  /** What the door's ledger says about a host: leases with a renter-paid interval, and the newest one. */
+  const hostStats = (hostPubkey: string): { leases: number; lastLeaseAt?: number } => {
+    let leases = 0;
+    let lastLeaseAt: number | undefined;
+    for (const l of ledger.all()) {
+      if (l.ticksPaidByRenter === 0 || !l.offerId.startsWith(`${hostPubkey}:`)) continue;
+      leases++;
+      if (lastLeaseAt === undefined || l.createdAt > lastLeaseAt) lastLeaseAt = l.createdAt;
+    }
+    return { leases, ...(lastLeaseAt === undefined ? {} : { lastLeaseAt }) };
+  };
+
   app.get('/v1/offers', async (_req, res) => {
     let list: Offer[];
     try {
@@ -314,8 +328,30 @@ export function doorApp(deps: DoorDeps): express.Express {
     res.json(
       list
         .filter((o) => trusted(o) && o.images.some((i) => JOB_IMAGES.includes(i)) && o.expiresAt > now())
-        .map(publicOffer),
+        .map((o) => ({ ...publicOffer(o), ...hostStats(o.hostPubkey) })),
     );
+  });
+
+  // The newest leases a renter paid for, from the ledger: a short id (a full id reads the lease), the
+  // payer, and the state and landing the door last saw, never a paid host read.
+  app.get('/v1/recent', (_req, res) => {
+    const rows = ledger
+      .all()
+      .filter((l) => l.ticksPaidByRenter > 0)
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, RECENT_LEASES)
+      .map((l) => {
+        const seen = statuses.get(l.leaseId)?.lease;
+        return {
+          id: l.leaseId.slice(0, 8),
+          createdAt: l.createdAt,
+          ticks: l.ticksPaidByRenter,
+          ...(l.payer ? { payer: l.payer } : {}),
+          ...(seen ? { state: seen.state } : {}),
+          ...(seen?.landing ? { landing: seen.landing } : {}),
+        };
+      });
+    res.json(rows);
   });
 
   app.post('/v1/leases', async (req, res) => {

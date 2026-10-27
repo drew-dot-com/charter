@@ -6,6 +6,13 @@
       "runtimeExecutable": "python3",
       "runtimeArgs": ["-m", "http.server", "8791", "--bind", "127.0.0.1", "--directory", "site"],
       "port": 8791
+    },
+    {
+      "name": "charter-dev-door",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["tsx", "scripts/dev-door.ts"],
+      "port": 8790,
+      "env": { "DEV_INTERVAL_SECONDS": "12", "DEV_DOOR_PORT": "8790" }
     }
   ]
 }
