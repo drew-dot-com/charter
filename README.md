@@ -1,5 +1,7 @@
 # Charter
 
+[![CI](https://github.com/drew-dot-com/charter/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/drew-dot-com/charter/actions/workflows/ci.yml)
+
 Compute leases on the TOON payment network. A host posts an offer for a machine, a renter pays per
 interval, and a container runs the renter's job for as long as the payments keep arriving. There is
 no account on either side, and the host can be a home machine with no domain and no open port (a
