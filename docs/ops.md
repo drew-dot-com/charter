@@ -29,6 +29,12 @@ every 10 minutes with a 30 minute lifetime, so under 5 minutes left means it sto
 hand anywhere: `deploy/ops/charter-canary.sh` prints one line and exits 0 or 1. To see the failure path point
 it at a wrong path: `CHARTER_DOOR_URL=https://charter.167-233-221-236.sslip.io/nope deploy/ops/charter-canary.sh`.
 
+Proven 2026-10-27 20:50Z with the installed copy: `CHARTER_DOOR_URL=…/nope charter-canary.sh --alert` on the box
+sent "🔴 Charter door down / GET /v1/door answered 404 (…/nope)" to Drew's Telegram at 20:50:21Z, a second
+run stayed silent, and the timer's own command sent "🟢 recovered: Charter door down / door ok: 1 offer(s),
+newest expires in 26 min / was down 0 min" at 20:50:47Z. A variable set on the command line wins over
+`/etc/charter-ops/env`, which is what makes that test possible.
+
 Alerting is `charter-alert.sh`: one message when a condition goes from ok to fail, one when it comes back, a
 reminder once a day while it stays down (`REALERT_MINUTES`), nothing else. Each condition has its own key
 (`door`, `headroom`, `unpaid`) so the three never mask each other. Channels come from `/etc/charter-ops/env`:
@@ -107,10 +113,11 @@ Rule for the next change: a restart of `charter-host` closes every live lease as
 host first: `limactl shell toon2 -- bash -lc 'jq "[.[] | select(.state==\"booting\" or .state==\"awaiting_first_tick\" or .state==\"running\")] | length" ~/.local/share/charter/leases.json'`
 must print 0.
 
-Not yet proven: two opens in a row through the door both getting a lease instead of `busy`. Each open costs
-the door about 1000 of its own channel, so it waits for Drew's go. How: two `POST /v1/leases` with
-`{"offerId": "<from /v1/offers>", "python": "print(1)"}` inside 90 seconds; both answer a `leaseId`, and a
-third answers `closedReason: busy`; left unticked they close as `missed_tick` after the 90 second grace.
+Proven 2026-10-27 20:51Z: two `POST /v1/leases` 16 seconds apart (`{"offerId": "<from /v1/offers>",
+"python": {"script": "print(1)"}}`) both answered a `leaseId` in `awaiting_first_tick` (`dd84066f…` and
+`8a7fa37f…`), where the old limit answered `busy` to the second. Left unticked, the host closed both as
+`missed_tick` after the 90 second grace. Cost to the door: 2500 (two opens at 1000, five status reads at
+100), visible as the day's unpaid spend. A third open would have answered `closedReason: busy`.
 
 ## A second host on the box? (investigation only, nothing installed)
 
@@ -136,9 +143,6 @@ his `max_packet_amount` raised past one tick. Neither is started; Drew picks.
 
 ## Still open for Drew
 
-- Send one deliberate failure through the installed canary to see the Telegram DM arrive
-  (`CHARTER_OPS_STATE=/tmp/t CHARTER_DOOR_URL=https://charter.167-233-221-236.sslip.io/nope charter-canary.sh --alert` on the box, then the same with the real URL for the recovery message).
-- Prove `CHARTER_MAX_LEASES=2` with two opens (about 2000 of the door's channel).
 - The box now holds a copy of the Edison bot token. A dedicated alert bot (BotFather, two minutes) would keep
   a box compromise away from Edison's chats; swap the file in `/etc/charter-ops/` and nothing else changes.
 - An encrypted off-site copy of the backups, if a second location is wanted.
