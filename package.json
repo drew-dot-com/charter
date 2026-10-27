@@ -10,6 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && npm run build:web",
     "test": "node --test --import tsx 'src/**/*.test.ts' 'web/**/*.test.ts' 'jobs/**/*.test.mjs'",
+    "test:e2e": "playwright test",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit",
     "build:web": "node scripts/build-web.mjs",
     "dev:door": "tsx scripts/dev-door.ts"
@@ -20,6 +21,7 @@
   },
   "homepage": "https://github.com/drew-dot-com/charter#readme",
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.5",
     "esbuild": "^0.28.2",

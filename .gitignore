@@ -3,3 +3,5 @@ dist/
 web/dist/
 .superpowers/
 *.log
+test-results/
+playwright-report/
