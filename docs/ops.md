@@ -7,7 +7,7 @@ What watches the door, what backs it up, and what to do when something fires. Sc
 
 | what | where | schedule | alerts |
 | --- | --- | --- | --- |
-| door canary + headroom + daily spend (`charter-ops-check.sh`) | the Hetzner box, `charter-ops.timer` | every 5 min | Telegram DM to Drew from the Edison bot, once down, once back |
+| door canary + door headroom + daily spend + host channel (`charter-ops-check.sh`) | the Hetzner box, `charter-ops.timer` | every 5 min | Telegram DM to Drew from the Edison bot, once down, once back |
 | door data backup (`charter-backup-pull.sh`) | the Air, launchd `com.drew.charter-backup` | nightly 03:40 Air local | none yet: `~/charter-backups/pull.log` records each run |
 | the host (`charter-host`, `CHARTER_MAX_LEASES=2`) | the `toon2` VM on the Air | always on | the canary sees its offer vanish |
 
@@ -37,7 +37,7 @@ newest expires in 26 min / was down 0 min" at 20:50:47Z. A variable set on the c
 
 Alerting is `charter-alert.sh`: one message when a condition goes from ok to fail, one when it comes back, a
 reminder once a day while it stays down (`REALERT_MINUTES`), nothing else. Each condition has its own key
-(`door`, `headroom`, `unpaid`) so the three never mask each other. Channels come from `/etc/charter-ops/env`:
+(`door`, `headroom`, `unpaid`, `hostchannel`) so they never mask each other. Channels come from `/etc/charter-ops/env`:
 Telegram (`TELEGRAM_BOT_TOKEN_FILE` + `TELEGRAM_CHAT_ID`) and, if set, `NTFY_URL` like the box's other
 alerts (refuel, node-record, slop). With no channel set the state still changes and the send is only logged.
 
@@ -51,7 +51,10 @@ When "Charter door down" arrives:
   logs `offer published <id>` every 10 minutes; a paid write that fails shows there too. The Air is set not to
   sleep (`pmset -g` says `SleepDisabled 1`, held by caffeinate), so a missing offer is a crash or a network
   change, not a nap.
-- `the only offer expires in N min`: same as above, caught a few minutes earlier.
+- `the only offer expires in N min`: same as above, caught a few minutes earlier. On 2026-10-28 this was the
+  host's channel to the edge spent to its collateral (see "Host channel"); `charter-host` was up and logging
+  `offer publish failed: ToonCliError` every 10 minutes. The journal truncates the toon error, so check
+  `toon channel list` in toon2 first.
 
 ## Headroom and daily spend
 
@@ -72,6 +75,38 @@ see 503 `capacity`.
 status read before each tick, losses). `jq` the ledger for the day's leases and `losses`; a payer who caused a
 loss is already blocked by the door. At 500000 the door answers 503 `capacity` until 00:00 UTC. Nothing to
 do unless it is abuse; the cap resets.
+
+## Host channel
+
+The host pays the box's edge connector 1000 for every relay write, one every 10 minutes while it is up
+(about 144000 a day, so 1 USDC is about a week), out of its outbound Solana channel
+`8oBnwH4u…` (toon2 wallet `J6UrAZps…` to the edge's settlement key `4s2JSwCF…`). When that channel is spent
+to its collateral every write fails, the offer lapses 30 minutes later and the storefront lists no machine.
+That is what took the door down for 15 minutes on 2026-10-28 16:24Z: the 1 USDC from 2026-10-16 was gone.
+
+`charter-host-channel.sh` watches it from the box. The host's wallet lives in the toon2 VM, but the edge
+holds the other end of the same channel, so the script reads `GET /channels` on the edge connector with the
+operator bearer token (`EDGE_CONNECTOR_URL`, `EDGE_BEARER_TOKEN_FILE`, the same read refuel's sweep makes)
+and takes the row `HOST_CHANNEL_ID`. Headroom is `collateral - (watermark - landed)`: what is on chain and not
+landed, minus the vouchers signed but not yet landed. It fails under `HOST_HEADROOM_MIN` (300000, about two
+days) and when the row is missing or not `open`. A failed read (edge down, token unreadable) exits 1 without
+touching the alert state, so one 5xx does not read as an empty channel. Run it by hand on the box:
+`charter-host-channel.sh`; to see the failure path, `HOST_HEADROOM_MIN=2000000 charter-host-channel.sh`.
+
+"Charter host channel low": top the channel up from toon2. On the Air:
+
+```
+~/.local/lima/bin/limactl shell toon2 -- bash -lc 'set -a; . ~/.config/charter/env; set +a; toon channel list; toon channel fund 8oBnwH4uFQNuuGH5tRKB36jCQ86MFgyvJwNfYpAPoJg5 --amount 1000000'
+```
+
+`toon channel fund` deposits into the open channel in place (proven 2026-10-28: funded, the next scheduled
+republish went through, the alert recovered). The toon2 wallet must hold the USDC first (`toon wallet
+balances`); after the 10-28 top-up it holds about 0.02 USDC, so the next one starts with a USDC transfer to
+`J6UrAZpsnCJREvdp4V4JojfNP5TgCsv5Qkq6oURGo1mM` from Drew's wallet. If the channel was rotated, change
+`HOST_CHANNEL_ID` in `/etc/charter-ops/env` to the new id from `toon channel list`.
+
+The burn is the republish cadence (a 30 minute offer rewritten every 10 minutes); stopping the host between
+demos stops it, and a 20 minute cadence would halve it.
 
 ## Backup
 

@@ -6,7 +6,7 @@
 # /etc/charter-ops/env if the defaults in env.example are not right.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-install -m 755 "$here"/charter-alert.sh "$here"/charter-canary.sh "$here"/charter-headroom.sh "$here"/charter-ops-check.sh "$here"/charter-backup-stream.sh /usr/local/bin/
+install -m 755 "$here"/charter-alert.sh "$here"/charter-canary.sh "$here"/charter-headroom.sh "$here"/charter-host-channel.sh "$here"/charter-ops-check.sh "$here"/charter-backup-stream.sh /usr/local/bin/
 install -m 644 "$here"/charter-ops.service "$here"/charter-ops.timer /etc/systemd/system/
 mkdir -p /etc/charter-ops /var/lib/charter-ops
 chmod 700 /etc/charter-ops
