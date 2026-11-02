@@ -149,8 +149,8 @@ test('duration reads in seconds, minutes and hours', () => {
 
 test('offerFreshness: published is the expiry less the offer lifetime', () => {
   const now = 1_000_000_000;
-  assert.deepEqual(offerFreshness(now + 20 * 60_000, now), { publishedMs: 10 * 60_000, expiresInMs: 20 * 60_000 });
-  assert.deepEqual(offerFreshness(now - 1, now), { publishedMs: 30 * 60_000 + 1, expiresInMs: 0 });
+  assert.deepEqual(offerFreshness(now + 20 * 60_000, now), { publishedMs: 25 * 60_000, expiresInMs: 20 * 60_000 });
+  assert.deepEqual(offerFreshness(now - 1, now), { publishedMs: 45 * 60_000 + 1, expiresInMs: 0 });
 });
 
 test('clock formats a local time of day with seconds', () => {

@@ -173,7 +173,7 @@ test('reconcile closes a stored running lease whose container is gone as host_re
   assert.ok(!asked.includes('fin'));
 });
 
-test('offerTick publishes kind 31390 expiring 30 minutes ahead', async () => {
+test('offerTick publishes kind 31390 expiring 45 minutes ahead', async () => {
   const published: Array<{ ev: { kind: number; tags: string[][]; content: string }; relay: string }> = [];
   const cli = { publishEvent: async (ev: any, relay: string) => { published.push({ ev, relay }); return 'evid'; } };
   const now = 5_000_000_000;
@@ -184,7 +184,7 @@ test('offerTick publishes kind 31390 expiring 30 minutes ahead', async () => {
   const { ev } = published[0]!;
   assert.equal(ev.kind, OFFER_KIND);
   assert.equal(ev.kind, 31390);
-  assert.deepEqual(ev.tags.find((t) => t[0] === 'expiration'), ['expiration', String(Math.floor((now + 30 * 60_000) / 1000))]);
+  assert.deepEqual(ev.tags.find((t) => t[0] === 'expiration'), ['expiration', String(Math.floor((now + 45 * 60_000) / 1000))]);
   assert.deepEqual(ev.tags.find((t) => t[0] === 'L'), ['L', 'charter']);
 });
 

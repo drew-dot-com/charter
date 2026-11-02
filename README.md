@@ -17,8 +17,8 @@ safe enough for a home host: `docs/superpowers/specs/2026-10-17-python-job-desig
 ## How it works
 
 - **Offer.** The host publishes a signed Nostr event, kind 31390, tag `["L","charter"]`: size,
-  prices, the host's ILP address, the key to seal packets to, and badges. It lives 30 minutes and is
-  republished every 10.
+  prices, the host's ILP address, the key to seal packets to, and badges. It lives 45 minutes and is
+  republished every 20.
 - **Lease.** The host's `toon` node serves three priced apps: `charter-open` (start a lease),
   `charter-tick` (pay one 30 second interval) and `charter-status` (read state and output). Each
   answers only its own action. The container is created at open and started only once the first

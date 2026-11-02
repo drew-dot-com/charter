@@ -9,8 +9,8 @@ import type { LeaseStore } from './store.js';
 /** A lease may stay `booting` this long before it is closed `boot_failed`. */
 export const BOOT_TIMEOUT_MS = 120_000;
 /** An offer stays valid this long, and is republished every OFFER_REPUBLISH_MS. */
-export const OFFER_LIFETIME_MS = 30 * 60_000;
-export const OFFER_REPUBLISH_MS = 10 * 60_000;
+export const OFFER_LIFETIME_MS = 45 * 60_000;
+export const OFFER_REPUBLISH_MS = 20 * 60_000;
 
 export interface LoopDeps {
   store: LeaseStore;
@@ -117,7 +117,7 @@ export interface OfferDeps {
   now: () => number;
 }
 
-/** Publishes the offer, good for the next 30 minutes. Returns the event id. */
+/** Publishes the offer, good for the next 45 minutes. Returns the event id. */
 export async function offerTick(deps: OfferDeps): Promise<string> {
   const ev = offerToEvent({ ...deps.offer, expiresAt: deps.now() + OFFER_LIFETIME_MS });
   return deps.cli.publishEvent(ev, deps.relayUrl);

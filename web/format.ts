@@ -277,7 +277,7 @@ export function clock(at: number): string {
 }
 
 /** A host's offer lives this long after it is published (src/host/loop.ts OFFER_LIFETIME_MS). */
-export const OFFER_LIFETIME_MS = 30 * 60_000;
+export const OFFER_LIFETIME_MS = 45 * 60_000;
 
 /** How long ago the offer was published, and how long until it lapses, from its expiry. */
 export function offerFreshness(expiresAt: number, now: number): { publishedMs: number; expiresInMs: number } {

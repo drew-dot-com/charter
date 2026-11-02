@@ -25,7 +25,7 @@ Air side: `~/bin/charter-backup-pull.sh` (copy of `deploy/ops/charter-backup-pul
 
 `charter-canary.sh` fetches `GET /v1/door` and `GET /v1/offers` on the live door and fails when either is not
 200, when the offers list is empty, or when the newest offer expires within 5 minutes (the host republishes
-every 10 minutes with a 30 minute lifetime, so under 5 minutes left means it stopped publishing). Run it by
+every 20 minutes with a 45 minute lifetime, so under 5 minutes left means it missed two publishes). Run it by
 hand anywhere: `deploy/ops/charter-canary.sh` prints one line and exits 0 or 1. To see the failure path point
 it at a wrong path: `CHARTER_DOOR_URL=https://charter.167-233-221-236.sslip.io/nope deploy/ops/charter-canary.sh`.
 
@@ -48,12 +48,12 @@ When "Charter door down" arrives:
   connector is down (see the Helius notes in memory: never restart the connectors while the Solana RPC 429s).
 - `no machines listed`: the host's relay offer is gone. Is the Air up and `toon2` running? `ssh air`, then
   `~/.local/lima/bin/limactl list` and `limactl shell toon2 -- systemctl --user status charter-host`. The host
-  logs `offer published <id>` every 10 minutes; a paid write that fails shows there too. The Air is set not to
+  logs `offer published <id>` every 20 minutes; a paid write that fails shows there too. The Air is set not to
   sleep (`pmset -g` says `SleepDisabled 1`, held by caffeinate), so a missing offer is a crash or a network
   change, not a nap.
 - `the only offer expires in N min`: same as above, caught a few minutes earlier. On 2026-10-28 this was the
   host's channel to the edge spent to its collateral (see "Host channel"); `charter-host` was up and logging
-  `offer publish failed: ToonCliError` every 10 minutes. The journal truncates the toon error, so check
+  `offer publish failed: ToonCliError` on every publish. The journal truncates the toon error, so check
   `toon channel list` in toon2 first.
 
 ## Headroom and daily spend
@@ -78,17 +78,17 @@ do unless it is abuse; the cap resets.
 
 ## Host channel
 
-The host pays the box's edge connector 1000 for every relay write, one every 10 minutes while it is up
-(about 144000 a day, so 1 USDC is about a week), out of its outbound Solana channel
+The host pays the box's edge connector 1000 for every relay write, one every 20 minutes while it is up
+(about 72000 a day, so 1 USDC is about two weeks), out of its outbound Solana channel
 `8oBnwH4u…` (toon2 wallet `J6UrAZps…` to the edge's settlement key `4s2JSwCF…`). When that channel is spent
-to its collateral every write fails, the offer lapses 30 minutes later and the storefront lists no machine.
+to its collateral every write fails, the offer lapses 45 minutes later and the storefront lists no machine.
 That is what took the door down for 15 minutes on 2026-10-28 16:24Z: the 1 USDC from 2026-10-16 was gone.
 
 `charter-host-channel.sh` watches it from the box. The host's wallet lives in the toon2 VM, but the edge
 holds the other end of the same channel, so the script reads `GET /channels` on the edge connector with the
 operator bearer token (`EDGE_CONNECTOR_URL`, `EDGE_BEARER_TOKEN_FILE`, the same read refuel's sweep makes)
 and takes the row `HOST_CHANNEL_ID`. Headroom is `collateral - (watermark - landed)`: what is on chain and not
-landed, minus the vouchers signed but not yet landed. It fails under `HOST_HEADROOM_MIN` (300000, about two
+landed, minus the vouchers signed but not yet landed. It fails under `HOST_HEADROOM_MIN` (300000, about four
 days) and when the row is missing or not `open`. A failed read (edge down, token unreadable) exits 1 without
 touching the alert state, so one 5xx does not read as an empty channel. Run it by hand on the box:
 `charter-host-channel.sh`; to see the failure path, `HOST_HEADROOM_MIN=2000000 charter-host-channel.sh`.
@@ -105,8 +105,9 @@ balances`); after the 10-28 top-up it holds about 0.02 USDC, so the next one sta
 `J6UrAZpsnCJREvdp4V4JojfNP5TgCsv5Qkq6oURGo1mM` from Drew's wallet. If the channel was rotated, change
 `HOST_CHANNEL_ID` in `/etc/charter-ops/env` to the new id from `toon channel list`.
 
-The burn is the republish cadence (a 30 minute offer rewritten every 10 minutes); stopping the host between
-demos stops it, and a 20 minute cadence would halve it.
+The burn is the republish cadence: a 45 minute offer rewritten every 20 minutes since 2026-11-02 (it was 30
+and 10 until then, 1 USDC a week). The 45 minutes lets one failed write pass without the storefront going
+empty. Stopping the host between demos stops the burn.
 
 ## Backup
 

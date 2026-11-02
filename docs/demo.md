@@ -202,7 +202,8 @@ Job egress through the relay was `82.22.174.135`, not the home IP; the lease's W
 public IP. Offer `cde9138b...:toon2-fetch-1`, event `886a16d4...`. Edison's channel `121CYE4w...`
 moved 19200 to 25700 (6500); `toon2`'s inbound `E63r...` watermark and landed 6900. The land tx moves
 no USDC: a Solana channel pays out at settle. The host republishes the offer every 10 minutes, and
-each publish is a paid relay write of 1000, so a running host costs about 0.14 USDC a day.
+each publish is a paid relay write of 1000, so a running host costs about 0.14 USDC a day (every 20
+minutes and about 0.07 a day since 2026-11-02).
 
 | | lease id | intervals paid | spent (micro-USDC) | txs |
 | --- | --- | --- | --- | --- |

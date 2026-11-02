@@ -4,9 +4,9 @@
 #   charter-host-channel.sh [--alert]
 #
 # The host (charter-host in the toon2 VM) pays the box's edge connector 1000
-# micro-USDC for every relay write, one every 10 minutes while it is up, out of
+# micro-USDC for every relay write, one every 20 minutes while it is up, out of
 # its outbound Solana channel. When that channel is spent to its collateral every
-# write fails, the offer lapses 30 minutes later and the storefront lists no
+# write fails, the offer lapses 45 minutes later and the storefront lists no
 # machine (2026-10-28, 15 minutes down). The host's wallet is in the toon2 VM, out
 # of the box's reach, but the edge holds the other end of the same channel, so
 # this reads the edge connector's channel list:
@@ -18,7 +18,7 @@
 # which is what the host's own `toon channel list` shows as collateral minus its
 # unlanded vouchers.
 #
-# Fails when headroom < HOST_HEADROOM_MIN (default 300000, about two days of
+# Fails when headroom < HOST_HEADROOM_MIN (default 300000, about four days of
 # republishes) or the row is missing (the channel closed or was rotated). With
 # --alert that goes through charter-alert.sh under the key hostchannel. A failed
 # read (edge down, token unreadable) prints and exits 1 but does not change the
@@ -41,7 +41,7 @@ TOKEN_FILE="${EDGE_BEARER_TOKEN_FILE:-/opt/toon-relay/deploy/rust/data/operator-
 CHAN="${HOST_CHANNEL_ID:-}"
 MIN="${HOST_HEADROOM_MIN:-300000}"
 WRITE_COST="${HOST_WRITE_COST:-1000}"        # micro-USDC per relay write
-WRITES_PER_DAY="${HOST_WRITES_PER_DAY:-144}" # one every 10 minutes
+WRITES_PER_DAY="${HOST_WRITES_PER_DAY:-72}"  # one every 20 minutes
 alert=0; [ "${1:-}" = "--alert" ] && alert=1
 here="$(cd "$(dirname "$0")" && pwd)"
 title="Charter host channel low"

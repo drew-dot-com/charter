@@ -297,7 +297,7 @@ async function loadOffers(list: HTMLUListElement, token: number): Promise<void> 
   if (token !== route) return;
   if (offers.length === 0) {
     list.replaceChildren(
-      el('li', 'empty', 'No machines are listed right now. A host republishes its offer every 10 minutes, and this page looks again every 30 seconds.'),
+      el('li', 'empty', 'No machines are listed right now. A host republishes its offer every 20 minutes, and this page looks again every 30 seconds.'),
     );
     homeTimer = window.setTimeout(() => void loadOffers(list, token), EMPTY_RETRY_MS);
     return;

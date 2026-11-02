@@ -44,7 +44,7 @@ if [ -z "$reason" ]; then
     now_ms=$(( $(date +%s) * 1000 ))
     exp=$(jq -r '[.[] | .expiresAt] | max' "$body")
     left=$(( (exp - now_ms) / 60000 ))
-    if [ "$left" -lt "$OFFER_MIN_MINUTES" ]; then reason="the only offer expires in $left min (host republishes every 10 min, so it has stopped)"; fi
+    if [ "$left" -lt "$OFFER_MIN_MINUTES" ]; then reason="the only offer expires in $left min (host republishes every 20 min, so it has stopped)"; fi
   fi
 fi
 
