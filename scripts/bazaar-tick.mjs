@@ -12,7 +12,7 @@
 // probes the lease DRY_RUN_LEASE names (any lease the door has seen; default: the first batch
 // lease from 2026-10-20, whose tick index is past so the probe is refused before any payment
 // when the index is wrong, and challenged with a 402 when it is right).
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { privateKeyToAccount } from 'viem/accounts';
 import { ExactEvmScheme } from '@x402/evm/exact/client';
 import { decodePaymentResponseHeader, wrapFetchWithPaymentFromConfig } from '@x402/fetch';
@@ -83,6 +83,10 @@ if (!keyFile) {
   console.error('BAZAAR_KEY_FILE is not set (or pass --dry-run)');
   process.exit(2);
 }
+if (!existsSync(keyFile)) {
+  console.error(`${keyFile} does not exist. Make one with: node deploy/door/new-claim-key.mjs ${keyFile} (prints the address to fund with USDC on Base)`);
+  process.exit(2);
+}
 const account = privateKeyToAccount(readFileSync(keyFile, 'utf8').trim());
 log(`paying from ${account.address}; this spends one tick, ${offer.tickPrice} micro-USDC, and nothing more`);
 
@@ -118,8 +122,10 @@ for (let i = 0; i < 24; i++) {
 }
 log(`lease ${lease?.state ?? 'unknown'}${lease?.closedReason ? ` (${lease.closedReason})` : ''}, ${lease?.outputParts ?? 0} output part(s)`);
 if (lease?.outputParts) {
-  const out = await json(await fetch(`${DOOR}/v1/leases/${id}/output/0`));
-  log(`stdout: ${JSON.stringify(out.stdout ?? out)}`);
+  // A part is an envelope {part, parts, data}: data is the job's JSON, base64.
+  const part = await json(await fetch(`${DOOR}/v1/leases/${id}/output/0`));
+  const out = typeof part.data === 'string' ? b64json(part.data) : part;
+  log(`job exit ${out.exitCode ?? '?'}, stdout: ${JSON.stringify(out.stdout ?? out)}`);
 }
 log(await listed(door.payTo));
 log('done; a catalog that lists from settled payments may take a while to show the entry: rerun with --dry-run to check');
