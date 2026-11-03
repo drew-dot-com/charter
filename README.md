@@ -40,7 +40,8 @@ when the lease ends.
 From an agent over HTTP, with an x402 client and USDC on Base: https://charter.mainnet.toonprotocol.dev/agents
 walks through every call and every price; https://charter.mainnet.toonprotocol.dev/llms.txt is the
 summary a model reads first. Only the tick is paid over x402; the door pays the host for the open and
-the reads.
+the reads. `scripts/bazaar-tick.mjs` is a worked example: one python lease, one tick paid with
+`@x402/fetch` from a key file, so a facilitator with a catalog lists the route (`--dry-run` pays nothing).
 
 From a `toon` node:
 
