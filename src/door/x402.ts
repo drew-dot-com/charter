@@ -4,6 +4,7 @@ import { decodePaymentResponseHeader, decodePaymentSignatureHeader } from '@x402
 import { BatchSettlementEvmScheme } from '@x402/evm/batch-settlement/server';
 import { FileChannelStorage } from '@x402/evm/batch-settlement/server/file-storage';
 import { ExactEvmScheme } from '@x402/evm/exact/server';
+import { declareDiscoveryExtension } from '@x402/extensions/bazaar';
 import { paymentMiddleware, x402ResourceServer } from '@x402/express';
 import type { Micro } from '../types.js';
 import { claimSigner } from './config.js';
@@ -242,9 +243,21 @@ export function realGate(cfg: X402Config, priceOf: (leaseId: string) => Micro | 
       'POST /v1/leases/:id/ticks': {
         // Batch first: a client that speaks both deposits once and signs ticks silently.
         accepts: offerBatch ? [option('batch-settlement'), option('exact')] : [option('exact')],
-        description: 'One Charter interval: the door pays the host the same interval over TOON.',
+        description:
+          'One 30 second interval of sandboxed compute on Charter (Python with NumPy, or a headless-browser fetch). Open a lease first, free: POST /v1/leases. The whole procedure is at https://charter.mainnet.toonprotocol.dev/agents',
         mimeType: 'application/json',
         serviceName: 'charter',
+        tags: ['compute', 'sandbox', 'python', 'fetch', 'toon'],
+        // The Bazaar declaration. A facilitator that keeps a catalog (PayAI does) lists the tick from a
+        // payment whose client echoes this; the storefront's own payer does not, an @x402/fetch client does.
+        extensions: declareDiscoveryExtension({
+          bodyType: 'json',
+          input: { index: 0 },
+          inputSchema: { properties: { index: { type: 'number', description: 'The tick index, from 0, in order.' } }, required: ['index'] },
+          pathParams: { id: 'a'.repeat(32) },
+          pathParamsSchema: { properties: { id: { type: 'string', description: 'The leaseId from POST /v1/leases.' } }, required: ['id'] },
+          output: { example: { paidIntervals: 1, paidThrough: 1760000000000, duplicate: false } },
+        }),
       },
     },
     schemes.server,

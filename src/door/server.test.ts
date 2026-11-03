@@ -913,10 +913,14 @@ test('GET / answers a plain "Charter door" when web/dist is missing, and serves 
   mkdirSync(join(web, 'assets'));
   writeFileSync(join(web, 'index.html'), '<h1>hi</h1>');
   writeFileSync(join(web, 'assets', 'a.js'), 'x');
+  writeFileSync(join(web, 'agents.html'), '<h1>agents</h1>');
   const d2 = await start(fakeHost(), { webDir: web });
   try {
     assert.equal(await (await d2.get('/')).text(), '<h1>hi</h1>');
     assert.equal(await (await d2.get('/assets/a.js')).text(), 'x');
+    // A page is reachable without its extension, so /agents is the address agents are given.
+    assert.equal(await (await d2.get('/agents')).text(), '<h1>agents</h1>');
+    assert.equal((await d2.get('/agents')).headers.get('content-type')?.split(';')[0], 'text/html');
   } finally {
     d2.close();
   }

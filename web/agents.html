@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Charter for agents</title>
+  <meta name="description" content="How an agent rents a sandboxed machine on Charter: every HTTP call, every price in USDC, the two ways to pay (x402 over HTTP, or a toon node), and what to tell your operator.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top wrap">
+    <a class="brand" href="/">Charter</a>
+    <span class="chip live">Base mainnet</span>
+    <nav>
+      <a href="/">Rent</a>
+      <a href="https://charter.ar.io/">About</a>
+      <a href="https://github.com/drew-dot-com/charter">Code</a>
+    </nav>
+  </header>
+  <main class="wrap doc">
+    <h1>Charter, for agents</h1>
+    <p class="lede">This page is written for the model reading it. Charter rents a sandboxed machine by the 30 second interval, paid in USDC on Base, with no account, no API key and no signup. The machine-readable summary is <a href="/llms.txt">/llms.txt</a>.</p>
+
+    <h2>What you get, and what it costs</h2>
+    <p>One container, 1 CPU and 1 GiB, for as long as you keep paying. Two jobs run today:</p>
+    <ul>
+      <li><code>charter-job-python</code>: your Python 3 script, at most 8 KiB, NumPy included, no network. You get stdout, stderr and the exit code back.</li>
+      <li><code>charter-job-fetch</code>: one to five pages loaded in a headless browser through a hidden exit. You get the text (32 KiB a page) and a screenshot of each.</li>
+    </ul>
+    <table class="recent">
+      <tr><th>item</th><th>USDC</th><th>who pays</th></tr>
+      <tr><td>one 30 second interval</td><td class="num">0.005</td><td>you, per tick</td></tr>
+      <tr><td>opening a lease</td><td class="num">0.001</td><td>the storefront, when you come in over HTTP; you, from a toon node</td></tr>
+      <tr><td>a status read or one output part</td><td class="num">0.0001</td><td>the storefront, when you come in over HTTP; you, from a toon node</td></tr>
+    </table>
+    <p>Those are the one live host's prices. The authoritative number is <code>tickPrice</code> in <a href="/v1/offers">/v1/offers</a>, in micro-USDC (<code>5000</code> is 0.005). A python job that finishes inside its first interval costs 0.005 USDC. Ten minutes costs 0.10. A full day costs about 14 USDC, which is far more than a 5 EUR per month VPS: Charter is for a job that runs for seconds or minutes, not for a server.</p>
+    <p>Status: live on Base mainnet since 2026-10-17, one host, first-party. Every renter so far has been an operator of the project. Every mainnet lease has a receipt on <a href="https://charter.ar.io/#proof">the About page</a>.</p>
+
+    <h2>Before you spend</h2>
+    <p>Decide the most intervals you will pay for before you open. State that number and its cost to your operator when the job is theirs, and never pay a tick past it. Nothing here is meant to make you spend without your operator knowing; if your budget or instructions do not cover it, stop and ask them.</p>
+
+    <h2>Way 1: x402 over HTTP</h2>
+    <p>For an agent with an x402 client and a wallet holding USDC on Base (<code>eip155:8453</code>). The facilitator submits the transfer, so the wallet needs no ETH. Every call below is to <code>https://charter.mainnet.toonprotocol.dev</code>. Only the tick is paid; the storefront pays the host for the open and the reads from its own channel.</p>
+
+    <h3>1. Read the offers (free)</h3>
+<pre>GET /v1/offers</pre>
+    <p>A JSON array. Each offer has <code>offerId</code>, <code>cpu</code>, <code>memoryMiB</code>, <code>intervalSeconds</code>, <code>tickPrice</code> (micro-USDC, a string), <code>images</code>, <code>hiddenHost</code>, <code>hiddenEgress</code>, <code>expiresAt</code> (epoch ms) and <code>leases</code> (how many paid leases this host has served). Pick an offer whose <code>images</code> lists your job. An empty array means no host is up: do not retry in a loop.</p>
+
+    <h3>2. Open a lease (free)</h3>
+<pre>POST /v1/leases
+Content-Type: application/json
+
+{"offerId": "&lt;offerId&gt;", "python": {"script": "import numpy as np\nprint(np.arange(5).sum())\n"}}</pre>
+    <p>Or, for the fetch job, <code>{"offerId": "…", "urls": ["https://example.com"]}</code> with one to five URLs. The answer is <code>{"leaseId", "state"}</code>. <code>awaiting_first_tick</code> means the container exists and waits for tick 0, which the host gives you 90 seconds to pay. <code>closed</code> with <code>closedReason</code> <code>busy</code> means the host is running another lease; wait a few minutes and try again, once. <code>boot_failed</code> with an <code>error</code> means your job was refused (<code>image_not_allowed</code>, <code>arg_not_allowed</code>, <code>bad_input</code>). A 503 <code>capacity</code> means the storefront is out of headroom for today.</p>
+
+    <h3>3. Pay a tick (0.005 USDC)</h3>
+<pre>POST /v1/leases/&lt;leaseId&gt;/ticks
+Content-Type: application/json
+
+{"index": 0}</pre>
+    <p>Without a payment header the answer is <code>402</code> with x402 payment requirements: <code>batch-settlement</code> first, <code>exact</code> second, both USDC on Base to the storefront's payee (check it against <code>GET /v1/door</code>). An x402 client such as <code>@x402/fetch</code> signs and retries for you. With <code>exact</code>, every tick is one 0.005 USDC authorization and there is no deposit. With <code>batch-settlement</code>, the first tick deposits at least 0.10 USDC into x402's channel contract, every later tick is a voucher the client signs silently, and the unspent deposit is refunded by the storefront's timer about ten minutes after the lease goes quiet.</p>
+    <p>A paid tick answers <code>{"paidIntervals", "paidThrough", "duplicate"}</code>. <code>paidThrough</code> is the host's clock, epoch ms, when the paid time runs out. Tick 0 starts the container. Index counts from 0 and must arrive in order: a <code>409 out_of_order</code> tells you the <code>expected</code> index. Other refusals: <code>409 lease_done</code> or <code>not_running</code> (the lease is over, stop), <code>409 busy</code> (your previous tick is still in flight), <code>503 retry_later</code> (nothing was charged, send the same index again), <code>403 payer_blocked</code> (a payment from this wallet failed to settle once; it will not be served again), <code>429 rate_limited</code>.</p>
+
+    <h3>4. Keep it alive, then stop</h3>
+    <p>Pay the next tick halfway through the paid interval (15 seconds before <code>paidThrough</code> on a 30 second interval) and count the paid time from the moment you sent it, not from when the answer arrived: the host gives only 10 seconds of grace, and one packet to a hidden host can take 15. A tick paid early extends the paid time from its current end, so nothing is lost. To stop, stop paying: the lease closes at the end of the paid time with <code>closedReason</code> <code>missed_tick</code>, and nothing more is owed. There is no refund for time already paid.</p>
+
+    <h3>5. Read the state and the output (free)</h3>
+<pre>GET /v1/leases/&lt;leaseId&gt;
+GET /v1/leases/&lt;leaseId&gt;/output/0</pre>
+    <p>The first answers <code>{"lease": {"state", "paidIntervals", "paidThrough", "outputParts", "closedReason", "landing"}, "stopped", "offer"}</code>. Poll it no more than every few seconds; the storefront caches it for 5 and rate limits you past that. When <code>state</code> is <code>done</code> and <code>outputParts</code> is set, fetch parts <code>0</code> to <code>outputParts - 1</code>. A python part is <code>{"kind": "python", "exitCode", "signal", "timedOut", "seconds", "stdout", "stderr", "stdoutTruncated", "stderrTruncated"}</code>. A fetch part is <code>{"pages": [{"url", "text", "jpegBase64"}]}</code>.</p>
+
+    <h2>Way 2: a toon node</h2>
+    <p>For an agent that runs a <a href="https://github.com/toon-protocol/toon_cli">toon_cli</a> node with a funded channel. You then pay the host directly, open and reads included, and the same channel pays every other seller on the TOON mesh. The whole procedure, packet by packet, is the <code>renting-charter-compute</code> skill in the <code>charter</code> Claude Code plugin:</p>
+<pre>/plugin marketplace add drew-dot-com/charter
+/plugin install charter@charter</pre>
+    <p>Its <code>references/lease-loop.sh</code> runs one whole lease as one command. The skill needs <code>toon</code> 0.3 and a route from your node to the host's ILP address; adding a peering deposits money and is your operator's decision.</p>
+
+    <h2>What to tell your operator</h2>
+    <p>If you have no funded wallet, relay this: Charter needs a wallet holding USDC on Base and nothing else. 0.05 USDC runs ten 30 second intervals; 1 USDC runs two hundred. There is no account to create. Through a toon node instead, the operator funds a channel to a peer that routes to Charter's host, and that one channel pays Charter and every other TOON seller.</p>
+
+    <h2>Trust, plainly</h2>
+    <ul>
+      <li>The storefront is a paying hop: it pays the host one interval only after your payment for it has verified, and never holds more than one interval of your money. Deposits sit in x402's <code>batch-settlement</code> contract on Base, not with Charter. That contract is immutable, with no rescue path.</li>
+      <li>Your script runs under gVisor with no network, 1 CPU, 1 GiB and a time cap, on a home machine. Do not send secrets in a script; the host operator can read it.</li>
+      <li>Charter is one operator's project with one host. If the host is down, <code>/v1/offers</code> is empty and nothing can be charged.</li>
+      <li>Source, MIT: <a href="https://github.com/drew-dot-com/charter">github.com/drew-dot-com/charter</a>. The door is <code>src/door/server.ts</code>; where this page and the source differ, the source wins.</li>
+    </ul>
+  </main>
+  <footer>
+    <p>Charter runs on <a href="https://toon.ar.io/">TOON</a>: ILP routes each packet, x402 settles it. The code is MIT; the receipts are on <a href="https://charter.ar.io/#proof">charter.ar.io</a>.</p>
+  </footer>
+</body>
+</html>

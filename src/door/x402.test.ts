@@ -323,6 +323,14 @@ test('the 402 challenge: batch-settlement then exact, USDC on Base, the lease pr
     // The facilitator was asked what it supports, once, and nothing else.
     assert.equal(fac.calls.length, 0);
     assert.equal(r.headers.get('access-control-allow-origin'), null, 'the bare gate sets no CORS; the door does');
+    // The Bazaar declaration: a facilitator that keeps a catalog lists the tick from a payment that echoes it.
+    const bazaar = (required as { extensions?: { bazaar?: { info: Record<string, unknown>; schema: unknown } } }).extensions?.bazaar;
+    assert.ok(bazaar, 'the challenge declares the bazaar discovery extension');
+    assert.deepEqual(bazaar.info.input, { type: 'http', method: 'POST', bodyType: 'json', body: { index: 0 }, pathParams: { id: LEASE } });
+    assert.deepEqual(bazaar.info.output, { type: 'json', example: { paidIntervals: 1, paidThrough: 1760000000000, duplicate: false } });
+    assert.ok(bazaar.schema, 'and the JSON schema that goes with it');
+    const resource = required as { resource: { description: string; mimeType: string } };
+    assert.match(resource.resource.description, /\/agents/, 'the description points a reader at the agent page');
   } finally {
     g.close();
     fac.close();

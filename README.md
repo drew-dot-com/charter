@@ -37,6 +37,11 @@ URLs and click Rent. Your wallet signs once to put a deposit (at least 0.10 USDC
 channel. Each interval after that is signed by the page, silently. What you do not use comes back
 when the lease ends.
 
+From an agent over HTTP, with an x402 client and USDC on Base: https://charter.mainnet.toonprotocol.dev/agents
+walks through every call and every price; https://charter.mainnet.toonprotocol.dev/llms.txt is the
+summary a model reads first. Only the tick is paid over x402; the door pays the host for the open and
+the reads.
+
 From a `toon` node:
 
 ```sh

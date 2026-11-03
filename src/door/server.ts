@@ -605,7 +605,8 @@ export function doorApp(deps: DoorDeps): express.Express {
   });
 
   if (existsSync(webDir)) {
-    app.use(express.static(webDir, { index: 'index.html' }));
+    // `extensions` lets /agents serve agents.html: the address an agent is handed has no file suffix.
+    app.use(express.static(webDir, { index: 'index.html', extensions: ['html'] }));
   } else {
     app.get('/', (_req, res) => void res.type('text/plain').send('Charter door'));
   }

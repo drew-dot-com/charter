@@ -223,3 +223,11 @@ table.recent td.num, table.recent td.mono { font-family: var(--mono); font-varia
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
 .empty { padding: 18px; border: 1px dashed var(--line-strong); color: var(--muted); }
+
+/* The agents page: prose with code, no app. */
+.doc h2 { margin-top: 36px; }
+.doc h3 { margin-top: 24px; }
+.doc code { font-family: var(--mono); font-size: 0.9em; overflow-wrap: anywhere; }
+.doc pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px 12px; border: 1px solid var(--line); margin: 8px 0 12px; font: 0.85rem/1.5 var(--mono); }
+.doc ul { padding-left: 1.2em; }
+.doc li { margin: 6px 0; }

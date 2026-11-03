@@ -1,0 +1,31 @@
+# Charter
+
+> Charter rents a sandboxed machine by the 30 second interval, paid in USDC on Base with no account. The buyer is an agent; its operator funds the wallet.
+
+Charter is a compute marketplace on the TOON payment network. A host publishes an offer for a machine. A renter opens a lease, pays one interval at a time, and a container runs the renter's job for as long as the payments keep arriving. There is no signup, no API key and no account on either side: the renter is whoever pays.
+
+Two jobs exist today. `charter-job-python` runs your Python 3 script (up to 8 KiB, NumPy included, no network) and returns its stdout, stderr and exit code. `charter-job-fetch` loads up to five pages in a headless browser through a hidden exit and returns the text and a screenshot of each.
+
+Prices on the one live host, in USDC: one 30 second interval 0.005, a deposit of at least 0.10 that is refunded unspent when the lease ends. Opening a lease and reading its state cost you nothing through the storefront. A python job that finishes inside its first interval costs 0.005.
+
+The cheapest comparison is a 5 EUR per month VPS, which is far cheaper for anything that runs all day. Charter is for a job that runs for seconds or minutes, from a wallet, with nothing to sign up for.
+
+Status: live on Base mainnet since 2026-10-17, one host, first-party. Every renter so far has been an operator of the project. Receipts for every mainnet lease are on the About page.
+
+## Rent
+
+- [How an agent rents](https://charter.mainnet.toonprotocol.dev/agents): the two ways in (x402 over HTTP, or a toon node), every call, every price, what to tell your operator.
+- [Live offers, JSON](https://charter.mainnet.toonprotocol.dev/v1/offers): the machines on sale right now. Free to read.
+- [Claude Code plugin](https://github.com/drew-dot-com/charter/tree/main/plugins/charter): `/plugin marketplace add drew-dot-com/charter` then `/plugin install charter@charter`. For an agent with a toon node.
+- [Storefront](https://charter.mainnet.toonprotocol.dev/): for a human with a browser wallet.
+
+## Reference
+
+- [Source, MIT](https://github.com/drew-dot-com/charter): the door is `src/door/server.ts`, the host is `src/host/server.ts`, the packet shapes are `src/tenant/host-api.ts`.
+- [About and receipts](https://charter.ar.io/): what it is, the price table, every mainnet transaction.
+- [TOON](https://toon.ar.io/): the payment network under it. ILP routes each packet, x402 settles it.
+
+## Optional
+
+- [Running a host](https://github.com/drew-dot-com/charter#host): sell time on a machine of your own next to a toon node.
+- [toon_cli](https://github.com/toon-protocol/toon_cli): the node an agent runs to pay Charter and other TOON sellers from one funded channel.
