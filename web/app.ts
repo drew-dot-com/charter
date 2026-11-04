@@ -7,6 +7,7 @@ import { CHOOSE_WALLET, NO_WALLET, chooseWallet, discoverWallets, requestAccount
 import { BASE_CHAIN_ID_HEX, type Eip1193 } from './wallet.js';
 import { channelSummary, readChannels, type ChannelSummary } from './channel.js';
 import { newTimeline, noteOutput, observe, type Timeline } from './timeline.js';
+import { parseSshKeys } from './keys.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -17,6 +18,7 @@ const MAX_URLS = 5;
 const MAX_SCRIPT_BYTES = 8 * 1024;
 const FETCH_IMAGE = 'charter-job-fetch';
 const PYTHON_IMAGE = 'charter-job-python';
+const HOME_IMAGE = 'charter-home';
 /** An empty machine list is read again this often. */
 const EMPTY_RETRY_MS = 30_000;
 
@@ -305,7 +307,7 @@ async function loadOffers(list: HTMLUListElement, token: number): Promise<void> 
   list.replaceChildren(...offers.map((o) => offerRow(o, Date.now())));
 }
 
-const JOB_NAME: Record<string, string> = { [PYTHON_IMAGE]: 'Python · NumPy', [FETCH_IMAGE]: 'Fetch pages' };
+const JOB_NAME: Record<string, string> = { [PYTHON_IMAGE]: 'Python · NumPy', [FETCH_IMAGE]: 'Fetch pages', [HOME_IMAGE]: 'Home · SSH' };
 
 function offerRow(o: PublicOffer, now: number): HTMLElement {
   const row = el('li', 'card');
@@ -401,7 +403,7 @@ const OPEN_FAILURES: Record<number, string> = {
   503: 'The door has reached its limit for now. Try again later.',
 };
 
-type JobMode = 'python' | 'fetch';
+type JobMode = 'python' | 'fetch' | 'home';
 
 /** A script the python job will take: non-blank, at most 8 KiB of UTF-8. */
 function checkScript(text: string): string | undefined {
@@ -416,8 +418,9 @@ function rentForm(o: PublicOffer, close: () => void): HTMLElement {
   const modes: JobMode[] = [];
   if (o.images.includes(PYTHON_IMAGE)) modes.push('python');
   if (o.images.includes(FETCH_IMAGE) || o.images.length === 0) modes.push('fetch');
+  if (o.images.includes(HOME_IMAGE)) modes.push('home');
   let mode: JobMode = modes[0] ?? 'fetch';
-  const drafts: Record<JobMode, string> = { python: EXAMPLE_SCRIPT, fetch: '' };
+  const drafts: Record<JobMode, string> = { python: EXAMPLE_SCRIPT, fetch: '', home: '' };
 
   const key = o.offerId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24);
   const area = el('textarea');
@@ -433,6 +436,10 @@ function rentForm(o: PublicOffer, close: () => void): HTMLElement {
       label.textContent = 'Python script to run. Up to 8 KiB, NumPy included, no network. Its output comes back when it finishes.';
       area.placeholder = 'print("hello")';
       area.rows = 14;
+    } else if (m === 'home') {
+      label.textContent = 'SSH public keys that may log in, up to 8, one per line. The same keys reach the same disk on a later lease.';
+      area.placeholder = 'ssh-ed25519 AAAA… you@host';
+      area.rows = 4;
     } else {
       label.textContent = `Pages to fetch, up to ${MAX_URLS}, one address per line.`;
       area.placeholder = 'https://example.com';
@@ -454,7 +461,7 @@ function rentForm(o: PublicOffer, close: () => void): HTMLElement {
       r.value = m;
       r.checked = m === mode;
       r.addEventListener('change', () => r.checked && show(m));
-      choose.append(el('label', undefined, r, m === 'python' ? 'Run Python' : 'Fetch pages'));
+      choose.append(el('label', undefined, r, m === 'python' ? 'Run Python' : m === 'home' ? 'A home (SSH keys)' : 'Fetch pages'));
     }
   }
 
@@ -472,8 +479,15 @@ function rentForm(o: PublicOffer, close: () => void): HTMLElement {
   form.addEventListener('submit', (ev) => {
     ev.preventDefault();
     void (async () => {
-      let job: { urls: string[] } | { python: { script: string } };
-      if (mode === 'python') {
+      let job: { urls: string[] } | { python: { script: string } } | { home: { sshKeys: string[] } };
+      if (mode === 'home') {
+        const sshKeys = parseSshKeys(area.value);
+        if (typeof sshKeys === 'string') {
+          status.textContent = sshKeys;
+          return;
+        }
+        job = { home: { sshKeys } };
+      } else if (mode === 'python') {
         const bad = checkScript(area.value);
         if (bad) {
           status.textContent = bad;
@@ -550,6 +564,8 @@ interface LeasePage {
     legendLeft: HTMLElement;
     legendRight: HTMLElement;
     msg: HTMLElement;
+    /** A home's SSH line, once the host has published it. */
+    access: HTMLElement;
     timeline: HTMLElement;
     channel: HTMLElement;
     out: HTMLElement;
@@ -587,6 +603,7 @@ async function showLease(id: string, token: number): Promise<void> {
     legendLeft,
     legendRight,
     msg: el('div'),
+    access: el('div'),
     timeline: el('ol', 'timeline'),
     channel: el('div'),
     out: el('div'),
@@ -607,6 +624,7 @@ async function showLease(id: string, token: number): Promise<void> {
     el('div', 'facts', fact('State', ui.state), fact('Intervals paid', ui.paid), fact('Spent', ui.spent), fact('Paid through', ui.through, ui.throughSub)),
     ui.interval,
     ui.msg,
+    ui.access,
     el('div', 'two-col', el('section', undefined, el('h2', undefined, 'What happened'), ui.timeline), el('section', undefined, ui.channel)),
     ui.out,
   );
@@ -832,6 +850,29 @@ function render(p: LeasePage): void {
       out.push(box);
     }
     if (p.notice) out.push(el('p', 'muted', p.notice));
+    return out;
+  });
+
+  // A running home: how to reach it. The host publishes the onion address a little after the first tick.
+  const home = lease?.job.image === HOME_IMAGE;
+  const raw = home && lease?.state === 'running' ? lease.access?.ssh : undefined;
+  // The line is pasted into a shell: show it only when every part is plain.
+  const ssh = raw && /^[a-z2-7]{56}\.anyone$/.test(raw.host) && /^[a-z_][a-z0-9_-]{0,31}$/.test(raw.user) && Number.isInteger(raw.port) && raw.port > 0 && raw.port < 65536 ? raw : undefined;
+  const restarts = home ? lease?.restarts ?? 0 : 0;
+  setRegion(ui.access, `${home}|${lease?.state}|${ssh?.user}@${ssh?.host}:${ssh?.port}|${restarts}`, () => {
+    if (!home || !lease) return [];
+    const out: Child[] = [];
+    if (lease.state === 'running') {
+      out.push(el('h2', undefined, 'Your home'));
+      if (ssh) {
+        const port = ssh.port === 22 ? '' : ` -p ${ssh.port}`;
+        out.push(el('pre', 'mono', `ssh -o ProxyCommand="nc -x 127.0.0.1:9050 %h %p"${port} ${ssh.user}@${ssh.host}`));
+        out.push(el('p', 'note', 'needs an Anyone client; see the ', link('agents page', '/agents', false)));
+      } else {
+        out.push(el('p', 'muted', 'address pending'));
+      }
+    }
+    if (restarts > 0) out.push(el('p', 'muted', `The host restarted this home ${restarts} ${restarts === 1 ? 'time' : 'times'}.`));
     return out;
   });
 

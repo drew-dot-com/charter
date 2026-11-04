@@ -231,6 +231,31 @@ test('POST /v1/leases refuses a bad python body, and a python job on an offer wi
   }
 });
 
+test('a home body reaches the host and its access comes back through the door', async () => {
+  const home: Offer = { ...OFFER, images: ['charter-job-python', 'charter-home'], home: { diskGiB: 10, retentionDays: 30, slots: 2 } };
+  const key = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl you@host';
+  const access = { ssh: { host: `${'a'.repeat(56)}.anyone`, port: 22, user: 'tenant' } };
+  const host = fakeHost({
+    status: async () => lease({ job: { image: 'charter-home', args: { SSH_KEYS: key.split(' ').slice(0, 2).join(' ') } }, homeId: '0123456789abcdef', restarts: 2, access }),
+  });
+  const d = await start(host, { offers: async () => [home] });
+  try {
+    const list = (await (await d.get('/v1/offers')).json()) as Array<{ home?: unknown }>;
+    assert.deepEqual(list[0]!.home, { diskGiB: 10, retentionDays: 30, slots: 2 }, 'the offer shows its home terms');
+    const open = await d.post('/v1/leases', { offerId: OFFER_ID, home: { sshKeys: [key] } });
+    assert.equal(open.status, 200);
+    assert.deepEqual(host.opened, [{ image: 'charter-home', args: { SSH_KEYS: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' } }]);
+    const st = (await (await d.get(`/v1/leases/${LEASE}`)).json()) as { lease: Lease; offer: { home?: unknown } };
+    assert.deepEqual(st.lease.access, access);
+    assert.equal(st.lease.restarts, 2);
+    assert.equal(st.lease.homeId, '0123456789abcdef');
+    assert.deepEqual(st.offer.home, { diskGiB: 10, retentionDays: 30, slots: 2 });
+    assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, home: { sshKeys: ['not a key'] } })).status, 400);
+  } finally {
+    d.close();
+  }
+});
+
 test('GET /v1/offers lists an offer that carries only the python image', async () => {
   const py: Offer = { ...OFFER, images: ['charter-job-python'] };
   const d = await start(fakeHost(), { offers: async () => [py] });
