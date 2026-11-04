@@ -314,6 +314,6 @@ at doubling gaps, then at the half-way point where it pays again; the wait-out a
 tick is watched the same way. At most nine reads a watched hour (0.0009 USDC). The skill's
 `references/lease-loop.sh` and SKILL.md step 1 got the same change (plugin 0.2.1).
 
-- [ ] `toon` VM (Edison's `charter` CLI): source backup `~/src/charter.bak-20261104-*-prewatch`,
+- [x] `toon` VM (Edison's `charter` CLI): source backup `~/src/charter.bak-20261104-1225-prewatch`, f7054f8 built 12:25 VM time,
   fresh source from `git archive`, `npm ci && npm run build`, `chmod +x dist/cli.js`.
 - Host and door unchanged: the host's lease machinery and the storefront's own poll were already right.
