@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FIRST_TICK_GRACE_MS, GRACE_MS, LeaseError, due, newLease, onBootFailed, onBooted, onHomeRestarted, onJobExit, onTick, isHome, tickLeadMs } from './lease.js';
+import { readFileSync } from 'node:fs';
 import { homeIdOf, homeJob, normalizeSshKeys } from './jobs.js';
 import type { Offer, JobSpec } from './types.js';
 
@@ -149,7 +150,7 @@ const KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGx1bWFueXJhbmRvbWJ5dGVzMTIzNDU
 
 test('a home lease is born with its homeId and never becomes done on exit', () => {
   const job = homeJob(normalizeSshKeys([KEY])!);
-  const l = newLease('a'.repeat(32), offer, job, 1000);
+  const l = newLease('a'.repeat(32), offer, job, 1000, homeIdOf(normalizeSshKeys([KEY])!));
   assert.equal(isHome(l), true);
   assert.equal(l.homeId, homeIdOf(normalizeSshKeys([KEY])!));
   assert.equal(l.restarts, 0);
@@ -157,4 +158,14 @@ test('a home lease is born with its homeId and never becomes done on exit', () =
   assert.equal(onJobExit(running, 0), running);
   assert.equal(onHomeRestarted(running).restarts, 1);
   assert.equal(isHome(newLease('b'.repeat(32), offer, { image: 'charter-job-python', args: { SCRIPT: 'x' } }, 1000)), false);
+});
+
+test('a home lease without a homeId is refused', () => {
+  assert.throws(() => newLease('a'.repeat(32), offer, homeJob(normalizeSshKeys([KEY])!), 1000), /homeId required for a home/);
+});
+
+test('lease.ts stays browser-safe: no node: import and no jobs.js import', () => {
+  const src = readFileSync(new URL('./lease.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(src, /from\s+['"]node:/);
+  assert.doesNotMatch(src, /from\s+['"]\.\/jobs\.js['"]/);
 });

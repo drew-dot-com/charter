@@ -1,4 +1,4 @@
-import { HOME_IMAGE, homeIdOf, normalizeSshKeys } from './jobs.js';
+import { HOME_IMAGE } from './images.js';
 import type { CloseReason, JobSpec, Lease, Offer } from './types.js';
 
 /** How long past the paid time a later tick may be late. */
@@ -29,10 +29,13 @@ export class LeaseError extends Error {
   }
 }
 
-export function newLease(id: string, offer: Offer, job: JobSpec, now: number): Lease {
+/** A home's id comes from the caller: computing it here would pull node:crypto into the browser bundle. */
+export function newLease(id: string, offer: Offer, job: JobSpec, now: number, homeId?: string): Lease {
   const l: Lease = { id, offerId: offer.id, job, state: 'booting', createdAt: now, paidIntervals: 0 };
-  // The args were validated upstream, so the key set always normalizes.
-  if (isHome(l)) return { ...l, homeId: homeIdOf(normalizeSshKeys(job.args.SSH_KEYS.split('\n'))!), restarts: 0 };
+  if (isHome(l)) {
+    if (!homeId) throw new Error('homeId required for a home');
+    return { ...l, homeId, restarts: 0 };
+  }
   return l;
 }
 

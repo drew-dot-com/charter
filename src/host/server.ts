@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import express from 'express';
-import { normalizeSshKeys } from '../jobs.js';
+import { homeIdOf, normalizeSshKeys } from '../jobs.js';
 import { isHome, LeaseError, newLease, onBootFailed, onBooted, onTick } from '../lease.js';
 import type { CloseReason, JobSpec, Lease, Offer } from '../types.js';
 import { RunnerError, type Runner } from './runner.js';
@@ -83,11 +83,11 @@ export function hostApps(deps: HostDeps): { open: express.Express; tick: express
     if (!job) return void res.status(400).json({ error: 'bad_request' });
 
     const home = isHome({ job });
-    // newLease throws on a key set that does not normalize, so refuse it first.
-    if (home && !normalizeSshKeys(job.args.SSH_KEYS?.split('\n'))) return void res.status(400).json({ error: 'bad_request' });
+    const keys = home ? normalizeSshKeys(job.args.SSH_KEYS?.split('\n')) : undefined;
+    if (home && !keys) return void res.status(400).json({ error: 'bad_request' });
 
     const leaseId = randomBytes(16).toString('hex');
-    const lease = newLease(leaseId, offer, job, now());
+    const lease = newLease(leaseId, offer, job, now(), keys ? homeIdOf(keys) : undefined);
     const refuse = (closedReason: CloseReason) => {
       store.put({ ...lease, state: 'closed', closedReason });
       res.json({ leaseId, state: 'closed', closedReason });
