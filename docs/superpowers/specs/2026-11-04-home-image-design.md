@@ -207,9 +207,10 @@ The agents page says: "slow, hidden, sometimes refused by a service that dislike
 ### The disk: 2 GiB, keyed by the tenant's keys, kept 7 days free (Claude's call)
 
 The disk is an ext4 image file, `<dataDir>/homes/<homeId>/disk.img`, 2 GiB, sparse, made with
-`truncate` and `mkfs.ext4` (no root needed), and handed to docker as a named volume
-`charter-home-<homeId>` through the `local` driver (`type=ext4`, `device=<file>`, `o=loop`), mounted
-at `/home/tenant`. A full disk fails inside the box and cannot grow past 2 GiB or touch the VM's
+`truncate` and `mkfs.ext4 -E root_owner=10001:10001` (no root needed). The host attaches the image
+with `sudo -n losetup` and hands docker the loop device as a named volume `charter-home-<homeId>`
+through the `local` driver (`type=ext4`, `device=/dev/loopN`), mounted at `/home/tenant`; it
+re-attaches and re-points the volume on every `ensureHome`, since a reboot detaches the image. A full disk fails inside the box and cannot grow past 2 GiB or touch the VM's
 free space beyond it. The host checks free space before creating a disk and refuses the open
 (`boot_failed`, "no disk") when less than 3 GiB would remain.
 

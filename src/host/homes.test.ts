@@ -9,7 +9,9 @@ import {
   HomeStore,
   HOME_RETENTION_MS,
   allocatePort,
+  attachDisk,
   createDisk,
+  detachDisk,
   diskPath,
   ensureVolume,
   freeBytes,
@@ -79,23 +81,62 @@ test('createDisk refuses an existing file and labels a truncate failure', async 
 test('ensureVolume throws volume_failed when create fails', async () => {
   const f = fake(() => ({ code: 1, stderr: ' boom\n' }));
   await assert.rejects(
-    ensureVolume(f.exec, 'v', '/h/disk.img'),
+    ensureVolume(f.exec, 'v', '/dev/loop3'),
     (e: unknown) => e instanceof HomeError && e.code === 'volume_failed' && e.message === 'boom',
   );
 });
 
-test('ensureVolume creates the loop volume only when inspect fails', async () => {
+const INSPECT = ['volume', 'inspect', '-f', '{{index .Options "device"}}', 'charter-home-h1'];
+
+test('ensureVolume creates the volume on the loop device, with no o=loop, only when inspect fails', async () => {
   const miss = fake((a) => ({ code: a[1] === 'inspect' ? 1 : 0 }));
-  await ensureVolume(miss.exec, 'charter-home-h1', '/h/disk.img');
+  await ensureVolume(miss.exec, 'charter-home-h1', '/dev/loop3');
   assert.equal(miss.calls.length, 2);
-  assert.deepEqual(miss.calls[0]!.args, ['volume', 'inspect', 'charter-home-h1']);
-  const a = miss.calls[1]!.args.join(' ');
-  assert.ok(a.includes('--opt type=ext4 --opt device=/h/disk.img --opt o=loop'), a);
-  assert.ok(a.startsWith('volume create --driver local'), a);
-  assert.equal(miss.calls[1]!.args.at(-1), 'charter-home-h1');
-  const hit = fake();
-  await ensureVolume(hit.exec, 'charter-home-h1', '/h/disk.img');
+  assert.deepEqual(miss.calls[0]!.args, INSPECT);
+  assert.deepEqual(miss.calls[1]!.args, [
+    'volume', 'create', '--driver', 'local', '--opt', 'type=ext4', '--opt', 'device=/dev/loop3', 'charter-home-h1',
+  ]);
+  const hit = fake(() => ({ code: 0, stdout: '/dev/loop3\n' }));
+  await ensureVolume(hit.exec, 'charter-home-h1', '/dev/loop3');
   assert.equal(hit.calls.length, 1);
+});
+
+test('ensureVolume recreates a volume that points at another loop device', async () => {
+  const f = fake((a) => ({ code: 0, stdout: a[1] === 'inspect' ? '/dev/loop1\n' : '' }));
+  await ensureVolume(f.exec, 'charter-home-h1', '/dev/loop4');
+  assert.deepEqual(f.calls.map((c) => c.args.slice(0, 2).join(' ')), ['volume inspect', 'volume rm', 'volume create']);
+  assert.deepEqual(f.calls[1]!.args, ['volume', 'rm', '-f', 'charter-home-h1']);
+  assert.ok(f.calls[2]!.args.includes('device=/dev/loop4'));
+});
+
+test('attachDisk attaches an unattached image and returns the printed device', async () => {
+  const f = fake((a) => ({ code: 0, stdout: a[0] === '-j' ? '' : '/dev/loop7\n' }));
+  assert.equal(await attachDisk(f.exec, '/h/disk.img'), '/dev/loop7');
+  assert.deepEqual(f.calls.map((c) => c.args), [['-j', '/h/disk.img'], ['--find', '--show', '/h/disk.img']]);
+});
+
+test('attachDisk reuses the device an image is already attached to', async () => {
+  const f = fake(() => ({ code: 0, stdout: '/dev/loop2: [2049]:131 (/h/disk.img)\n' }));
+  assert.equal(await attachDisk(f.exec, '/h/disk.img'), '/dev/loop2');
+  assert.equal(f.calls.length, 1);
+});
+
+test('attachDisk throws attach_failed on a failed or unparseable losetup', async () => {
+  const bad = fake((a) => (a[0] === '-j' ? { code: 0 } : { code: 1, stderr: 'sudo: a password is required\n' }));
+  await assert.rejects(
+    attachDisk(bad.exec, '/h/disk.img'),
+    (e: unknown) => e instanceof HomeError && e.code === 'attach_failed' && /password/.test(e.message),
+  );
+  const odd = fake((a) => ({ code: 0, stdout: a[0] === '-j' ? '' : 'what\n' }));
+  await assert.rejects(attachDisk(odd.exec, '/h/disk.img'), (e: unknown) => e instanceof HomeError && e.code === 'attach_failed');
+  const j = fake(() => ({ code: 1, stderr: 'no losetup' }));
+  await assert.rejects(attachDisk(j.exec, '/h/disk.img'), (e: unknown) => e instanceof HomeError && e.code === 'attach_failed');
+});
+
+test('detachDisk runs losetup -d and ignores errors', async () => {
+  const f = fake(() => ({ code: 1, stderr: 'busy' }));
+  await detachDisk(f.exec, '/dev/loop2');
+  assert.deepEqual(f.calls[0]!.args, ['-d', '/dev/loop2']);
 });
 
 test('removeVolume forces removal and ignores errors', async () => {

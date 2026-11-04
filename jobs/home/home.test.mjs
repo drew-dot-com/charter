@@ -10,8 +10,12 @@ const DIR = dirname(fileURLToPath(import.meta.url));
 // The build takes minutes and CI has no docker daemon this test may use: opt in on a docker host.
 const ready = process.env.CHARTER_IMAGE_TESTS === '1' && spawnSync('docker', ['info'], { stdio: 'ignore' }).status === 0;
 // The disk is built the way the host builds it, which needs mkfs.ext4 here.
+// The disk is attached as root, as the host does it, so the test needs sudo without a prompt too.
 const mkfs = ready && spawnSync('mkfs.ext4', ['-V'], { stdio: 'ignore' }).status === 0;
-const skip = !ready ? 'set CHARTER_IMAGE_TESTS=1 on a docker host' : !mkfs ? 'mkfs.ext4 not installed' : false;
+const sudo = ready && spawnSync('sudo', ['-n', 'true'], { stdio: 'ignore' }).status === 0;
+const skip = !ready ? 'set CHARTER_IMAGE_TESTS=1 on a docker host'
+  : !mkfs ? 'mkfs.ext4 not installed'
+  : !sudo ? 'sudo -n not available' : false;
 const opts = { skip, timeout: 15 * 60_000 };
 
 function sh(cmd, args, input) {
@@ -33,10 +37,12 @@ test('a home keeps its files, boot script and host key across a restart, and its
   const tag = `charter-home-test:${process.pid}`;
   const vol = `charter-home-test-${process.pid}`;
   const names = [];
+  let loop;
   const tmp = mkdtempSync(join(tmpdir(), 'charter-home-'));
   t.after(() => {
     for (const n of names) sh('docker', ['rm', '-f', n]);
     sh('docker', ['volume', 'rm', '-f', vol]);
+    if (loop) sh('sudo', ['-n', 'losetup', '-d', loop]);
     sh('docker', ['rmi', tag]);
     rmSync(tmp, { recursive: true, force: true });
   });
@@ -46,12 +52,17 @@ test('a home keeps its files, boot script and host key across a restart, and its
     assert.equal(sh('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', join(tmp, k)]).code, 0);
   }
   const pub = (k) => readFileSync(join(tmp, `${k}.pub`), 'utf8').trim().split(' ').slice(0, 2).join(' ');
-  // A production disk: a fresh ext4 loop image whose root the tenant uid owns, so docker copies nothing in.
+  // A production disk: a fresh ext4 image whose root the tenant uid owns, so docker copies nothing in,
+  // attached by the host and handed to docker as a loop device (the local driver has no loop option).
   const disk = join(tmp, 'disk.img');
   assert.equal(sh('truncate', ['-s', '1G', disk]).code, 0);
   const fs = sh('mkfs.ext4', ['-F', '-q', '-m', '0', '-E', 'root_owner=10001:10001', disk]);
   assert.equal(fs.code, 0, fs.err);
-  docker('volume', 'create', '--driver', 'local', '--opt', 'type=ext4', '--opt', `device=${disk}`, '--opt', 'o=loop', vol);
+  const attach = sh('sudo', ['-n', 'losetup', '--find', '--show', disk]);
+  assert.equal(attach.code, 0, attach.err);
+  loop = attach.out;
+  assert.match(loop, /^\/dev\/loop\d+$/);
+  docker('volume', 'create', '--driver', 'local', '--opt', 'type=ext4', '--opt', `device=${loop}`, vol);
   // The host's jobs run under gVisor: so does this one, when the daemon has it.
   const runtime = docker('info', '--format', '{{json .Runtimes}}').includes('"runsc"') ? ['--runtime', 'runsc'] : [];
 

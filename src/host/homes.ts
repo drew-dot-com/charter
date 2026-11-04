@@ -18,7 +18,7 @@ export const HOME_PORT_BASE = 22000;
 
 export class HomeError extends Error {
   constructor(
-    readonly code: 'mkfs_failed' | 'no_disk' | 'volume_failed' | 'disk_exists',
+    readonly code: 'mkfs_failed' | 'no_disk' | 'volume_failed' | 'disk_exists' | 'attach_failed',
     message: string,
   ) {
     super(message);
@@ -104,11 +104,40 @@ export async function createDisk(
   if (m.code !== 0) throw new HomeError('mkfs_failed', m.stderr);
 }
 
-export async function ensureVolume(docker: Exec, name: string, file: string): Promise<void> {
-  const r = await docker(['volume', 'inspect', name], {});
-  if (r.code === 0) return;
+/** The loop device a disk image is attached to, from `losetup -j` output, or undefined. */
+function loopDevice(out: string): string | undefined {
+  return /^(\/dev\/loop\d+)(?::|\s*$)/m.exec(out)?.[1];
+}
+
+/**
+ * The image's loop device, attaching it when it is not attached. docker's local driver hands its
+ * options to mount(2), which has no `loop` option, so the host attaches the image itself.
+ */
+export async function attachDisk(losetup: Exec, file: string): Promise<string> {
+  const j = await losetup(['-j', file], {});
+  if (j.code !== 0) throw new HomeError('attach_failed', j.stderr.trim());
+  const attached = loopDevice(j.stdout);
+  if (attached) return attached;
+  const a = await losetup(['--find', '--show', file], {});
+  if (a.code !== 0) throw new HomeError('attach_failed', a.stderr.trim());
+  const dev = loopDevice(a.stdout);
+  if (!dev) throw new HomeError('attach_failed', `losetup printed ${JSON.stringify(a.stdout.trim())}`);
+  return dev;
+}
+
+export async function detachDisk(losetup: Exec, device: string): Promise<void> {
+  await losetup(['-d', device], {});
+}
+
+export async function ensureVolume(docker: Exec, name: string, device: string): Promise<void> {
+  const r = await docker(['volume', 'inspect', '-f', '{{index .Options "device"}}', name], {});
+  if (r.code === 0) {
+    if (r.stdout.trim() === device) return;
+    // The loop number can change after a reboot: point the volume at the device the disk has now.
+    await removeVolume(docker, name);
+  }
   const c = await docker(
-    ['volume', 'create', '--driver', 'local', '--opt', 'type=ext4', '--opt', `device=${file}`, '--opt', 'o=loop', name],
+    ['volume', 'create', '--driver', 'local', '--opt', 'type=ext4', '--opt', `device=${device}`, name],
     {},
   );
   if (c.code !== 0) throw new HomeError('volume_failed', c.stderr.trim());

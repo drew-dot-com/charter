@@ -305,14 +305,39 @@ async function homeSetup(free = 10 * GIB, mkfsCode: () => number = () => 0, rmGa
   const homesDir = join(root, 'homes');
   const kills: Array<[number, string]> = [];
   const tools: string[] = [];
-  // Volumes docker knows about; inspect succeeds only after create.
-  const volumes = new Set<string>();
+  // Volumes docker knows about, by name to device; inspect succeeds only after create.
+  const volumes = new Map<string, string>();
   const { exec: fakeExec, calls } = fake((args) => {
-    if (args[0] === 'volume' && args[1] === 'inspect') return { code: volumes.has(args[2]!) ? 0 : 1 };
-    if (args[0] === 'volume' && args[1] === 'create') volumes.add(args[args.length - 1]!);
+    if (args[0] === 'volume' && args[1] === 'inspect') {
+      const dev = volumes.get(args[args.length - 1]!);
+      return dev === undefined ? { code: 1 } : { code: 0, stdout: `${dev}\n` };
+    }
+    if (args[0] === 'volume' && args[1] === 'create') {
+      const dev = args.find((a) => a.startsWith('device='))!.slice('device='.length);
+      volumes.set(args[args.length - 1]!, dev);
+    }
     if (args[0] === 'volume' && args[1] === 'rm') volumes.delete(args[args.length - 1]!);
     return { code: 0 };
   });
+  // Loop devices by image file, like the kernel's: attach takes the next free number.
+  const loops = new Map<string, string>();
+  const loopLog: string[] = [];
+  let nextLoop = 0;
+  const losetup: Exec = async (args) => {
+    loopLog.push(`losetup ${args.join(' ')}`);
+    const ok = (stdout = '') => ({ code: 0, stdout, stderr: '' });
+    if (args[0] === '-j') {
+      const dev = loops.get(args[1]!);
+      return ok(dev ? `${dev}: [2049]:12 (${args[1]})\n` : '');
+    }
+    if (args[0] === '--find') {
+      const dev = `/dev/loop${nextLoop++}`;
+      loops.set(args[2]!, dev);
+      return ok(`${dev}\n`);
+    }
+    if (args[0] === '-d') for (const [f, d] of loops) if (d === args[1]) loops.delete(f);
+    return ok();
+  };
   // A held `volume rm` lets a test keep a removal mid-flight.
   const exec: Exec = async (args, env) => {
     if (rmGate && args[0] === 'volume' && args[1] === 'rm') await rmGate;
@@ -341,6 +366,7 @@ async function homeSetup(free = 10 * GIB, mkfsCode: () => number = () => 0, rmGa
         const code = mkfsCode();
         return { code, stdout: '', stderr: code === 0 ? '' : 'mkfs: bad superblock' };
       },
+      losetup,
     },
     offerJson: '{"price":"7000"}',
     connectorUrl: 'https://connector.mainnet.toonprotocol.dev',
@@ -348,7 +374,7 @@ async function homeSetup(free = 10 * GIB, mkfsCode: () => number = () => 0, rmGa
     now: () => 1_700_000_000_000,
   };
   const r = dockerRunner({ exec, outRoot: join(root, 'out'), allow: ['charter-home'], runtime: 'runsc', home });
-  return { r, calls, tools, kills, homes, home, homesDir, root };
+  return { r, calls, tools, kills, homes, home, homesDir, root, volumes, loops, loopLog };
 }
 
 test('create for a home puts the box on its network with its disk, its port and its env, and nothing of a job\'s', async () => {
@@ -417,7 +443,10 @@ test('ensureHome makes the disk and volume once and refuses a new disk under the
     t.calls.map((c) => c.args.slice(0, 2).join(' ')),
     ['volume inspect', 'volume create'],
   );
-  assert.ok(t.calls[1]!.args.includes(`device=${disk}`));
+  // docker gets the loop device the host attached, never the image file.
+  assert.deepEqual(t.loopLog, [`losetup -j ${disk}`, `losetup --find --show ${disk}`]);
+  assert.ok(t.calls[1]!.args.includes('device=/dev/loop0'));
+  assert.ok(!t.calls[1]!.args.includes('o=loop'));
   assert.equal(t.calls[1]!.args[t.calls[1]!.args.length - 1], vol);
   assert.ok((await stat(join(t.homesDir, HOME_ID, 'charter'))).isDirectory());
 
@@ -425,7 +454,7 @@ test('ensureHome makes the disk and volume once and refuses a new disk under the
   t.calls.length = 0;
   assert.deepEqual(await t.r.ensureHome(HOME_ID), rec);
   assert.deepEqual(t.tools, []);
-  assert.deepEqual(t.calls.map((c) => c.args.join(' ')), [`volume inspect ${vol}`]);
+  assert.deepEqual(t.calls.map((c) => c.args.join(' ')), [`volume inspect -f {{index .Options "device"}} ${vol}`]);
 
   // A second home takes the next port.
   const other = homeIdOf(normalizeSshKeys(['ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG90aGVy'])!);
@@ -441,6 +470,34 @@ test('ensureHome makes the disk and volume once and refuses a new disk under the
   // The refusal reserved no port: the next new home still gets the first one.
   low.home.freeBytes = async () => 10 * GIB;
   assert.equal((await low.r.ensureHome(other)).port, 22000);
+});
+
+test('after a reboot an existing home is re-attached and its volume re-pointed at the new loop device', async () => {
+  const t = await homeSetup();
+  const disk = join(t.homesDir, HOME_ID, 'disk.img');
+  const vol = `charter-home-${HOME_ID}`;
+  await t.r.ensureHome(HOME_ID);
+  assert.equal(t.volumes.get(vol), '/dev/loop0');
+  // A reboot detaches every loop device; the next attach takes another number.
+  t.loops.clear();
+  t.tools.length = 0;
+  t.calls.length = 0;
+  t.loopLog.length = 0;
+  await t.r.ensureHome(HOME_ID);
+  assert.deepEqual(t.tools, [], 'the disk is kept, never formatted again');
+  assert.deepEqual(t.loopLog, [`losetup -j ${disk}`, `losetup --find --show ${disk}`]);
+  assert.equal(t.loops.get(disk), '/dev/loop1');
+  assert.deepEqual(t.calls.map((c) => c.args.slice(0, 2).join(' ')), ['volume inspect', 'volume rm', 'volume create']);
+  assert.equal(t.volumes.get(vol), '/dev/loop1');
+});
+
+test('ensureHome detaches the disk it made when the volume fails', async () => {
+  const t = await homeSetup();
+  const { exec } = fake(() => ({ code: 1, stderr: 'no such device' }));
+  const r = dockerRunner({ exec, outRoot: join(t.root, 'out'), allow: ['charter-home'], home: t.home });
+  await assert.rejects(r.ensureHome(HOME_ID), (e: unknown) => e instanceof RunnerError && e.code === 'boot_failed');
+  assert.equal(t.loops.size, 0);
+  await assert.rejects(access(join(t.homesDir, HOME_ID)));
 });
 
 test('ensureHome cleans up after a failed mkfs, so the next call formats a fresh disk', async () => {
@@ -532,6 +589,9 @@ test('removeHome retires the onion, removes the volume, the directory and the re
   await assert.rejects(access(join(t.home.anon.hsDir, `${HOME_ID}.conf`)));
   assert.deepEqual(t.kills, [[4242, 'SIGHUP']]);
   assert.deepEqual(t.calls.map((c) => c.args.join(' ')), [`volume rm -f charter-home-${HOME_ID}`]);
+  // The image is detached, so its blocks are freed with the directory.
+  assert.deepEqual(t.loops.size, 0);
+  assert.ok(t.loopLog.includes('losetup -d /dev/loop0'));
   await assert.rejects(access(join(t.homesDir, HOME_ID)));
   assert.equal(t.homes.get(HOME_ID), undefined);
   await t.r.removeHome(HOME_ID);

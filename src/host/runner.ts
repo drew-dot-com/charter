@@ -8,7 +8,9 @@ import type { HomeAccess, JobSpec } from '../types.js';
 import { onionHostname, publishHiddenService, retireHiddenService, type AnonDeps } from './anon.js';
 import {
   allocatePort,
+  attachDisk,
   createDisk,
+  detachDisk,
   diskPath,
   ensureVolume,
   freeBytes as statFreeBytes,
@@ -92,7 +94,8 @@ export interface HomeRunnerOpts {
   httpPort: number;
   homes: HomeStore;
   anon: AnonDeps;
-  tools: { truncate: Exec; mkfs: Exec };
+  /** losetup runs as root (`sudo -n losetup` on the host): docker gets a loop device, not the image. */
+  tools: { truncate: Exec; mkfs: Exec; losetup: Exec };
   offerJson: string;
   connectorUrl: string;
   freeBytes?: (dir: string) => Promise<number>;
@@ -216,6 +219,7 @@ export function dockerRunner(opts: {
     const disk = diskPath(h.homesDir, homeId);
     let madeDir = false;
     let madeDisk = false;
+    let device: string | undefined;
     try {
       const missing = await access(disk).then(() => false, () => true);
       if (missing) {
@@ -227,13 +231,16 @@ export function dockerRunner(opts: {
         madeDisk = true;
         await createDisk(h.tools, disk, HOME_DISK_GIB);
       }
-      await ensureVolume(exec, volumeName(homeId), disk);
+      // Every call, not only on create: after a reboot the disk is detached and its loop number may differ.
+      device = await attachDisk(h.tools.losetup, disk);
+      await ensureVolume(exec, volumeName(homeId), device);
       // docker create needs the bind source to exist.
       await mkdir(join(dir, 'charter'), { recursive: true });
     } catch (e) {
       // An unformatted image would pass the next call's exists check and never get mkfs.
       if (madeDisk) {
         await removeVolume(exec, volumeName(homeId));
+        if (device) await detachDisk(h.tools.losetup, device);
         await rm(madeDir ? dir : disk, { recursive: true, force: true });
       }
       if (e instanceof RunnerError) throw e;
@@ -241,6 +248,12 @@ export function dockerRunner(opts: {
     }
     if (!existing) h.homes.put(rec);
     return rec;
+  }
+
+  async function detachAttached(h: HomeRunnerOpts, disk: string): Promise<void> {
+    const j = await h.tools.losetup(['-j', disk], {});
+    const dev = /^(\/dev\/loop\d+):/m.exec(j.stdout)?.[1];
+    if (j.code === 0 && dev) await detachDisk(h.tools.losetup, dev);
   }
 
   let chain: Promise<void> = Promise.resolve();
@@ -381,6 +394,8 @@ export function dockerRunner(opts: {
         // First, so anon never serves a conf whose directory is gone.
         await retireHiddenService(h.anon, homeId);
         await removeVolume(exec, volumeName(homeId));
+        // A deleted image stays attached and holds its blocks until the loop device lets go.
+        await detachAttached(h, diskPath(h.homesDir, homeId));
         await rm(join(h.homesDir, homeId), { recursive: true, force: true });
         h.homes.delete(homeId);
       });

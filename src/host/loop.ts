@@ -213,6 +213,8 @@ async function restartHome(deps: LoopDeps, l: Lease, now: number): Promise<void>
   const reason = due(l, now);
   if (reason !== null) return closeAndStop(deps, l, reason, now);
   try {
+    // After a host reboot the disk is detached: re-attach it and re-point its volume first.
+    if (l.homeId) await deps.runner.ensureHome(l.homeId);
     await deps.runner.create(l.id, l.job);
     await deps.runner.start(l.id);
   } catch (e) {

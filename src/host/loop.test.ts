@@ -406,12 +406,14 @@ test('reconcile re-creates a paid home whose container is gone and counts the re
   const calls: string[] = [];
   const { r, stops } = fakeRunner({
     alive: async () => false,
+    ensureHome: async (id) => (calls.push(`ensureHome ${id}`), { homeId: id, port: 22000, createdAt: 0, paidOnce: true }),
     create: async (id, job) => void calls.push(`create ${id} ${job.image}`),
     start: async (id) => void calls.push(`start ${id}`),
     publishHome: async (id) => void calls.push(`publish ${id}`),
   });
   await reconcile({ store, runner: r, homes, now: () => T0 + 1000 });
-  assert.deepEqual(calls, ['create h charter-home', 'start h', `publish ${HOME_ID}`]);
+  // ensureHome first: after a reboot it re-attaches the disk the new container mounts.
+  assert.deepEqual(calls, [`ensureHome ${HOME_ID}`, 'create h charter-home', 'start h', `publish ${HOME_ID}`]);
   assert.deepEqual(stops, []);
   assert.equal(store.get('h')!.state, 'running');
   assert.equal(store.get('h')!.restarts, 1);
@@ -577,6 +579,23 @@ test('reconcile closes a booting home whose container is gone as host_restart', 
   assert.equal(creates, 0);
   assert.deepEqual(stops, ['h']);
   assert.equal(homes.get(HOME_ID), undefined);
+});
+
+test('reconcile closes a home whose disk cannot be re-attached as host_restart without creating it', async () => {
+  const store = new LeaseStore();
+  store.put(homeLease({ id: 'h' }));
+  const homes = homeStore({ homeId: HOME_ID, paidOnce: true });
+  let creates = 0;
+  const { r, stops } = fakeRunner({
+    alive: async () => false,
+    ensureHome: async () => { throw new RunnerError('boot_failed', 'losetup: no free loop device'); },
+    create: async () => void creates++,
+  });
+  await reconcile({ store, runner: r, homes, now: () => T0 + 1000, log: () => undefined });
+  assert.equal(store.get('h')!.closedReason, 'host_restart');
+  assert.equal(creates, 0);
+  assert.deepEqual(stops, ['h']);
+  assert.equal(homes.get(HOME_ID)!.lastClosedAt, T0 + 1000);
 });
 
 test('reconcile closes a home whose re-create fails as host_restart without starting it', async () => {

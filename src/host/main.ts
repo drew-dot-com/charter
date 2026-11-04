@@ -79,7 +79,12 @@ async function main(argv: string[]): Promise<number> {
             httpPort: h.httpPort,
             homes,
             anon: { hsDir: h.anonHsDir, homesDir: h.dir, pidFile: h.anonPidFile },
-            tools: { truncate: execFileExec('truncate'), mkfs: execFileExec('mkfs.ext4') },
+            tools: {
+              truncate: execFileExec('truncate'),
+              mkfs: execFileExec('mkfs.ext4'),
+              // Loop devices need root; -n fails fast instead of waiting on a password prompt.
+              losetup: (args, env) => execFileExec('sudo')(['-n', 'losetup', ...args], env),
+            },
             offerJson: offerToJson({ ...cfg.offer, expiresAt: 0 }),
             connectorUrl: h.tenantConnectorUrl,
           }
