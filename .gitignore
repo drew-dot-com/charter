@@ -5,3 +5,4 @@ web/dist/
 *.log
 test-results/
 playwright-report/
+.worktrees/
