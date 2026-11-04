@@ -6,7 +6,7 @@ import { hostApi } from '../tenant/host-api.js';
 import { fetchOffers } from '../tenant/offers.js';
 import { BatchSettlementChannelManager } from '@x402/evm/batch-settlement/server';
 import { channelCommand } from './channel.js';
-import { startClaims, x402Command } from './claims.js';
+import { idleMsFor, startClaims, x402Command } from './claims.js';
 import { parseClaimKey, parseDoorHosts, parseTrustProxy } from './config.js';
 import { DoorLedger, LEDGER_FILE } from './ledger.js';
 import { doorApp } from './server.js';
@@ -62,6 +62,7 @@ async function main(): Promise<void> {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('CHARTER_DOOR_PORT must be a port number');
   const relayUrl = need(env, 'CHARTER_RELAY_URL');
   const dataDir = need(env, 'CHARTER_DATA_DIR');
+  const ledger = new DoorLedger(join(dataDir, LEDGER_FILE));
   const trustProxy = parseTrustProxy(env.CHARTER_DOOR_TRUST_PROXY);
   const hosts = parseDoorHosts(env.CHARTER_DOOR_HOSTS);
 
@@ -88,7 +89,7 @@ async function main(): Promise<void> {
     hosts,
     headroom: () => client.headroom(),
     reopen: () => client.warm(),
-    ledger: new DoorLedger(join(dataDir, LEDGER_FILE)),
+    ledger,
     dataDir,
     x402,
     schemes,
@@ -98,7 +99,8 @@ async function main(): Promise<void> {
   const host = env.CHARTER_DOOR_HOST?.trim() || '127.0.0.1';
   const server = app.listen(port, host);
   console.log(`charter-door listening on ${host}:${port}`);
-  startClaims(claims, (m) => console.log(m));
+  // The refund idle window follows the longest interval of any lease this door has opened (two hours on an hourly offer).
+  startClaims(claims, (m) => console.log(m), setTimeout, () => idleMsFor(ledger.all().map((l) => l.offer.intervalSeconds)));
   await new Promise<void>((resolve) => {
     const stop = () => {
       void claims.stop();
@@ -118,7 +120,9 @@ if (process.argv[2] === 'unblock') {
 async function x402Main(args: string[]): Promise<number> {
   const cfg = x402Config(process.env);
   const schemes = buildSchemes(cfg);
-  return x402Command(args, claimManager(cfg, schemes), schemes.batch.getStorage(), Date.now, (m) => console.log(m));
+  // The same idle window the door uses: read from the ledger the door writes (the constructor only reads).
+  const ledger = new DoorLedger(join(need(process.env, 'CHARTER_DATA_DIR'), LEDGER_FILE));
+  return x402Command(args, claimManager(cfg, schemes), schemes.batch.getStorage(), Date.now, (m) => console.log(m), () => idleMsFor(ledger.all().map((l) => l.offer.intervalSeconds)));
 }
 
 const run = process.argv[2] === 'channel'

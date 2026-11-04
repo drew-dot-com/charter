@@ -11,6 +11,17 @@ export const REFUND_IDLE_MS = 600_000;
 export const CLAIM_INTERVAL_SECONDS = 600;
 export const REFUND_INTERVAL_SECONDS = 600;
 
+/**
+ * The idle window the door uses, given the `intervalSeconds` of every lease it has opened: twice the
+ * longest interval, never under REFUND_IDLE_MS. An hourly payer is quiet for about half an hour between
+ * ticks; the 10 minute default would refund its deposit mid-lease.
+ */
+export function idleMsFor(intervalSeconds: Iterable<number>): number {
+  let longest = 0;
+  for (const s of intervalSeconds) if (s > longest) longest = s;
+  return Math.max(REFUND_IDLE_MS, 2 * 1000 * longest);
+}
+
 /** The slice of BatchSettlementChannelManager the command and the timers use. */
 export type ClaimManager = Pick<BatchSettlementChannelManager, 'claim' | 'refund' | 'settle' | 'start'>;
 
@@ -41,14 +52,19 @@ const SETTLE_AFTER_REFUND_MS = 5_000;
  * the channel's vouchers in the same transaction but settles nothing, so a settle follows each refund round.
  * Errors are logged, never thrown.
  */
-export function startClaims(m: ClaimManager, log: (m: string) => void, schedule: (fn: () => void, ms: number) => unknown = setTimeout): void {
+export function startClaims(
+  m: ClaimManager,
+  log: (m: string) => void,
+  schedule: (fn: () => void, ms: number) => unknown = setTimeout,
+  idleMs: () => number = () => REFUND_IDLE_MS,
+): void {
   let settleDue = false;
   m.start({
     claimIntervalSecs: CLAIM_INTERVAL_SECONDS,
     settleIntervalSecs: CLAIM_INTERVAL_SECONDS,
     refundIntervalSecs: REFUND_INTERVAL_SECONDS,
-    selectClaimChannels: (channels, ctx) => selectClaimable(channels, ctx.now),
-    selectRefundChannels: (channels, ctx) => selectRefundable(channels, ctx.now),
+    selectClaimChannels: (channels, ctx) => selectClaimable(channels, ctx.now, idleMs()),
+    selectRefundChannels: (channels, ctx) => selectRefundable(channels, ctx.now, idleMs()),
     onClaim: (r) => log(`x402 claimed ${r.vouchers} vouchers tx ${r.transaction}`),
     onSettle: (r) => log(`x402 settled tx ${r.transaction}`),
     onRefund: (r) => {
@@ -70,7 +86,14 @@ export function startClaims(m: ClaimManager, log: (m: string) => void, schedule:
 export const X402_USAGE = 'usage: charter-door x402 status | claim | settle | refund';
 
 /** `charter-door x402 status | claim | settle | refund`: the timers' work, now, for a demo or for ops. Safe beside a running door (file locks). */
-export async function x402Command(args: string[], m: ClaimManager, storage: ChannelStorage, now: () => number, out: (m: string) => void): Promise<number> {
+export async function x402Command(
+  args: string[],
+  m: ClaimManager,
+  storage: ChannelStorage,
+  now: () => number,
+  out: (m: string) => void,
+  idleMs: () => number = () => REFUND_IDLE_MS,
+): Promise<number> {
   const [cmd, ...rest] = args;
   if (rest.length > 0 || (cmd !== 'status' && cmd !== 'claim' && cmd !== 'settle' && cmd !== 'refund')) {
     out(X402_USAGE);
@@ -102,8 +125,11 @@ export async function x402Command(args: string[], m: ClaimManager, storage: Chan
       return 1;
     }
   }
-  const targets = selectRefundable(await storage.list(), now());
-  if (targets.length === 0) out('nothing to refund');
+  const targets = selectRefundable(await storage.list(), now(), idleMs());
+  if (targets.length === 0) {
+    out('nothing to refund');
+    return 0;
+  }
   for (const r of await m.refund(targets.map((c) => c.channelId))) out(`refunded ${r.channel} tx ${r.transaction}`);
   return 0;
 }

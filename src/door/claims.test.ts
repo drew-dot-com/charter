@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { InMemoryChannelStorage, type Channel } from '@x402/evm/batch-settlement/server';
-import { REFUND_IDLE_MS, selectClaimable, selectRefundable, startClaims, x402Command, type ClaimManager } from './claims.js';
+import { REFUND_IDLE_MS, idleMsFor, selectClaimable, selectRefundable, startClaims, x402Command, type ClaimManager } from './claims.js';
 
 const NOW = 1_000_000_000;
 const addr = (c: string) => `0x${c.repeat(40)}` as `0x${string}`;
@@ -138,4 +138,41 @@ test('startClaims: a refund claims as it goes, so a settle follows every refund 
   await new Promise((r) => setImmediate(r));
   assert.equal(settles, 2);
   assert.ok(log.some((l) => l.startsWith('x402 settle after refund: nothing to settle')), log.join('|'));
+});
+
+test('idleMsFor: 10 minutes with no leases or 30 s leases, twice the longest interval otherwise', () => {
+  assert.equal(idleMsFor([]), REFUND_IDLE_MS);
+  assert.equal(idleMsFor([30, 30]), REFUND_IDLE_MS);
+  assert.equal(idleMsFor([30, 3600]), 7_200_000);
+});
+
+test('startClaims refunds and claims by the idle window it is given, read on each round', () => {
+  let config: Parameters<ClaimManager['start']>[0] | undefined;
+  const m: ClaimManager = { ...silent, start: (c) => { config = c; } };
+  let idle = REFUND_IDLE_MS;
+  startClaims(m, () => undefined, () => 0 as unknown as ReturnType<typeof setTimeout>, () => idle);
+  assert.ok(config);
+  // Idle 11 minutes, unspent balance and unclaimed vouchers: refundable and claimable at the default window.
+  const quiet = channel({ lastRequestTimestamp: NOW - 11 * 60_000 });
+  const ctx = { now: NOW } as Parameters<NonNullable<typeof config.selectRefundChannels>>[1];
+  assert.deepEqual(config.selectRefundChannels!([quiet], ctx), [quiet]);
+  assert.deepEqual(config.selectClaimChannels!([quiet], ctx), [quiet]);
+  // The first hourly lease opens: the window becomes two hours and the same channel is left alone.
+  idle = idleMsFor([3600]);
+  assert.deepEqual(config.selectRefundChannels!([quiet], ctx), []);
+  assert.deepEqual(config.selectClaimChannels!([quiet], ctx), []);
+});
+
+test('x402Command refund uses the idle window it is given', async () => {
+  const storage = new InMemoryChannelStorage();
+  const quiet = channel({ lastRequestTimestamp: NOW - 11 * 60_000 });
+  await storage.updateChannel(quiet.channelId, () => quiet);
+  const refunded: string[][] = [];
+  const m: ClaimManager = { ...silent, refund: async (x) => { refunded.push(x); return x.map((channel) => ({ channel, transaction: '0xr' })); } };
+  const out: string[] = [];
+  assert.equal(await x402Command(['refund'], m, storage, () => NOW, (msg) => out.push(msg), () => idleMsFor([3600])), 0);
+  assert.deepEqual(refunded, []);
+  assert.deepEqual(out, ['nothing to refund']);
+  assert.equal(await x402Command(['refund'], m, storage, () => NOW, () => undefined), 0);
+  assert.deepEqual(refunded, [[quiet.channelId]]);
 });
