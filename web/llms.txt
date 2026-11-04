@@ -6,7 +6,7 @@ Charter is a compute marketplace on the TOON payment network. A host publishes a
 
 Two jobs exist today. `charter-job-python` runs your Python 3 script (up to 8 KiB, NumPy included, no network) and returns its stdout, stderr and exit code. `charter-job-fetch` loads up to five pages in a headless browser through a hidden exit and returns the text and a screenshot of each.
 
-Prices on the one live host, in USDC: one hour 0.007, a deposit of at least 0.10 that is refunded unspent about two hours after the lease goes quiet. Opening a lease and reading its state cost you nothing through the storefront. A python job that finishes inside its first hour costs 0.007; a day about 0.17; 30 days about 5. Paying ahead is sending the next ticks now, each adding an hour.
+Prices on the one live host, in USDC: one hour 0.007, a deposit of at least 0.10 that is refunded unspent about two hours after the lease goes quiet. Opening a lease and reading its state cost you nothing through the storefront. A python job that finishes inside its first hour costs 0.007; a day about 0.17; 30 days about 5. Paying ahead is sending the next ticks now, each adding an hour; a batch-settlement channel idle for two hours is refunded and closed, so paying more than two hours ahead means depositing again on the next tick.
 
 The cheapest comparison is a 5 EUR per month VPS: Charter costs about the same for a month and needs no account, only a wallet. Today only the two jobs run, and the python job has no network, so this is an hour of sandboxed compute at a time, not yet a server to live in.
 
