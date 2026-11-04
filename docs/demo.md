@@ -323,7 +323,8 @@ tick is watched the same way. At most nine reads a watched hour (0.0009 USDC). T
 The `charter-home` image on toon2: a box with a 2 GiB disk kept between leases, SSH in at an onion
 address, egress only through Charter's own Anyone client. Design:
 `docs/superpowers/specs/2026-11-04-home-image-design.md`; operating it: `docs/ops.md`, "Homes".
-Run 2026-11-04 15:39Z to 16:10Z with Drew present; the lapse and re-open step follows at 17:00Z.
+Run 2026-11-04 20:39Z to 21:25Z with Drew present (toon2's journal prints local time, five hours
+earlier); the lapse and re-open step follows after 21:57:49Z, the paid hour's end.
 
 - [x] Built on the Mac at main 2aa60b1 (`npm test` 484, typecheck, build), tarred `dist`, `src`,
   `package.json`, `jobs/home`, `deploy/host`, copied into toon2 over `~/src/charter`. Source backup:
@@ -341,7 +342,7 @@ Run 2026-11-04 15:39Z to 16:10Z with Drew present; the lapse and re-open step fo
   `getent hosts example.com` resolves from a runc container; SOCKS to `172.19.0.1:22` is refused (97).
 - [x] Host env: backup `~/.config/charter/env.bak-20261104-prehome`; `CHARTER_MAX_HOMES=1`,
   `CHARTER_ANON_HS_DIR`, `CHARTER_ANON_PIDFILE`, `CHARTER_TENANT_CONNECTOR_URL=https://connector.mainnet.toonprotocol.dev/ilp`,
-  `CHARTER_HOST_PUBKEY=cde9138b…fb91`, `charter-home` in `CHARTER_ALLOW_IMAGES`; restart at 15:52Z;
+  `CHARTER_HOST_PUBKEY=cde9138b…fb91`, `charter-home` in `CHARTER_ALLOW_IMAGES`; restart at 20:52Z;
   offer event `9663da03…2bcb` lists three images and `home: { diskGiB: 2, retentionDays: 7, slots: 1 }`.
   First deploy failure: the unit's PATH lacked `/usr/sbin`, so `mkfs.ext4` could not spawn and a bare
   home open answered `boot_failed` (lease `326859c3…`); fixed in the installed unit and in
@@ -355,7 +356,7 @@ Run 2026-11-04 15:39Z to 16:10Z with Drew present; the lapse and re-open step fo
   ~/charter-home-test-key.pub --max-intervals 1 --relay wss://relay.mainnet.toonprotocol.dev`. Lease
   `8608c96c6091a62877bd79ebaf515094`, homeId `4bf93f0a2bde316f`, onion
   `2sqyr6so7vzg67mjwxdzhhs3ik3gkfors4bferrwye37o4mesmmjp7yd.anyone`, `access` set and the ssh line printed
-  by the CLI within a minute of tick 0; paid through 1793829469079 (16:57:49Z).
+  by the CLI within a minute of tick 0; paid through 1793829469079 (21:57:49Z).
 - [x] `ssh` in over the node's SOCKS port (65327): user `tenant`; env `HTTPS_PROXY`, `ALL_PROXY`,
   `CHARTER_LEASE_ID` present in the session; `/charter/paid-through` readable; disk 2.0 GiB, 1.9 free;
   `curl https://example.com` 200 through the proxy; `curl --noproxy '*'` 000; zero setuid files;
@@ -365,16 +366,23 @@ Run 2026-11-04 15:39Z to 16:10Z with Drew present; the lapse and re-open step fo
   Found: `getent hosts example.com` resolved NOTHING in the box. Cause: under runsc docker's embedded
   resolver (127.0.0.11) is unreachable; verified with two throwaway runsc containers (embedded: empty;
   bind-mounted `resolv.conf` with `nameserver 172.19.0.1`: resolves). Fix: the host writes
-  `<home>/charter/resolv.conf` and mounts it at `/etc/resolv.conf` (commit 00886dd), deployed 16:06Z.
-- [x] `systemctl --user restart charter-host` at 16:05Z: the box untouched (container `StartedAt`
-  unchanged, `restarts: 0`). Then `docker rm -f charter-8608c96c…` and a restart at 16:07Z: the box
+  `<home>/charter/resolv.conf` and mounts it at `/etc/resolv.conf` (commit 00886dd), deployed 21:06Z.
+- [x] `systemctl --user restart charter-host` at 21:05Z: the box untouched (container `StartedAt`
+  unchanged, `restarts: 0`). Then `docker rm -f charter-8608c96c…` and a restart at 21:07Z: the box
   re-created on the same volume and port, `restarts: 1`, same onion, `/etc/resolv.conf` mounted from
-  the host, one loop device. In-box recheck of `~/kept`, `~/booted`, DNS and the host key: `<pending>`.
-- [ ] Let the lease lapse (16:57:49Z), open again with the same key: lease `<leaseId>`, `~/kept` there,
+  the host, one loop device. In-box recheck from Edison's node at 21:21Z: `~/kept` present, `~/booted`
+  present (so `boot.sh` ran at start), `getent hosts example.com` resolves inside the box, `/etc/resolv.conf`
+  is the host's file, host key unchanged.
+  Found: for about 14 minutes after the re-create, Edison's node got "Connection timed out during banner
+  exchange" while the onion answered at once through Charter's own anon. Cause: the host's re-publish sent
+  anon a HUP, which "resets internal state" and kills the live rendezvous circuits; the client kept
+  attaching to a dead one until it expired. Fix: publishing an unchanged onion conf sends no HUP (commit
+  712a185), deployed 21:24Z.
+- [ ] Let the lease lapse (21:57:49Z), open again with the same key: lease `<leaseId>`, `~/kept` there,
   same onion address. Spend for the proof so far: open 1000 + tick 7000 + status reads.
 - [ ] From inside the box: one `charter status` with `CHARTER_PAYER=toon-client` against a channel Drew
   funds (channel `<id>`, Base ETH for the open included): `<result>`. The HTTP half (Node fetch through
-  the env proxy) is proven above; the toon-client half waits on the funded key.
+  the env proxy) is proven above; the toon-client half runs when Edison's box gets its funded key (Task 15).
 
 ### Edison moves in (plan Task 15)
 
