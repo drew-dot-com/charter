@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { runCli, type CliDeps } from './cli.js';
+import { offerToJson } from './offer.js';
+import type { PacketRequest, Payer, ToonClientPayerConfig } from './payer.js';
 import { exitJob, OFFER, testHost } from './tenant/test-host.js';
 import type { Offer } from './types.js';
 
@@ -19,17 +21,19 @@ async function cli(argv: string[], env: Record<string, string>, extra: Partial<C
     },
   });
   const made: string[] = [];
+  const clientConfigs: ToonClientPayerConfig[] = [];
   const code = await runCli(argv, env, {
     out: (s) => out.push(s),
     err: (s) => err.push(s),
     now: () => h.clock.t,
     sleep: h.sleep,
     fetchOffers: async () => offers,
-    makePayer: (file) => (made.push(file), h.payer),
+    makePayer: async (env) => (made.push(env.TOON_PASSPHRASE_FILE ?? ''), h.payer),
+    makeClientPayer: async (cfg) => (clientConfigs.push(cfg), h.payer),
     ...extra,
   });
   h.close();
-  return { code, out: out.join('\n'), err: err.join('\n'), made, h };
+  return { code, out: out.join('\n'), err: err.join('\n'), made, clientConfigs, h };
 }
 
 const ENV = { TOON_PASSPHRASE_FILE: '/run/secrets/pass' };
@@ -88,13 +92,17 @@ test('rent takes exactly one job, refuses an empty or oversize script, and an of
 });
 
 test('paying commands refuse to run without TOON_PASSPHRASE_FILE', async () => {
-  const r = await cli(['rent', '--offer', 'o1', '--urls', 'u', '--max-intervals', '5', '--relay', 'wss://r'], {});
+  // The real makePayer, so the check under test is the CLI's own.
+  const r = await cli(['rent', '--offer', 'o1', '--urls', 'u', '--max-intervals', '5', '--relay', 'wss://r'], {}, { makePayer: undefined });
   assert.equal(r.code, 2);
   assert.match(r.err, /TOON_PASSPHRASE_FILE/);
-  assert.equal(r.made.length, 0);
-  const s = await cli(['status', 'o1', 'abc', '--relay', 'wss://r'], {});
+  assert.equal(r.h.sent['charter-open'], 0);
+  const s = await cli(['status', 'o1', 'abc', '--relay', 'wss://r'], {}, { makePayer: undefined });
   assert.equal(s.code, 2);
   assert.match(s.err, /TOON_PASSPHRASE_FILE/);
+  const u = await cli(['status', 'o1', 'abc', '--relay', 'wss://r'], { ...ENV, CHARTER_PAYER: 'lightning' }, { makePayer: undefined });
+  assert.equal(u.code, 2);
+  assert.match(u.err, /CHARTER_PAYER/);
 });
 
 test('--max-intervals is required and must be a positive integer', async () => {
@@ -128,7 +136,7 @@ test('status resolves the offer from the relay and prints the lease', async () =
     const { leaseId } = await api.open({ image: 'charter-job-fetch', args: { URLS: 'u' } });
     const code = await runCli(['status', 'o1', leaseId, '--relay', 'wss://r', '--json'], ENV, {
       out: (s) => out.push(s), err: () => undefined, now: () => h0.clock.t, sleep: h0.sleep,
-      fetchOffers: async () => [OFFER], makePayer: () => h0.payer,
+      fetchOffers: async () => [OFFER], makePayer: async () => h0.payer,
     });
     assert.equal(code, 0);
     const j = JSON.parse(out.join('\n'));
@@ -172,4 +180,134 @@ test('--offer <pubkey>:<id> picks that host exactly, and a wrong pubkey pays not
 test('a bare --offer id still works when exactly one offer matches', async () => {
   const r = await cli(['rent', '--offer', 'o1', ...RENT], ENV, {}, [OFFER]);
   assert.equal(r.code, 0, r.err);
+});
+
+const KEY_A = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGx1bWFueXJhbmRvbWJ5dGVzMTIzNDU2Nzg5MDEyMzQ1';
+const KEY_B = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGx1bWFueXJhbmRvbWJ5dGVzMTIzNDU2Nzg5MDEyMzQ2';
+const HOME: Offer = { ...OFFER, images: ['charter-job-fetch', 'charter-home'] };
+const ONION = 'a'.repeat(56) + '.anyone';
+
+/** A host for a home: it never finishes, and its status shows how to reach the box. */
+function homeHost(clock: { t: number }) {
+  const opens: unknown[] = [];
+  const ticks: number[] = [];
+  let paidIntervals = 0;
+  let paidThrough = clock.t;
+  const payer: Payer = {
+    async send(dest: string, req: PacketRequest, o: { amount: bigint }) {
+      const app = dest.slice(dest.lastIndexOf('.') + 1);
+      if (app === 'charter-open') {
+        opens.push(req.body);
+        return { status: 200, body: { leaseId: 'b'.repeat(32), state: 'awaiting_first_tick' }, paid: o.amount };
+      }
+      if (app === 'charter-tick') {
+        ticks.push((req.body as { index: number }).index);
+        paidIntervals++;
+        paidThrough = Math.max(paidThrough, clock.t) + 30_000;
+        return { status: 200, body: { paidIntervals, paidThrough, duplicate: false }, paid: o.amount };
+      }
+      const lease = {
+        id: 'b'.repeat(32), offerId: 'o1', job: { image: 'charter-home', args: {} }, state: 'running', createdAt: 0,
+        paidIntervals, paidThrough, access: { ssh: { host: ONION, port: 22, user: 'tenant' } },
+      };
+      return { status: 200, body: { lease }, paid: o.amount };
+    },
+  };
+  return { payer, opens, ticks, setPaid: (n: number) => ((paidIntervals = n), (paidThrough = clock.t + 20_000)) };
+}
+
+async function homeCli(argv: string[], env: Record<string, string>, setup: (h: ReturnType<typeof homeHost>) => void = () => undefined) {
+  const clock = { t: 1_000_000 };
+  const h = homeHost(clock);
+  setup(h);
+  const out: string[] = [];
+  const err: string[] = [];
+  const code = await runCli(argv, env, {
+    out: (s) => out.push(s), err: (s) => err.push(s), now: () => clock.t, sleep: async (ms) => void (clock.t += ms),
+    fetchOffers: async () => { throw new Error('the relay must not be read'); },
+    makePayer: async () => h.payer,
+  });
+  return { code, out: out.join('\n'), err: err.join('\n'), h };
+}
+
+const BOX = { ...ENV, CHARTER_OFFER_JSON: offerToJson(HOME) };
+
+test('rent --home reads keys from a file and opens a home job', async () => {
+  const f = join(mkdtempSync(join(tmpdir(), 'charter-cli-')), 'keys');
+  writeFileSync(f, `${KEY_B} drew@air\n\n${KEY_A}\n`);
+  const r = await homeCli(['rent', '--offer', 'o1', '--home', f, '--max-intervals', '2'], BOX);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(r.h.opens, [{ job: { image: 'charter-home', args: { SSH_KEYS: `${KEY_A}\n${KEY_B}` } } }]);
+  assert.deepEqual(r.h.ticks, [0, 1]);
+  assert.match(r.err, new RegExp(`opened lease ${'b'.repeat(32)}`));
+  const ssh = `ssh -o ProxyCommand="nc -x 127.0.0.1:<your Anyone SOCKS port> %h %p" tenant@${ONION}`;
+  assert.equal(r.err.split('\n').filter((l) => l === ssh).length, 1, r.err);
+
+  const both = await homeCli(['rent', '--offer', 'o1', '--home', f, '--urls', 'https://e.com', '--max-intervals', '1'], BOX);
+  assert.equal(both.code, 2);
+  const bad = join(mkdtempSync(join(tmpdir(), 'charter-cli-')), 'keys');
+  writeFileSync(bad, 'not a key\n');
+  const refused = await homeCli(['rent', '--offer', 'o1', '--home', bad, '--max-intervals', '1'], BOX);
+  assert.equal(refused.code, 2);
+  assert.match(refused.err, /--home/);
+  assert.equal(refused.h.opens.length, 0);
+});
+
+test('renew attaches to a lease and pays from --from', async () => {
+  const r = await homeCli(['renew', '--offer', `${HOME.hostPubkey}:o1`, '--lease', 'b'.repeat(32), '--from', '1', '--max-intervals', '2', '--json'], BOX, (h) => h.setPaid(1));
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(r.h.ticks, [1, 2]);
+  assert.equal(r.h.opens.length, 0);
+  const j = JSON.parse(r.out);
+  assert.equal(j.leaseId, 'b'.repeat(32));
+  assert.equal(j.state, 'running');
+  assert.equal(j.paidIntervals, 3);
+
+  for (const bad of [['--from', '-1'], ['--from', 'x'], []]) {
+    const u = await homeCli(['renew', '--offer', 'o1', '--lease', 'b'.repeat(32), '--max-intervals', '2', ...bad], BOX);
+    assert.equal(u.code, 2, JSON.stringify(bad));
+    assert.match(u.err, /--from/);
+  }
+  const other = await homeCli(['renew', '--offer', `${'ee'.repeat(32)}:o1`, '--lease', 'b'.repeat(32), '--from', '1', '--max-intervals', '2'], BOX);
+  assert.equal(other.code, 1);
+  assert.deepEqual(other.h.ticks, []);
+});
+
+test('CHARTER_OFFER_JSON replaces the relay read', async () => {
+  const r = await cli(['rent', '--offer', 'o1', '--urls', 'https://example.com', '--max-intervals', '5', '--json'], { ...ENV, CHARTER_OFFER_JSON: offerToJson(OFFER) }, {
+    fetchOffers: async () => { throw new Error('the relay must not be read'); },
+  });
+  assert.equal(r.code, 0, r.err);
+  const leaseId = JSON.parse(r.out).leaseId;
+  const s = await homeCli(['status', 'o1', leaseId], BOX);
+  assert.equal(s.code, 0, s.err);
+  const wrong = await homeCli(['status', 'o2', leaseId], BOX);
+  assert.equal(wrong.code, 1);
+  assert.match(wrong.err, /o2/);
+  const garbled = await homeCli(['status', 'o1', leaseId], { ...ENV, CHARTER_OFFER_JSON: '{' });
+  assert.equal(garbled.code, 1);
+  assert.match(garbled.err, /CHARTER_OFFER_JSON/);
+});
+
+test('CHARTER_PAYER=toon-client builds the client payer from env', async () => {
+  const env = {
+    CHARTER_PAYER: 'toon-client',
+    CHARTER_CONNECTOR_URL: 'https://box-connector.example',
+    CHARTER_TOON_KEY_FILE: '/run/secrets/key',
+    CHARTER_TOON_CHANNEL_STORE: '/data/channels.json',
+    CHARTER_TOON_CHAIN: 'evm',
+  };
+  const r = await cli(['rent', '--offer', 'o1', '--urls', 'https://example.com', '--max-intervals', '5', '--relay', 'wss://r', '--json'], env, { makePayer: undefined });
+  assert.equal(r.code, 0, r.err);
+  assert.equal(JSON.parse(r.out).state, 'done');
+  assert.deepEqual(r.clientConfigs, [
+    { connectorUrl: 'https://box-connector.example', keyFile: '/run/secrets/key', channelStore: '/data/channels.json', chain: 'evm' },
+  ]);
+  // The node's own connector wins over the box's when both are set.
+  const own = await cli(['status', 'o1', 'a'.repeat(32), '--relay', 'wss://r'], { ...env, CHARTER_TOON_CONNECTOR_URL: 'https://own.example' }, { makePayer: undefined });
+  assert.equal(own.clientConfigs[0]!.connectorUrl, 'https://own.example');
+  const missing = await cli(['status', 'o1', 'a'.repeat(32), '--relay', 'wss://r'], { ...env, CHARTER_TOON_KEY_FILE: '' }, { makePayer: undefined });
+  assert.equal(missing.code, 1);
+  assert.match(missing.err, /CHARTER_TOON_KEY_FILE is required/);
+  assert.equal(missing.clientConfigs.length, 0);
 });

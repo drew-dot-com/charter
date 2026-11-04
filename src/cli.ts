@@ -2,19 +2,26 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { MAX_SCRIPT_BYTES, fetchJob, isScript, pythonJob } from './jobs.js';
-import type { Payer } from './payer.js';
+import { MAX_SCRIPT_BYTES, fetchJob, homeJob, isScript, normalizeSshKeys, pythonJob } from './jobs.js';
+import { offerFromJson } from './offer.js';
+import { ToonClientPayer, type Payer, type ToonClientPayerConfig } from './payer.js';
+import { toonClientConfigFromEnv } from './payer-env.js';
 import { ToonCli } from './toon-cli.js';
-import type { Lease, Micro, Offer } from './types.js';
+import type { HomeAccess, Lease, Micro, Offer } from './types.js';
 import { hostApi } from './tenant/host-api.js';
 import { fetchOffers as fetchOffersFromRelay } from './tenant/offers.js';
-import { runLease } from './tenant/run-lease.js';
+import { continueLease, runLease, type LeaseEvent, type RunLeaseResult } from './tenant/run-lease.js';
 
 const USAGE = `usage:
   charter offers --relay <url>
-  charter rent --offer <pubkey>:<id> (--urls <a,b> | --python <file.py>) --max-intervals <n> --relay <url> [--json]
+  charter rent --offer <pubkey>:<id> (--urls <a,b> | --python <file.py> | --home <keys file>) --max-intervals <n> --relay <url> [--json]
+  charter renew --offer <pubkey>:<id> --lease <id> --from <index> --max-intervals <n> [--relay <url>] [--json]
   charter status <pubkey>:<offerId> <leaseId> --relay <url> [--json]
-paying commands read the wallet passphrase file named by TOON_PASSPHRASE_FILE`;
+--home takes one SSH public key per line; renew pays an open lease from tick --from on
+paying commands read the wallet passphrase file named by TOON_PASSPHRASE_FILE
+CHARTER_PAYER=toon-client pays with the TOON library instead (CHARTER_TOON_KEY_FILE, CHARTER_TOON_CHANNEL_STORE,
+  CHARTER_TOON_CHAIN, CHARTER_TOON_CONNECTOR_URL or CHARTER_CONNECTOR_URL); CHARTER_OFFER_JSON, set inside a rented
+  box, is the offer to use, and --relay is then not needed`;
 
 export interface CliDeps {
   out: (line: string) => void;
@@ -22,16 +29,19 @@ export interface CliDeps {
   now: () => number;
   sleep: (ms: number) => Promise<void>;
   fetchOffers: (relayUrl: string, now: number) => Promise<Offer[]>;
-  makePayer: (passphraseFile: string) => Payer;
+  /** The payer CHARTER_PAYER names: `toon` (the default) or `toon-client`. */
+  makePayer: (env: Record<string, string | undefined>) => Promise<Payer>;
+  /** Builds the `toon-client` payer; a seam for tests. */
+  makeClientPayer: (cfg: ToonClientPayerConfig) => Promise<Payer>;
 }
 
-const defaultDeps: CliDeps = {
+const defaultDeps: Omit<CliDeps, 'makePayer'> = {
   out: (s) => console.log(s),
   err: (s) => console.error(s),
   now: () => Date.now(),
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
   fetchOffers: (relayUrl, now) => fetchOffersFromRelay(relayUrl, now),
-  makePayer: (passphraseFile) => new ToonCli({ passphraseFile }),
+  makeClientPayer: (cfg) => ToonClientPayer.create(cfg),
 };
 
 class UsageError extends Error {}
@@ -80,8 +90,77 @@ export function resolveOffer(offers: Offer[], ref: string): Offer {
   return matches[0]!;
 }
 
-async function findOffer(d: CliDeps, relay: string, ref: string): Promise<Offer> {
-  return resolveOffer(await d.fetchOffers(relay, d.now()), ref);
+async function payerFromEnv(env: Record<string, string | undefined>, makeClientPayer: CliDeps['makeClientPayer']): Promise<Payer> {
+  const kind = env.CHARTER_PAYER?.trim() || 'toon';
+  if (kind === 'toon') return new ToonCli({ passphraseFile: passphraseFile(env) });
+  if (kind !== 'toon-client') throw new UsageError('CHARTER_PAYER must be toon or toon-client');
+  // Inside a rented box the connector to send through is the one the box names.
+  const connector = env.CHARTER_TOON_CONNECTOR_URL?.trim() || env.CHARTER_CONNECTOR_URL;
+  return makeClientPayer(toonClientConfigFromEnv({ ...env, CHARTER_TOON_CONNECTOR_URL: connector }));
+}
+
+/**
+ * The offer `ref` names. Inside a box CHARTER_OFFER_JSON is the host's own offer, read instead of a relay
+ * (the box reaches the web only through its proxy, which a relay WebSocket would not pass).
+ */
+async function findOffer(d: CliDeps, env: Record<string, string | undefined>, relay: string | undefined, ref: string): Promise<Offer> {
+  const own = env.CHARTER_OFFER_JSON;
+  if (own !== undefined && own.trim() !== '') {
+    const o = offerFromJson(own);
+    if (!o) throw new Error('CHARTER_OFFER_JSON is not an offer');
+    return resolveOffer([o], ref);
+  }
+  return resolveOffer(await d.fetchOffers(required(relay, '--relay'), d.now()), ref);
+}
+
+/** Read only when the offer comes from a relay, so a missing --relay is a usage error before anything is paid. */
+function relayFor(env: Record<string, string | undefined>, relay: string | undefined): string | undefined {
+  return env.CHARTER_OFFER_JSON?.trim() ? relay : required(relay, '--relay');
+}
+
+/** How a tenant reaches its home through Anyone; the port is the tenant's own SOCKS port. */
+function sshLine(a: HomeAccess): string {
+  return `ssh -o ProxyCommand="nc -x 127.0.0.1:<your Anyone SOCKS port> %h %p" tenant@${a.ssh.host}`;
+}
+
+/** Progress to stderr (none with --json), and the ssh line once, the first time a read shows it. */
+function leaseProgress(d: CliDeps, json: boolean | undefined): (e: LeaseEvent) => void {
+  let shown = false;
+  return (e) => {
+    if (e.kind === 'opened' && !json) d.err(`opened lease ${e.leaseId}`);
+    else if (e.kind === 'ticked' && !json) d.err(`paid tick ${e.index}`);
+    else if (e.kind === 'status' && e.access && !shown) {
+      shown = true;
+      d.err(sshLine(e.access));
+    }
+  };
+}
+
+function printResult(d: CliDeps, r: RunLeaseResult, json: boolean | undefined): number {
+  const output = r.output ? decodeOutput(r.output) : undefined;
+  if (json) {
+    d.out(
+      JSON.stringify({
+        leaseId: r.lease.id,
+        state: r.lease.state,
+        paidIntervals: r.lease.paidIntervals,
+        spent: r.spent.toString(),
+        ...(output !== undefined ? { output } : {}),
+      }),
+    );
+  } else {
+    for (const line of leaseLines(r.lease, r.spent)) d.out(line);
+    if (r.error) d.out(`boot error ${r.error}`);
+    if (output !== undefined) d.out(`output\n${typeof output === 'string' ? output : JSON.stringify(output, null, 2)}`);
+  }
+  return r.lease.state === 'closed' ? 1 : 0;
+}
+
+function nonNegativeInt(v: string | undefined, flag: string): number {
+  if (v === undefined || !/^(0|[1-9]\d*)$/.test(v) || !Number.isSafeInteger(Number(v))) {
+    throw new UsageError(`${flag} is required and must be a non-negative integer`);
+  }
+  return Number(v);
 }
 
 function leaseLines(l: Lease, spent: Micro): string[] {
@@ -131,6 +210,7 @@ async function rentCommand(rest: string[], env: Record<string, string | undefine
       offer: { type: 'string' },
       urls: { type: 'string' },
       python: { type: 'string' },
+      home: { type: 'string' },
       'max-intervals': { type: 'string' },
       relay: { type: 'string' },
       json: { type: 'boolean' },
@@ -138,53 +218,67 @@ async function rentCommand(rest: string[], env: Record<string, string | undefine
     strict: true,
   });
   const offerId = required(values.offer, '--offer');
-  if ((values.urls === undefined) === (values.python === undefined)) {
-    throw new UsageError('rent takes exactly one of --urls and --python');
+  if ([values.urls, values.python, values.home].filter((v) => v !== undefined).length !== 1) {
+    throw new UsageError('rent takes exactly one of --urls, --python and --home');
   }
   let job;
-  if (values.python !== undefined) {
+  if (values.home !== undefined) {
+    const lines = readFileSync(values.home, 'utf8').split('\n').filter((l) => l.trim() !== '' && !l.trim().startsWith('#'));
+    const keys = normalizeSshKeys(lines);
+    if (!keys) throw new UsageError('--home must name a file of 1 to 8 SSH public keys, one per line');
+    job = homeJob(keys);
+  } else if (values.python !== undefined) {
     const script = readFileSync(values.python, 'utf8');
     if (!isScript(script)) throw new UsageError(`--python must name a non-empty script of at most ${MAX_SCRIPT_BYTES} bytes`);
     job = pythonJob(script);
   } else {
     job = fetchJob(required(values.urls, '--urls').split(','));
   }
-  const relay = required(values.relay, '--relay');
+  const relay = relayFor(env, values.relay);
   const maxIntervals = positiveInt(values['max-intervals'], '--max-intervals');
-  const payer = d.makePayer(passphraseFile(env));
+  const payer = await d.makePayer(env);
 
-  const offer = await findOffer(d, relay, offerId);
+  const offer = await findOffer(d, env, relay, offerId);
   if (!offer.images.includes(job.image)) throw new Error(`offer ${offerId} does not list the ${job.image} image`);
-  const progress = (s: string) => {
-    if (!values.json) d.err(s);
-  };
   const r = await runLease(hostApi(payer, offer), offer, job, {
     maxIntervals,
     now: d.now,
     sleep: d.sleep,
-    onEvent: (e) => {
-      if (e.kind === 'opened') progress(`opened lease ${e.leaseId}`);
-      else if (e.kind === 'ticked') progress(`paid tick ${e.index}`);
-    },
+    onEvent: leaseProgress(d, values.json),
   });
+  return printResult(d, r, values.json);
+}
 
-  const output = r.output ? decodeOutput(r.output) : undefined;
-  if (values.json) {
-    d.out(
-      JSON.stringify({
-        leaseId: r.lease.id,
-        state: r.lease.state,
-        paidIntervals: r.lease.paidIntervals,
-        spent: r.spent.toString(),
-        ...(output !== undefined ? { output } : {}),
-      }),
-    );
-  } else {
-    for (const line of leaseLines(r.lease, r.spent)) d.out(line);
-    if (r.error) d.out(`boot error ${r.error}`);
-    if (output !== undefined) d.out(`output\n${typeof output === 'string' ? output : JSON.stringify(output, null, 2)}`);
-  }
-  return r.lease.state === 'closed' ? 1 : 0;
+async function renewCommand(rest: string[], env: Record<string, string | undefined>, d: CliDeps): Promise<number> {
+  const { values } = parseArgs({
+    args: rest,
+    options: {
+      offer: { type: 'string' },
+      lease: { type: 'string' },
+      from: { type: 'string' },
+      'max-intervals': { type: 'string' },
+      relay: { type: 'string' },
+      json: { type: 'boolean' },
+    },
+    strict: true,
+  });
+  const offerId = required(values.offer, '--offer');
+  const leaseId = required(values.lease, '--lease');
+  const from = nonNegativeInt(values.from, '--from');
+  const maxIntervals = positiveInt(values['max-intervals'], '--max-intervals');
+  const relay = relayFor(env, values.relay);
+  const payer = await d.makePayer(env);
+
+  const offer = await findOffer(d, env, relay, offerId);
+  // A home never reaches done, so this runs until --max-intervals or the lease closes.
+  const r = await continueLease(hostApi(payer, offer), offer, leaseId, {
+    from,
+    maxIntervals,
+    now: d.now,
+    sleep: d.sleep,
+    onEvent: leaseProgress(d, values.json),
+  });
+  return printResult(d, r, values.json);
 }
 
 async function statusCommand(rest: string[], env: Record<string, string | undefined>, d: CliDeps): Promise<number> {
@@ -196,9 +290,9 @@ async function statusCommand(rest: string[], env: Record<string, string | undefi
   });
   if (positionals.length !== 2) throw new UsageError('status takes <offerId> <leaseId>');
   const [offerId, leaseId] = positionals as [string, string];
-  const relay = required(values.relay, '--relay');
-  const payer = d.makePayer(passphraseFile(env));
-  const offer = await findOffer(d, relay, offerId);
+  const relay = relayFor(env, values.relay);
+  const payer = await d.makePayer(env);
+  const offer = await findOffer(d, env, relay, offerId);
   const api = hostApi(payer, offer);
   const lease = await api.status(leaseId);
   if (values.json) {
@@ -219,11 +313,14 @@ async function statusCommand(rest: string[], env: Record<string, string | undefi
 }
 
 export async function runCli(argv: string[], env: Record<string, string | undefined>, deps: Partial<CliDeps> = {}): Promise<number> {
-  const d = { ...defaultDeps, ...deps };
+  const makeClientPayer = deps.makeClientPayer ?? defaultDeps.makeClientPayer;
+  // Unless a test replaces it, the payer is the one CHARTER_PAYER names, built with this run's makeClientPayer.
+  const d: CliDeps = { ...defaultDeps, ...deps, makeClientPayer, makePayer: deps.makePayer ?? ((e) => payerFromEnv(e, makeClientPayer)) };
   const [cmd, ...rest] = argv;
   try {
     if (cmd === 'offers') return await offersCommand(rest, d);
     if (cmd === 'rent') return await rentCommand(rest, env, d);
+    if (cmd === 'renew') return await renewCommand(rest, env, d);
     if (cmd === 'status') return await statusCommand(rest, env, d);
     d.err(USAGE);
     return 2;

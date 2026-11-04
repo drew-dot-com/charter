@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ToonClientPayer, serialized } from '../payer.js';
+import { toonClientConfigFromEnv } from '../payer-env.js';
 import { hostApi } from '../tenant/host-api.js';
 import { fetchOffers } from '../tenant/offers.js';
 import { BatchSettlementChannelManager } from '@x402/evm/batch-settlement/server';
@@ -21,24 +22,7 @@ function need(env: NodeJS.ProcessEnv, name: string): string {
 
 /** The door's own TOON wallet, which pays hosts. */
 async function doorPayer(env: NodeJS.ProcessEnv): Promise<ToonClientPayer> {
-  const chain = need(env, 'CHARTER_TOON_CHAIN');
-  if (chain !== 'evm' && chain !== 'solana') throw new Error('CHARTER_TOON_CHAIN must be evm or solana');
-  // The key stays in the file the env names. A bad key file fails with KeyFileError's fixed message;
-  // other startup errors carry no key material and print as they are.
-  const payerConfig: Parameters<typeof ToonClientPayer.create>[0] = {
-    connectorUrl: need(env, 'CHARTER_TOON_CONNECTOR_URL'),
-    keyFile: need(env, 'CHARTER_TOON_KEY_FILE'),
-    channelStore: need(env, 'CHARTER_TOON_CHANNEL_STORE'),
-    chain,
-  };
-  // The RPC URL may carry an API key, so it comes from a file like the other secrets.
-  const rpcFile = env.CHARTER_TOON_RPC_URL_FILE?.trim();
-  if (rpcFile) {
-    const rpcUrl = readFileSync(rpcFile, 'utf8').trim();
-    if (!/^https:\/\/\S+$/.test(rpcUrl)) throw new Error('CHARTER_TOON_RPC_URL_FILE must hold one https:// URL');
-    payerConfig.rpcUrl = rpcUrl;
-  }
-  return ToonClientPayer.create(payerConfig);
+  return ToonClientPayer.create(toonClientConfigFromEnv(env));
 }
 
 /** The renter-facing x402 config: where payments go, which facilitator, the claim key, the channel records. */

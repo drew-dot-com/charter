@@ -1,4 +1,4 @@
-import type { JobSpec, Lease, Micro, Offer } from '../types.js';
+import type { HomeAccess, JobSpec, Lease, Micro, Offer } from '../types.js';
 import { GRACE_MS, tickLeadMs } from '../lease.js';
 import { HostError, type HostApi } from './host-api.js';
 
@@ -6,7 +6,7 @@ export type LeaseEvent =
   | { kind: 'opened'; leaseId: string }
   | { kind: 'boot_failed'; leaseId: string; error?: string }
   | { kind: 'ticked'; index: number; paidIntervals: number }
-  | { kind: 'status'; state: Lease['state']; paidIntervals: number }
+  | { kind: 'status'; state: Lease['state']; paidIntervals: number; access?: HomeAccess | null }
   | { kind: 'output'; bytes: number }
   | { kind: 'stopped'; reason: 'max_intervals' | 'closed' | 'done' | 'stalled' | 'no_paid_through' };
 
@@ -32,7 +32,38 @@ export interface RunLeaseResult {
  * or `maxIntervals` ticks are paid.
  */
 export async function runLease(api: HostApi, o: Offer, job: JobSpec, opts: RunLeaseOpts): Promise<RunLeaseResult> {
-  if (!Number.isSafeInteger(opts.maxIntervals) || opts.maxIntervals < 1) throw new Error('maxIntervals must be a positive integer');
+  checkMaxIntervals(opts.maxIntervals);
+  const now = opts.now ?? Date.now;
+  const emit = opts.onEvent ?? (() => undefined);
+  const spent0 = api.spent();
+
+  const opened = await api.open(job);
+  if (opened.state === 'closed') {
+    emit({ kind: 'boot_failed', leaseId: opened.leaseId, ...(opened.error ? { error: opened.error } : {}) });
+    // The host has nothing more to say about a lease that never booted, so none is bought.
+    const lease: Lease = {
+      id: opened.leaseId, offerId: o.id, job, state: 'closed', createdAt: now(), paidIntervals: 0,
+      closedReason: opened.closedReason ?? 'boot_failed',
+    };
+    return { lease, spent: api.spent() - spent0, ...(opened.error ? { error: opened.error } : {}) };
+  }
+  emit({ kind: 'opened', leaseId: opened.leaseId });
+  const r = await continueLease(api, o, opened.leaseId, { ...opts, from: 0 });
+  return { ...r, spent: api.spent() - spent0 };
+}
+
+function checkMaxIntervals(n: number): void {
+  if (!Number.isSafeInteger(n) || n < 1) throw new Error('maxIntervals must be a positive integer');
+}
+
+/**
+ * Pay an open lease from tick `from` on, the same loop as after an open: up to `maxIntervals` more ticks,
+ * until the job finishes or the lease closes. With `from` above 0 someone else paid the ticks before, so
+ * the lease is read first and the paid time is seeded from the host's `paidThrough`.
+ */
+export async function continueLease(api: HostApi, o: Offer, leaseId: string, opts: RunLeaseOpts & { from: number }): Promise<RunLeaseResult> {
+  checkMaxIntervals(opts.maxIntervals);
+  if (!Number.isSafeInteger(opts.from) || opts.from < 0) throw new Error('from must be a non-negative integer');
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const emit = opts.onEvent ?? (() => undefined);
@@ -46,23 +77,10 @@ export async function runLease(api: HostApi, o: Offer, job: JobSpec, opts: RunLe
     ...extra,
   });
 
-  const opened = await api.open(job);
-  if (opened.state === 'closed') {
-    emit({ kind: 'boot_failed', leaseId: opened.leaseId, ...(opened.error ? { error: opened.error } : {}) });
-    // The host has nothing more to say about a lease that never booted, so none is bought.
-    const lease: Lease = {
-      id: opened.leaseId, offerId: o.id, job, state: 'closed', createdAt: now(), paidIntervals: 0,
-      closedReason: opened.closedReason ?? 'boot_failed',
-    };
-    return result(lease, opened.error ? { error: opened.error } : {});
-  }
-  emit({ kind: 'opened', leaseId: opened.leaseId });
-  const leaseId = opened.leaseId;
-
   /** The lease as the host reports it, with the output fetched when it is done. */
   const settle = async (): Promise<{ lease: Lease; output?: Buffer; finished: boolean }> => {
     const lease = await api.status(leaseId);
-    emit({ kind: 'status', state: lease.state, paidIntervals: lease.paidIntervals });
+    emit({ kind: 'status', state: lease.state, paidIntervals: lease.paidIntervals, ...(lease.access !== undefined ? { access: lease.access } : {}) });
     if (lease.state === 'done') {
       const output = lease.outputParts ? await api.output(leaseId) : Buffer.alloc(0);
       emit({ kind: 'output', bytes: output.length });
@@ -77,12 +95,18 @@ export async function runLease(api: HostApi, o: Offer, job: JobSpec, opts: RunLe
   };
 
   /**
-   * Local (tenant clock) estimate of when the paid time runs out. Never taken from the host, and
-   * counted from when a tick was SENT: the host's clock runs while the packet travels.
+   * Local (tenant clock) estimate of when the paid time runs out, counted from when a tick was SENT:
+   * the host's clock runs while the packet travels. Taken from the host only when continuing a lease
+   * this tenant did not pay before, as it has no send time of its own for those ticks.
    */
   let paidUntil: number | undefined;
-  /** Ticks sent, whatever the host reports. This, not the host's count, is the spend cap. */
-  let ticksSent = 0;
+  /** The next tick index. Ticks sent since `from`, whatever the host reports, are the spend cap. */
+  let ticksSent = opts.from;
+  if (opts.from > 0) {
+    const s = await settle();
+    if (s.finished) return result(s.lease, s.output ? { output: s.output } : {});
+    paidUntil = s.lease.paidThrough;
+  }
 
   /** Pay the next tick. A 409 means the lease is no longer running: read it, never retry the tick. */
   const pay = async (): Promise<{ ended: RunLeaseResult } | { hostPaidThrough: boolean }> => {
@@ -131,7 +155,7 @@ export async function runLease(api: HostApi, o: Offer, job: JobSpec, opts: RunLe
     }
     const s = await watchUntil(paidUntil! - leadMs);
     if (s.finished) return result(s.lease, s.output ? { output: s.output } : {});
-    if (ticksSent >= opts.maxIntervals) {
+    if (ticksSent - opts.from >= opts.maxIntervals) {
       // No more ticks, but the last interval is paid for: watch it out, to its end.
       const last = await watchUntil(paidUntil!);
       if (!last.finished) emit({ kind: 'stopped', reason: 'max_intervals' });

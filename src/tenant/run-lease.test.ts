@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { HostError, hostApi } from './host-api.js';
-import { runLease, type LeaseEvent } from './run-lease.js';
+import { HostError, hostApi, type HostApi } from './host-api.js';
+import { continueLease, runLease, type LeaseEvent } from './run-lease.js';
 import { exitJob, HOURLY, OFFER, testHost } from './test-host.js';
 import type { JobSpec } from '../types.js';
 
@@ -318,4 +318,32 @@ test('hourly offer: a job that never exits is read with doubling gaps from 10 s,
   } finally {
     h.close();
   }
+});
+
+test('continueLease pays from the given index and stops at max-intervals without opening', async () => {
+  let t = 1_000_000;
+  const ticks: number[] = [];
+  let paidThrough = t + 20_000;
+  let paidIntervals = 2;
+  const api: HostApi = {
+    open: async () => { throw new Error('open must not be called'); },
+    tick: async (_id, index) => {
+      ticks.push(index);
+      paidIntervals++;
+      paidThrough += 30_000;
+      return { paidIntervals, paidThrough, duplicate: false };
+    },
+    status: async (id) => ({ id, offerId: OFFER.id, job: JOB, state: 'running', createdAt: 0, paidIntervals, paidThrough }),
+    output: async () => Buffer.alloc(0),
+    outputPart: async () => { throw new Error('no output'); },
+    spent: () => 0n,
+  };
+  const r = await continueLease(api, OFFER, 'a'.repeat(32), {
+    from: 2, maxIntervals: 2, now: () => t, sleep: async (ms) => void (t += ms),
+  });
+  assert.deepEqual(ticks, [2, 3]);
+  assert.equal(r.lease.state, 'running');
+  assert.equal(r.lease.paidIntervals, 4);
+  // The paid time is seeded from the host's paidThrough: the last read is at its end, 20 s + 2 intervals out.
+  assert.equal(t, 1_000_000 + 20_000 + 2 * 30_000);
 });
