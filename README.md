@@ -20,7 +20,7 @@ safe enough for a home host: `docs/superpowers/specs/2026-10-17-python-job-desig
   prices, the host's ILP address, the key to seal packets to, and badges. It lives 45 minutes and is
   republished every 20.
 - **Lease.** The host's `toon` node serves three priced apps: `charter-open` (start a lease),
-  `charter-tick` (pay one 30 second interval) and `charter-status` (read state and output). Each
+  `charter-tick` (pay one interval, an hour on the live host) and `charter-status` (read state and output). Each
   answers only its own action. The container is created at open and started only once the first
   interval is paid. A lease whose renter stops paying is closed at the end of the paid time.
 - **Paying.** Packets are routed by ILP and settled by x402 channels. A renter with a `toon` node
@@ -28,7 +28,7 @@ safe enough for a home host: `docs/superpowers/specs/2026-10-17-python-job-desig
   door pays the host over TOON. The door is a paying hop that never holds more than one interval:
   it pays the host each interval only after the renter's payment for it has verified.
 
-v1 prices: open 0.001 USDC, one interval 0.005 USDC, a status read 0.0001 USDC.
+Prices on the live host: open 0.001 USDC, one hour 0.007 USDC (about 5 USDC for 30 days), a status read 0.0001 USDC. Until 2026-11-04 the interval was 30 seconds at 0.005.
 
 ## Rent
 
@@ -73,7 +73,7 @@ npm ci && npm run build && npm install -g --prefix ~/.local .
 docker build -t charter-job-fetch jobs/fetch
 docker build -t charter-job-python jobs/python
 toon add charter-open   --to relay --url http://127.0.0.1:7401/ --price 1000 --yes
-toon add charter-tick   --to relay --url http://127.0.0.1:7402/ --price 5000 --yes
+toon add charter-tick   --to relay --url http://127.0.0.1:7402/ --price 7000 --yes
 toon add charter-status --to relay --url http://127.0.0.1:7403/ --price 100  --yes
 ```
 

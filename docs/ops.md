@@ -177,6 +177,21 @@ clear host (public IP, no Anyone, offer without `hiddenHost`), which is also the
 listing. The other path with no new box is Jonathan's node as the second host (memory, 10-25), which needs
 his `max_packet_amount` raised past one tick. Neither is started; Drew picks.
 
+## Changing a price
+
+The tick price lives in three places, and all three must agree or one hop pays the difference: the host's
+env (`CHARTER_TICK_PRICE`, with `CHARTER_INTERVAL_SECONDS` beside it), the `charter-tick` app on toon2's
+`toon` node (what the edge pays toon2), and the edge's route for `g.toon.69b2a212547e7a9c.charter-tick`
+(what the door, or any toon-node renter, pays the edge). The door needs no change: it snapshots each
+lease's offer at open, so leases opened on the old price keep it, and new leases take the new offer.
+
+Order: check for live leases first (a `charter-host` restart closes them, and a lease paid ahead is refunded
+nothing), then toon2 env and app, then the edge route, then read `/v1/offers` on the door. After that, rerun
+`scripts/bazaar-tick.mjs` once (a paid tick) so PayAI's catalog shows the new price; its entry only changes
+on a payment.
+
+Done 2026-11-04, 30 s at 5000 to one hour at 7000. The exact commands are recorded below once run.
+
 ## Still open for Drew
 
 - The box now holds a copy of the Edison bot token. A dedicated alert bot (BotFather, two minutes) would keep

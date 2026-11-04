@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // One paid tick through the door with an @x402/fetch client, so a facilitator that keeps a
 // catalog (PayAI's /discovery/resources) sees the tick route's Bazaar declaration echoed in a
-// settled payment and lists it. Spends exactly one tick (0.005 USDC on the first host) from a
+// settled payment and lists it. Spends exactly one tick (0.007 USDC on the live host) from a
 // Base wallet holding USDC; the facilitator submits the transfer, so the wallet needs no ETH.
 //
 //   node scripts/bazaar-tick.mjs --dry-run                  # reads offers, probes a 402, pays nothing

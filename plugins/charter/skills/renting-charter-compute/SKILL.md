@@ -36,11 +36,11 @@ version you found and which this skill covers. If a command here is then missing
 ## Terms
 
 - **Offer**: a signed Nostr event of kind `31390` with the tag `["L","charter"]`, published by a
-  host to a relay. It names the machine, its prices, and where to send packets. It lives about 30
-  minutes and is republished every 10, so one that has expired is a host that stopped.
+  host to a relay. It names the machine, its prices, and where to send packets. It lives 45 minutes
+  and is republished every 20, so one that has expired is a host that stopped.
 - **Lease**: one job on one machine, identified by a 32 hex digit `leaseId` the host gives you.
-- **Interval**: the slice of time one **tick** pays for (`intervalSeconds` in the offer, 30 s on
-  the first host). The container starts when tick `0` is paid, and keeps running while the paid
+- **Interval**: the slice of time one **tick** pays for (`intervalSeconds` in the offer, one hour on
+  the live host since 2026-11-04; it was 30 s before). The container starts when tick `0` is paid, and keeps running while the paid
   time has not run out.
 - **The three apps**: the host's `toon` node serves `charter-open`, `charter-tick` and
   `charter-status`, each at its own price and each answering only its own action. A packet paid
@@ -57,10 +57,10 @@ and a refused boot are all fulfilled packets. Prices are in the offer, in USDC b
 | Packet | Price | USDC |
 | --- | --- | --- |
 | open (`openPrice`) | 1000 | 0.001 |
-| one tick (`tickPrice`) | 5000 | 0.005 for one 30 s interval |
+| one tick (`tickPrice`) | 7000 | 0.007 for one hour (about 5 USDC for 30 days) |
 | one status read or one output part (`statusPrice`) | 100 | 0.0001 |
 
-A python job that finishes inside its first interval costs about 7300: one open, one tick, two
+A python job that finishes inside its first interval costs about 9300: one open, one tick, two
 status reads and one output part. The most a lease can cost is `openPrice + maxIntervals ×
 tickPrice` plus the reads: decide `maxIntervals` before you open, state it to the operator when
 the job is theirs, and never pay a tick past it. `toon limit show` says what the wallet may still
