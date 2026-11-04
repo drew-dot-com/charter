@@ -190,7 +190,28 @@ nothing), then toon2 env and app, then the edge route, then read `/v1/offers` on
 `scripts/bazaar-tick.mjs` once (a paid tick) so PayAI's catalog shows the new price; its entry only changes
 on a payment.
 
-Done 2026-11-04, 30 s at 5000 to one hour at 7000. The exact commands are recorded below once run.
+Done 2026-11-04, 30 s at 5000 to one hour at 7000, no live lease, in this order:
+
+1. toon2 (`ssh air`, `~/.local/lima/bin/limactl shell toon2`): back up `~/.config/charter/env`, set
+   `CHARTER_INTERVAL_SECONDS=3600` and `CHARTER_TICK_PRICE=7000`. `toon change` has no `--price`, so the app is
+   re-added: `sg docker -c "toon remove charter-tick --yes"` then
+   `sg docker -c "toon add charter-tick --to relay --url http://127.0.0.1:7402/ --price 7000 --yes"` (each
+   restarts the connector). `toon status` then lists the route at 7000. New code goes in as a tarball of
+   `dist`, `src` and `package.json` built on the Mac (`scp` to the Air, `limactl copy` into the VM, untar over
+   `~/src/charter`, which `~/.local/lib/node_modules/charter` links to); `chmod +x dist/host/main.js` after,
+   or the unit loops on `Permission denied`. Then `systemctl --user restart charter-host` and
+   `charter-host offer --print` shows the new interval and price.
+2. Edge (the box): one signed operator write, which overwrites the route in place:
+   `/opt/refuel/deploy/sign-write.sh -k /root/keys-refuel/operator-write.key -X POST -p /routes/peers -b '{"prefix":"g.toon.69b2a212547e7a9c.charter-tick","peer_id":"toon2","price":7000}' -u http://172.18.0.2:4000`
+   (172.18.0.2 is `deploy-connector-rust-1`; the answer echoes the route with `"source":"runtime"`). Read back
+   at `https://connector.mainnet.toonprotocol.dev/ilp` under `routes`.
+3. Door: `cp -a /opt/charter /opt/charter.bak-<date>`, rsync the tree from the Mac (no `node_modules`, `dist`,
+   `web/dist`, `.git`, `.superpowers`), `docker compose -f /opt/charter/deploy/door/docker-compose.yml up -d --build`.
+   `GET /v1/offers` shows the new offer once the host has published it; a bare `POST /v1/leases/<id>/ticks`
+   answers 402 with the new amount on both schemes.
+4. Proof over TOON from the `toon` VM (Edison's node): lease `d5668d8cc9a9c79a646d1c29a79c4063`, a 120 s python
+   job, ticks 0 and 1 paid three seconds apart (`paidThrough` two hours out), `done`, stdout `hourly`, 15,400
+   units in all.
 
 ## Still open for Drew
 

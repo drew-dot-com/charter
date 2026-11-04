@@ -194,7 +194,8 @@ ran while the packet travelled.
 
 Then, for as long as you want the job to run and have ticks left under `maxIntervals`:
 
-1. Wait until halfway through the paid interval (15 s before `paidUntil` on a 30 s interval). The
+1. Wait until halfway through the paid interval (30 minutes before `paidUntil` on a one hour
+   interval). To pay ahead instead, send the next indexes now, in order: each adds an interval. The
    host gives only 10 s of grace past `paidUntil`, and one packet to a hidden host can take 15 s,
    so a read and a tick started 10 s before the end arrive too late. A tick paid early extends
    the paid time from its current end, so nothing is lost by being early.
