@@ -10,7 +10,7 @@ Secrets never go in these variables: a variable names the file that holds one.
 | variable | required | default | what it is |
 | --- | --- | --- | --- |
 | `CHARTER_DATA_DIR` | yes | | Lease store (`leases.json`) and job output (`out/<lease>/`). Created mode 700. |
-| `CHARTER_ALLOW_IMAGES` | yes | | Comma list of the job images this host runs: `charter-job-fetch` (fetch pages through the proxy) and `charter-job-python` (the renter's Python script, no network). Also the offer's `images`. |
+| `CHARTER_ALLOW_IMAGES` | yes | | Comma list of the job images this host runs: `charter-job-fetch` (fetch pages through the proxy), `charter-job-python` (the renter's Python script, no network) and `charter-home` (a home: the renter's own box with a kept disk, reached over ssh at an onion address). Also the offer's `images`. `charter-home` needs `CHARTER_MAX_HOMES` of at least 1. |
 | `CHARTER_RELAY_URL` | yes | | `wss://` relay the offer is published to (a paid write). |
 | `TOON_PASSPHRASE_FILE` | yes | | File holding the node wallet passphrase. Passed to `toon` in its env only. |
 | `CHARTER_OFFER_ID` | yes | | The offer's `d` tag. |
@@ -28,11 +28,22 @@ Secrets never go in these variables: a variable names the file that holds one.
 | `CHARTER_STATUS_PRICE` | no | `100` | Price of a status or output read (the `charter-status` app's price). |
 | `CHARTER_CPU` | no | `1` | Advertised CPUs. The v1 container limit is fixed at 1 CPU. |
 | `CHARTER_MEMORY_MIB` | no | `1024` | Advertised memory. The v1 container limit is fixed at 1 GiB. |
+| `CHARTER_MAX_HOMES` | no | `0` | Homes live at once, counted inside `CHARTER_MAX_LEASES` (so at most that). `0` offers no homes; toon2 runs 1. The rows below are read only when it is above 0. |
+| `CHARTER_TENANT_CONNECTOR_URL` | with homes | | The `http(s)` connector a home is handed as `CHARTER_CONNECTOR_URL`, for paying from inside the box (on toon2 `https://connector.mainnet.toonprotocol.dev/ilp`). |
+| `CHARTER_ANON_HS_DIR` | with homes | | Directory Charter's own anon `%include`s; the host writes one `<homeId>.conf` onion service there per home (`~/.config/charter/anon/hs.d`, made by `deploy/host/install-home.sh`). |
+| `CHARTER_ANON_PIDFILE` | with homes | | That anon's `PidFile`; the host sends the pid `SIGHUP` after changing `hs.d` (`~/.local/share/charter/anon/anon.pid`). |
+| `CHARTER_HOME_DIR` | no | `<CHARTER_DATA_DIR>/homes` | Per home: `<homeId>/hs` (its onion keys, mode 700), `<homeId>/disk.img` (the disk) and `<homeId>/charter/`. |
+| `CHARTER_HOME_NETWORK` | no | `charter-home` | Docker network homes run on, made with its firewall by `charter-home-net.service`. |
+| `CHARTER_HOME_GATEWAY` | no | `172.19.0.1` | That network's gateway, where anon listens; a home's DNS and proxy variables point here. Must match `deploy/host/anonrc`. |
+| `CHARTER_HOME_SOCKS_PORT` | no | `9050` | Anon's SOCKS port on the gateway (a home's `ALL_PROXY`). The firewall opens only this, the HTTP port and 53. |
+| `CHARTER_HOME_HTTP_PORT` | no | `9080` | Anon's HTTP tunnel port on the gateway (a home's `HTTP_PROXY` and `HTTPS_PROXY`). |
 
 Fixed, not configurable: the first tick is due within 90 s of the container's creation (published
 as `firstTickGraceSeconds`), later ticks within 10 s of the paid time, a lease may stay booting 120 s,
 the offer lives 30 min and is republished every 10 min. A job container gets 1 CPU, 1 GiB, 256 pids,
 a read-only root, no capabilities and `no-new-privileges`.
+With homes, the host also runs `sudo -n losetup` to attach each home's disk image; `deploy/host/install-home.sh`
+installs the sudo rule (`/etc/sudoers.d/charter-home`, that one command only).
 
 ## charter-door
 

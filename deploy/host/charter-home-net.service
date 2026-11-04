@@ -1,0 +1,18 @@
+# System unit: the charter-home docker network and its firewall
+# (charter-home-net.sh), at boot after docker. iptables rules do not survive a
+# reboot, so this reapplies them every boot. Installed by install-home.sh to
+# /etc/systemd/system/, with the script at /usr/local/bin/.
+[Unit]
+Description=Charter homes: the charter-home bridge and its firewall
+After=docker.service
+Requires=docker.service
+# A docker restart reruns the script, so the DOCKER-USER rule is checked again.
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/charter-home-net.sh
+
+[Install]
+WantedBy=multi-user.target
