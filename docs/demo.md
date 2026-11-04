@@ -378,8 +378,15 @@ earlier); the lapse and re-open step follows after 21:57:49Z, the paid hour's en
   anon a HUP, which "resets internal state" and kills the live rendezvous circuits; the client kept
   attaching to a dead one until it expired. Fix: publishing an unchanged onion conf sends no HUP (commit
   712a185), deployed 21:24Z.
-- [ ] Let the lease lapse (21:57:49Z), open again with the same key: lease `<leaseId>`, `~/kept` there,
-  same onion address. Spend for the proof so far: open 1000 + tick 7000 + status reads.
+- [x] The lease lapsed at 21:58:12Z (`closed missed_tick`, `paidIntervals` 1, `restarts` 1); the record
+  became `paidOnce: true, lastClosedAt: 1793829479728`; the 2 GiB disk and the onion keys stayed; the
+  container was removed and the onion conf retired (the loop device and the docker volume stay attached
+  for a retained home, which is harmless and saves a re-attach). The `rent` process reported
+  `spent 0.0096 USDC` for open, tick and reads. Re-opened at 21:59Z with the same key: lease
+  `acb80d64498c4684e42aae40ccd59936`, the same homeId `4bf93f0a2bde316f`, the SAME onion address, `~/kept`
+  and `~/booted` present, host key unchanged. Edison's node needed two retries (about 40 s) before the
+  onion answered: the retire and the new publish each reload anon, as the ops notes say. Total spend
+  for the two leases: about 0.019 USDC.
 - [ ] From inside the box: one `charter status` with `CHARTER_PAYER=toon-client` against a channel Drew
   funds (channel `<id>`, Base ETH for the open included): `<result>`. The HTTP half (Node fetch through
   the env proxy) is proven above; the toon-client half runs when Edison's box gets its funded key (Task 15).
