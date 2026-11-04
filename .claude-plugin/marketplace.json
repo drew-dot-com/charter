@@ -9,7 +9,8 @@
     {
       "name": "charter",
       "source": "./plugins/charter",
-      "description": "Rent Charter compute from an agent node: read the kind 31390 offers, open a lease, pay each interval and fetch the output with toon_cli.",
+      "version": "0.3.0",
+      "description": "Rent Charter compute from an agent node: read the kind 31390 offers, open a lease, pay each interval and fetch the output with toon_cli, or rent a home with a kept disk and SSH in.",
       "category": "protocol",
       "keywords": ["toon", "charter", "compute", "lease", "ilp"]
     }

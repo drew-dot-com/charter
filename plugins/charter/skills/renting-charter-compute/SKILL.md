@@ -1,6 +1,6 @@
 ---
 name: renting-charter-compute
-description: "Rent compute on Charter from an agent node with toon_cli's `toon` binary: read the kind 31390 offers on a relay, open a lease on a host, pay it one interval at a time, read its state and collect the job's output. Covers the fetch job (page texts and screenshots through a hidden exit) and the python job (your script, no network). Use when asked to run a script or fetch pages on a Charter machine, to rent compute over TOON, or to read what Charter offers. Every step after the offer read is paid. Run toon --version first."
+description: "Rent compute on Charter from an agent node with toon_cli's `toon` binary: read the kind 31390 offers on a relay, open a lease on a host, pay it one interval at a time, read its state and collect the job's output. Covers the fetch job (page texts and screenshots through a hidden exit), the python job (your script, no network) and the home (a box with a kept 2 GiB disk, SSH in over an Anyone onion address, renewed from inside with the charter CLI). Use when asked to run a script or fetch pages on a Charter machine, to rent a home or a box to live in, to rent compute over TOON, or to read what Charter offers. Every step after the offer read is paid. Run toon --version first."
 toon_cli: ">=0.3, <0.4"
 ---
 
@@ -45,8 +45,8 @@ version you found and which this skill covers. If a command here is then missing
 - **The three apps**: the host's `toon` node serves `charter-open`, `charter-tick` and
   `charter-status`, each at its own price and each answering only its own action. A packet paid
   for one can never reach another.
-- **Job**: an **image** the offer lists plus its **args**. Two exist: `charter-job-fetch` and
-  `charter-job-python` (below).
+- **Job**: an **image** the offer lists plus its **args**. Three exist: `charter-job-fetch`,
+  `charter-job-python` and `charter-home` (below; the home has its own section, step 8).
 
 ## Money: read this before renting
 
@@ -94,6 +94,7 @@ The event's `content` is a JSON object:
 | `cpu`, `memoryMiB` | The container's size. |
 | `images` | The jobs the host runs. Open only a job whose image is listed. |
 | `hiddenHost`, `hiddenEgress` | Whether the host is reachable only over Anyone, and whether the fetch job's traffic leaves through an Anyone exit. |
+| `home` | On a host that runs homes: `{"diskGiB": 2, "retentionDays": 7, "slots": 1}` on the first host. |
 
 Save the one you will rent as a file (`offer.json`, the parsed `content`): the commands below
 read `ilpBase`, `sealUrl` and the prices from it.
@@ -153,6 +154,14 @@ It runs with NumPy and no network at all, so it must print what it wants returne
 {"job":{"image":"charter-job-python","args":{"SCRIPT":"import numpy as np\nprint(np.arange(5).sum())\n"}}}
 ```
 
+**`charter-home`**: `args.SSH_KEYS` is 1 to 8 SSH public key lines joined by a newline, each an
+`ssh-ed25519`, `ecdsa-sha2-nistp256|384|521` or `ssh-rsa` line under 1024 bytes. Public keys
+only. Step 8 says what you get.
+
+```
+{"job":{"image":"charter-home","args":{"SSH_KEYS":"ssh-ed25519 AAAA... comment"}}}
+```
+
 Write the file with a JSON encoder, never by hand, so the script's newlines and quotes are escaped.
 A job the host cannot take answers `closedReason: "boot_failed"` with `error` `image_not_allowed`,
 `arg_not_allowed` or `bad_input`, and the open is still paid.
@@ -168,7 +177,9 @@ The report's `response.body` is a string holding JSON. Parse it:
 - `{"leaseId": …, "state": "awaiting_first_tick"}`: the container is created, not started. Pay
   tick `0` within `firstTickGraceSeconds` (90 s on the first host) or the host closes it.
 - `{"leaseId": …, "state": "closed", "closedReason": "busy"}`: the host is running another
-  lease. Wait and try later; do not retry in a loop.
+  lease, or its home slot is taken. Wait and try later; do not retry in a loop.
+- `{"leaseId": …, "state": "closed", "closedReason": "home_in_use"}`: a live lease already holds
+  the home your keys name (step 8). A host with one home slot answers `busy` first.
 - `{"leaseId": …, "state": "closed", "closedReason": "boot_failed", "error": …}`: the job was
   refused or did not boot. The open is paid; nothing else is owed, and the lease has nothing
   more to say.
@@ -224,9 +235,10 @@ toon send <ilpBase>.charter-status --seal-to <sealUrl> --method GET --path /leas
 
 `response.body` holds `{"lease": {...}}` with `state` (`booting`, `awaiting_first_tick`,
 `running`, `done`, `closed`), `paidIntervals`, `paidThrough`, `closedReason` (`boot_failed`,
-`missed_tick`, `max_intervals`, `host_restart`, `busy`), `outputParts` once the job has written
-its result, and `landing` once the host has redeemed the lease's vouchers on chain (`chain`,
-`tx`). `404 not_found` is a lease this host never had.
+`missed_tick`, `max_intervals`, `host_restart`, `busy`, `home_in_use`), `outputParts` once the job
+has written its result, and `landing` once the host has redeemed the lease's vouchers on chain
+(`chain`, `tx`). A home lease also has `homeId`, `restarts` and `access` (step 8), and never
+reaches `done`. `404 not_found` is a lease this host never had.
 
 ## 7. Collect the output
 
@@ -241,6 +253,141 @@ toon send <ilpBase>.charter-status --seal-to <sealUrl> --method GET --path /leas
 job writes). `409 unpaid` is a lease whose tick `0` was never paid; `404 not_found` is a part
 past the end or a lease with no output yet.
 
+## 8. A home
+
+A home is a lease on `charter-home`: a box with a disk that outlives the lease, reached over SSH.
+It runs while it is paid, at the same `tickPrice`, and never finishes by itself. The first host
+has one home slot (`home.slots`); while it is taken an open answers `busy`, and a second home
+needs a second host.
+
+### Rent it with the charter CLI
+
+The `charter` CLI in the [Charter repository](https://github.com/drew-dot-com/charter) runs the
+open, the ticks and the reads above for you, through the same `toon` binary (it reads
+`TOON_PASSPHRASE_FILE`). Install it with Node 22 or later:
+
+```
+git clone https://github.com/drew-dot-com/charter && cd charter && npm ci && npm run build && npm install -g --prefix ~/.local .
+```
+
+Put your public keys in a file, one per line, then:
+
+```
+charter rent --offer <pubkey>:<d> --home keys.pub --max-intervals <n> --relay wss://relay.mainnet.toonprotocol.dev
+```
+
+It opens, pays tick `0` at once and keeps paying until `<n>` ticks are paid and watched out, so it
+runs for about `<n>` hours: run it in the background, or with a small `<n>` and let the box
+renew itself (below). Once a read shows the address it prints the `ssh` line on stderr. To keep
+paying a lease that is already open (yours, or one opened from elsewhere):
+
+```
+charter renew --offer <pubkey>:<d> --lease <leaseId> --max-intervals <n> --relay wss://relay.mainnet.toonprotocol.dev
+```
+
+`renew` reads the lease, pays from the host's own count of paid ticks, and sends its first tick at
+once. `--from <index>` is optional; when given it must equal that count, or nothing is paid.
+`references/lease-loop.sh` also pays a home's ticks, but never prints the address: read the lease
+(step 6) for it.
+
+### Find it and get in
+
+A running home's lease has:
+
+```
+"homeId": "<16 hex>",
+"restarts": 0,
+"access": {"ssh": {"host": "<56 characters>.anyone", "port": 22, "user": "tenant"}}
+```
+
+`access` is `null` (or absent) until the host has published the home's onion address, within
+about a minute of the first tick: read the lease about once a minute until it is set (each read
+is one `statusPrice`). `restarts` counts the times the host re-created the box. Then:
+
+```
+ssh -o ProxyCommand="nc -x 127.0.0.1:<your Anyone SOCKS port> %h %p" tenant@<host>
+```
+
+Your toon node has an Anyone SOCKS port: that is the one to use. No Anyone client, no way in:
+there is no clearnet address. The keys you opened with are the only logins. The box's host key
+is made once on your disk, so its fingerprint stays the same across restarts and leases; pin it
+the first time.
+
+### What is inside
+
+- Debian bookworm-slim. User `tenant` (uid 10001), no root, no setuid programs. Python 3 with
+  `venv` and `pip`, `uv`, Node 22, `git`, `curl`, `jq`, `rsync`, `tmux`. 1 CPU, 1 GiB, 512
+  processes.
+- `/home/tenant` is your disk. The root filesystem is read-only; `/tmp` is 256 MiB in memory.
+- `~/.charter/boot.sh`, if it exists and is executable, runs in the background at every start,
+  output in `~/.charter/boot.log`. Put what must come back after a restart there.
+- `/charter/paid-through` holds the epoch ms the paid time runs out, rewritten on every tick.
+  `CHARTER_LEASE_ID`, `CHARTER_HOME_ID`, `CHARTER_OFFER_JSON` and `CHARTER_CONNECTOR_URL` are in
+  the environment.
+- Network: everything leaves through the host's Anyone client. `HTTP_PROXY` and `HTTPS_PROXY`
+  are `http://172.19.0.1:9080`, `ALL_PROXY` is `socks5h://172.19.0.1:9050`, names resolve over
+  Anyone, and `NODE_USE_ENV_PROXY=1` is set for Node; all of it in every SSH session and in
+  `boot.sh`. A program that opens a raw socket to the internet fails. The box reaches nothing on
+  the host or its LAN. It is slow, hidden, and sometimes refused by a service that dislikes
+  shared exits.
+
+### The disk and the keys
+
+- 2 GiB, ext4. Kept 7 days, free, after a lease that paid at least one tick closes; removed at
+  once when a lease that never paid a tick closes.
+- The key set is the home's identity: `homeId` is a hash of the sorted keys. The same keys open
+  the same home, on the same disk and the same onion address. There is no key rotation: a
+  different set is a different home, and a lost private key is a lost home once the retention
+  runs out. Two homes need two key pairs.
+- Anyone with your public keys can open your home and hold it, though not enter it: while their
+  lease lives yours is refused (`busy` on the first host, whose one slot their lease fills;
+  `home_in_use` on a host with slots to spare). A key whose public half you have shown nobody,
+  added to the set, prevents that (it makes a new home).
+- The operator can read your disk, and can enter any container on the machine. Keep secrets
+  elsewhere or encrypt them.
+- Secrets go in over SSH, never through Charter; the open carries public keys only:
+
+  ```
+  scp -o ProxyCommand="nc -x 127.0.0.1:<your Anyone SOCKS port> %h %p" .env tenant@<host>:
+  ```
+
+### What the host promises about uptime
+
+- No uptime figure. Expect restarts. Your disk survives them; your processes do not, so put what
+  must run in `~/.charter/boot.sh`.
+- A tick pays an hour from the end of the paid time. Pay the next tick half an hour early (the
+  tenant loop already does) so a short outage does not end the lease. Paying several ticks ahead
+  buys that much patience and nothing else; a lease that closes refunds nothing.
+- A closed home keeps its disk and onion address for 7 days. Open again with the same keys.
+- A restart of the host program leaves a running home alone. A reboot of its VM puts a paid home
+  back on its disk (`restarts` goes up), as long as the paid time has not run out.
+
+### Paying from inside
+
+The first open and tick come from outside: the box does not exist yet. After that the box can pay
+its own rent with the charter CLI installed in it, using the `@toon-protocol/client` payer instead
+of a `toon` node:
+
+```
+export CHARTER_PAYER=toon-client
+export CHARTER_TOON_KEY_FILE=~/.charter/payer.key        # the box's own Base key (hex), copied in by scp
+export CHARTER_TOON_CHANNEL_STORE=~/.charter/channels.json
+export CHARTER_TOON_CHAIN=evm
+charter renew --offer <pubkey>:<d> --lease "$CHARTER_LEASE_ID" --max-intervals <n>
+```
+
+`CHARTER_CONNECTOR_URL` and `CHARTER_OFFER_JSON` are set in the box, so no connector flag and no
+`--relay` are needed. Put the `renew` line in `boot.sh`. The wallet needs USDC in a channel to
+that connector plus a little Base ETH for the one on-chain channel open. 2 USDC runs the box
+about 10 days: 12 days of rent, less the status reads `renew` makes (about 8 an hour).
+
+### What to tell your operator
+
+A home costs 0.007 USDC an hour, about 5 USDC a month, in your node's channel; opening a channel
+on Base also needs a little Base ETH. If the box pays its own rent, it needs 2 USDC in its own
+channel and a little Base ETH for that channel's on-chain open, and the operator moves the box's key in over SSH. The operator can read the disk,
+so the operator decides which secrets go in.
+
 ## When it refuses
 
 | You see | It means | Do |
@@ -251,7 +398,8 @@ past the end or a lease with no output yet.
 | `reject.code` `T01` | The packet did not reach the host in time: the peer or its onion hop was down or slow | Do the paid status read of step 2 again a minute later. A `T01` on an **open** may still have created a lease the host now waits a first tick for: wait `firstTickGraceSeconds` plus 10 s before opening again, or the host answers `busy`. Nothing is owed for it. |
 | `error.code` `spending_limit` | The wallet's limit | Report it. Never raise the limit unless the operator said to. |
 | `error.code` `peering_needed` | Your node has no peering toward that network | Ask the operator. |
-| `closedReason` `busy` | One lease at a time on that host | Try later. |
+| `closedReason` `busy` | The host's lease or home slots are full | Try later. |
+| `closedReason` `home_in_use` | A live lease already holds the home your keys name | Wait for it to lapse, or open with a different key set (a different home). |
 | `closedReason` `boot_failed` | Job refused or did not boot | Read `error`; fix the job. The open was paid. |
 | `409` `lease_done`, `not_running`, `missed_tick` | The lease has ended | Read it once; never retry the tick. |
 
@@ -259,5 +407,6 @@ past the end or a lease with no output yet.
 
 - **Renting with a browser wallet** (USDC on Base, no agent node) goes through Charter's door and
   storefront, for people: the Charter README says how. This skill is for a renter with a node.
-- **Paying with `@toon-protocol/client`** (`toon-client`): not described here.
+- **Paying with `@toon-protocol/client`** (`toon-client`) from anywhere but inside a home (step 8):
+  not described here.
 - **Hosting**: how a machine joins Charter is the "Host" section of the Charter README.

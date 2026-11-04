@@ -213,6 +213,75 @@ Done 2026-11-04, 30 s at 5000 to one hour at 7000, no live lease, in this order:
    job, ticks 0 and 1 paid three seconds apart (`paidThrough` two hours out), `done`, stdout `hourly`, 15,400
    units in all.
 
+## Homes
+
+A home is a lease on `charter-home`: the renter's own box, with a 2 GiB disk kept between leases and
+SSH in at an onion address. toon2 carries one (`CHARTER_MAX_HOMES=1`, counted inside
+`CHARTER_MAX_LEASES=2`), so a home and one job can run at once. Design:
+`docs/superpowers/specs/2026-11-04-home-image-design.md`; variables: `docs/env.md`.
+
+**What it adds to toon2.** Two system units, both installed and enabled by `sudo bash
+deploy/host/install-home.sh` from the repo in the VM, run as the host user with the toon node up:
+
+- `charter-anon.service`: Charter's own Anyone client (`~/.config/charter/anon/anonrc`, a copy of
+  the node's `anon` binary at `~/.local/bin/anon`, its GeoIP files beside it). It listens on the
+  bridge gateway only: SOCKS `172.19.0.1:9050`, HTTP tunnel `172.19.0.1:9080`, DNS
+  `172.19.0.1:53`, and serves one onion service per home from `~/.config/charter/anon/hs.d/`
+  (charter-host writes `<homeId>.conf` there and sends a `SIGHUP`). Log:
+  `~/.local/share/charter/anon/anon.log`.
+- `charter-home-net.service`: makes the `charter-home` docker bridge (`172.19.0.0/24`, no
+  inter-container traffic) and its firewall at every boot: nothing from the bridge is forwarded
+  anywhere, and the host answers it only on 9050, 9080 and 53.
+
+The script also installs `/etc/sudoers.d/charter-home` (the host user may run `/usr/sbin/losetup`
+as root, nothing else), which charter-host uses to attach each disk image. It copies the node's
+`anon` and GeoIP files, and a `toon` upgrade moves those, so rerun it after every `toon` upgrade.
+Running it twice is harmless. Check:
+
+```
+systemctl status charter-anon charter-home-net
+ss -ltunp | grep 172.19.0.1            # anon on tcp 9050 and 9080, udp 53
+sudo iptables -S DOCKER-USER           # -i br-... -j DROP
+sudo iptables -S INPUT | grep br-      # four ACCEPTs, then the DROP
+losetup -a                             # one line per attached home disk
+```
+
+**Testing the proxies.** They answer only from the home bridge, not from the VM shell, so test from
+a container on it: `docker run --rm --network charter-home --dns 172.19.0.1 curlimages/curl -sS -m 10
+https://example.com` must fail, and the same with `-x http://172.19.0.1:9080` must print the page.
+
+**Restarts are now safe for homes.** A `charter-host` restart leaves a running home's container
+alone and picks it up again. After a VM reboot docker's own auto-start of a home fails, because the
+disk image is no longer attached: that is expected, one failed start in the docker log. charter-host
+then re-attaches the disk with `losetup`, re-creates the container and starts it, and the lease's
+`restarts` goes up by one, as long as the paid time has not run out. A home whose paid time ran out
+while the host was down is closed `missed_tick`.
+
+**`homes.json`.** `<CHARTER_DATA_DIR>/homes.json` (`~/.local/share/charter/homes.json` on toon2)
+holds one record per home: `homeId` (the first 16 hex of the SHA-256 of the sorted keys), `port`
+(the loopback port its sshd is published on, 22000 upward), `createdAt`, `paidOnce` (a lease on it
+paid at least one tick) and `lastClosedAt` (when its last lease closed). Per home the files are
+under `<CHARTER_DATA_DIR>/homes/<homeId>/`: `disk.img`, `hs/` (the onion keys) and `charter/`
+(the `paid-through` file the box sees at `/charter`).
+
+```
+limactl shell toon2 -- jq . ~/.local/share/charter/homes.json
+```
+
+**The sweep.** Once an hour charter-host removes every home with no live lease whose `lastClosedAt`
+is more than 7 days old: the docker volume, the disk image, the onion keys and the record. A home
+whose lease closed without ever paying a tick is removed at close instead. Nothing else deletes a
+home. Before creating a disk the host refuses the open (`boot_failed`, no disk) when less than 3 GiB
+of the VM's disk would stay free.
+
+**What the operator can see.** The disk is plaintext and any container can be entered with `docker
+exec`; the agent-facing docs say so. Do neither without the tenant's say.
+
+**Growing the Lima disk.** toon2's disk is a Lima setting: stop the VM on the Air (`limactl stop
+toon2`), raise `disk` with `limactl edit toon2`, and start it again. Stopping the VM closes every
+live job lease, and a home comes back only if its paid time outlasts the stop, so do it on a day
+with no live lease (the `jq` line under "Lease limit" prints 0). Drew runs it.
+
 ## Still open for Drew
 
 - The box now holds a copy of the Edison bot token. A dedicated alert bot (BotFather, two minutes) would keep

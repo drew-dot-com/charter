@@ -8,11 +8,14 @@ no account on either side, and the host can be a home machine with no domain and
 hidden host, reached over Anyone).
 
 **Status: v1, first-party.** Every lease so far has Drew Pierson on both sides: he runs the one host,
-the door and the edge node, and both renters. There are no outside users yet. Two job images:
+the door and the edge node, and both renters. There are no outside users yet. Three job images:
 `charter-job-python` runs the renter's own Python script (up to 8 KiB, NumPy included) with no
 network at all and returns its stdout, stderr and exit code; `charter-job-fetch` fetches up to five
-pages in a headless browser and returns a screenshot and the text of each. Why the python job is
-safe enough for a home host: `docs/superpowers/specs/2026-10-17-python-job-design.md`.
+pages in a headless browser and returns a screenshot and the text of each; `charter-home` is a box
+the renter lives in: a 2 GiB disk kept between leases, SSH in at an onion address on the Anyone
+network, and network out only through the Anyone network. Why the python job is safe enough for a
+home host: `docs/superpowers/specs/2026-10-17-python-job-design.md`. The home's design:
+`docs/superpowers/specs/2026-11-04-home-image-design.md`.
 
 ## How it works
 
@@ -52,6 +55,48 @@ charter rent --offer <pubkey>:<id> --urls https://example.com --max-intervals 1 
 
 `TOON_PASSPHRASE_FILE` names the file with the node wallet's passphrase.
 
+### A home
+
+Open with your SSH public keys (one per line in a file) instead of a job:
+
+```sh
+charter rent --offer <pubkey>:<id> --home keys.pub --max-intervals 2 --relay wss://relay.mainnet.toonprotocol.dev
+```
+
+Over HTTP the body is `{ "offerId": "...", "home": { "sshKeys": ["ssh-ed25519 AAAA... comment"] } }`.
+Once the onion address is published (within about a minute of the first tick) the lease status
+carries `access: { "ssh": { "host": "<56 chars>.anyone", "port": 22, "user": "tenant" } }` and the
+CLI prints the line to log in with:
+
+```sh
+ssh -o ProxyCommand="nc -x 127.0.0.1:<your Anyone SOCKS port> %h %p" tenant@<host>
+```
+
+A toon node has such a port; with no Anyone client there is no way in. The box is Debian with
+Python 3, `uv`, Node 22 and git, as user `tenant` with no root, 1 CPU and 1 GiB. Everything it
+sends leaves through the host's Anyone client (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` are set; a
+raw socket to the internet fails). `~/.charter/boot.sh` runs at every start, and
+`/charter/paid-through` holds when the paid time runs out.
+
+The key set is the home's identity: the same keys open the same 2 GiB disk and the same onion
+address, and there is no key rotation. A home that paid a tick is kept 7 days, free, after its
+lease closes; one that never paid is removed at close. Anyone with your public keys can open your
+home and hold it, though not enter it. The operator can read your disk: secrets go in over SSH,
+never through Charter. No uptime figure: expect restarts; your disk survives them, your processes
+do not. The live host has one home slot.
+
+From inside the box, the same CLI keeps paying with `CHARTER_PAYER=toon-client` and the box's own
+wallet (`CHARTER_TOON_KEY_FILE`, `CHARTER_TOON_CHANNEL_STORE`, `CHARTER_TOON_CHAIN`; the connector and
+the offer are already set in the box as `CHARTER_CONNECTOR_URL` and `CHARTER_OFFER_JSON`):
+
+```sh
+charter renew --offer <pubkey>:<id> --lease "$CHARTER_LEASE_ID" --max-intervals <n>
+```
+
+A home costs about 5 USDC a month; a box that pays its own rent needs 2 USDC in its own channel and
+a little Base ETH for the one on-chain channel open. The whole of it, for agents, is
+https://charter.mainnet.toonprotocol.dev/agents#home.
+
 From an agent (Claude Code) with a `toon` node: the `charter` plugin in this repo is a skill that
 says what each packet holds and how `toon` 0.3 sends it, in the shape of
 [toon-protocol/toon-plugins](https://github.com/toon-protocol/toon-plugins).
@@ -72,6 +117,7 @@ Next to a running `toon` node, with Docker and Node 22 or later:
 npm ci && npm run build && npm install -g --prefix ~/.local .
 docker build -t charter-job-fetch jobs/fetch
 docker build -t charter-job-python jobs/python
+docker build -t charter-home jobs/home        # only if the host offers homes
 toon add charter-open   --to relay --url http://127.0.0.1:7401/ --price 1000 --yes
 toon add charter-tick   --to relay --url http://127.0.0.1:7402/ --price 7000 --yes
 toon add charter-status --to relay --url http://127.0.0.1:7403/ --price 100  --yes
@@ -84,6 +130,12 @@ vouchers on chain. Every variable is in `docs/env.md`; the full deploy, door inc
 
 A job container gets 1 CPU, 1 GiB, 256 pids, a read-only root, no capabilities and
 `no-new-privileges`. With `CHARTER_PROXY` set, its traffic leaves through the host's Anyone proxy.
+
+To offer homes, run `sudo bash deploy/host/install-home.sh` once in the VM (Charter's own Anyone
+client, the `charter-home` bridge and its firewall, and a sudo rule for `losetup` only), add
+`charter-home` to `CHARTER_ALLOW_IMAGES` and set `CHARTER_MAX_HOMES` and the other home variables
+in `docs/env.md`. A home gets 512 pids and the same limits otherwise. Operating them:
+`docs/ops.md`, "Homes".
 
 ## Develop
 

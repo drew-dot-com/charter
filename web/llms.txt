@@ -4,17 +4,36 @@
 
 Charter is a compute marketplace on the TOON payment network. A host publishes an offer for a machine. A renter opens a lease, pays one interval at a time, and a container runs the renter's job for as long as the payments keep arriving. There is no signup, no API key and no account on either side: the renter is whoever pays.
 
-Two jobs exist today. `charter-job-python` runs your Python 3 script (up to 8 KiB, NumPy included, no network) and returns its stdout, stderr and exit code. `charter-job-fetch` loads up to five pages in a headless browser through a hidden exit and returns the text and a screenshot of each.
+Three jobs exist today. `charter-job-python` runs your Python 3 script (up to 8 KiB, NumPy included, no network) and returns its stdout, stderr and exit code. `charter-job-fetch` loads up to five pages in a headless browser through a hidden exit and returns the text and a screenshot of each. `charter-home` is a box of your own: a 2 GiB disk kept between leases, SSH in at an onion address on the Anyone network, network out only through the Anyone network (see Home below).
 
 Prices on the one live host, in USDC: one hour 0.007, a deposit of at least 0.10 that is refunded unspent about two hours after the lease goes quiet. Opening a lease and reading its state cost you nothing through the storefront. A python job that finishes inside its first hour costs 0.007; a day about 0.17; 30 days about 5. Paying ahead is sending the next ticks now, each adding an hour; a batch-settlement channel idle for two hours is refunded and closed, so paying more than two hours ahead means depositing again on the next tick.
 
-The cheapest comparison is a 5 EUR per month VPS: Charter costs about the same for a month and needs no account, only a wallet. Today only the two jobs run, and the python job has no network, so this is an hour of sandboxed compute at a time, not yet a server to live in.
+The cheapest comparison is a 5 EUR per month VPS: Charter costs about the same for a month and needs no account, only a wallet. Three jobs run today: the python job has no network and the fetch job hands back pages, while the home has network through the Anyone network, a 2 GiB disk and SSH in. The live host has one home slot.
 
 Status: live on Base mainnet since 2026-10-17, one host, first-party. Every renter so far has been an operator of the project. Receipts for every mainnet lease are on the About page.
 
+## Home
+
+- Open: `POST /v1/leases` with `{ "offerId": "...", "home": { "sshKeys": ["ssh-ed25519 AAAA... comment"] } }`: 1 to 8 public keys (`ssh-ed25519`, `ecdsa-sha2-nistp256|384|521`, `ssh-rsa`), each line under 1024 bytes. Then pay ticks like any lease. Over TOON the job is `{ "image": "charter-home", "args": { "SSH_KEYS": "<the key lines joined by a newline>" } }`. Public keys only: no secret ever goes through Charter.
+- Find it: a running home's status has `homeId`, `restarts` (times the host re-created the box) and `access: { "ssh": { "host": "<56 chars>.anyone", "port": 22, "user": "tenant" } }`. `access` is `null` (or absent) until the onion address is published, within about a minute of the first tick; poll about once a minute. A home never reaches `done` and has no output.
+- Get in: `ssh -o ProxyCommand="nc -x 127.0.0.1:<your Anyone SOCKS port> %h %p" tenant@<host>`. A toon node has such a port. No Anyone client, no way in. The keys you opened with are the only logins; the host key is made once on your disk, so the fingerprint is stable across restarts and leases.
+- Inside: Debian bookworm-slim, user `tenant` (uid 10001, no root, no setuid), Python 3 with venv and pip, `uv`, Node 22, git, curl, jq, rsync, tmux; 1 CPU, 1 GiB, 512 processes. `/home/tenant` is the disk; the root filesystem is read-only; `/tmp` is 256 MiB in memory.
+- `~/.charter/boot.sh`, if executable, runs in the background at every start (output in `~/.charter/boot.log`). `/charter/paid-through` holds the epoch ms the paid time runs out, rewritten on every tick. `CHARTER_LEASE_ID`, `CHARTER_HOME_ID`, `CHARTER_OFFER_JSON` and `CHARTER_CONNECTOR_URL` are in the environment.
+- Network: everything goes through the host's Anyone client. `HTTP_PROXY` and `HTTPS_PROXY` are `http://172.19.0.1:9080`, `ALL_PROXY` is `socks5h://172.19.0.1:9050`, DNS resolves over Anyone, `NODE_USE_ENV_PROXY=1` is set for Node; all of it in every SSH session and in `boot.sh`. A program that opens a raw socket to the internet fails. The box reaches nothing on the host or its LAN. Slow, hidden, sometimes refused by a service that dislikes shared exits.
+- Disk: 2 GiB ext4. The key set is the home's identity (`homeId` is a hash of the sorted keys): the same keys open the same home, the same disk and the same onion address; there is no key rotation, and a lost key is a lost home once the retention runs out. Kept 7 days free after a lease that paid a tick closes; removed at close if the lease never paid a tick.
+- Anyone with your public keys can open your home and hold it, though not enter it (your open is then refused: `busy` on a host whose one home slot that lease fills, `closedReason: "home_in_use"` on a host with free slots). The operator can read your disk: keep secrets elsewhere or encrypt them. Secrets go in over SSH (`scp`), never through Charter.
+- One home slot on the live host (`home.slots` in the offer, beside `diskGiB: 2` and `retentionDays: 7`). While it is taken an open answers `busy`; a second home needs a second host.
+- Uptime, as a list, not a promise:
+  - No uptime figure. Expect restarts. Your disk survives them; your processes do not, so put what must run in `~/.charter/boot.sh`.
+  - A tick pays an hour from the end of the paid time. Pay the next tick half an hour early (the tenant loop already does) so a short outage does not end the lease. Paying several ticks ahead buys that much patience and nothing else; a lease that closes refunds nothing.
+  - A closed home keeps its disk and onion address for 7 days. Open again with the same keys.
+  - A restart of the host program leaves a running home alone. A reboot of its VM puts a paid home back on its disk (`restarts` goes up), as long as the paid time has not run out.
+- Paying from inside: the `charter` CLI installed in the box, with `CHARTER_PAYER=toon-client` and the box's own `CHARTER_TOON_KEY_FILE`, `CHARTER_TOON_CHANNEL_STORE` and `CHARTER_TOON_CHAIN` (the connector and the offer come from `CHARTER_CONNECTOR_URL` and `CHARTER_OFFER_JSON`, set in the box): `charter renew --offer <pubkey>:<offerId> --lease "$CHARTER_LEASE_ID" --max-intervals <n>` reads the lease, pays from the host's count, and sends its first tick at once. Put it in `boot.sh`. The wallet needs USDC in a channel to that connector and a little Base ETH for the one on-chain channel open; 2 USDC runs the box about 10 days.
+- What to tell your operator: a home is about 5 USDC a month; in a channel, add a little Base ETH for its one on-chain open. If the box pays its own rent, it also needs 2 USDC in its own channel and a little Base ETH.
+
 ## Rent
 
-- [How an agent rents](https://charter.mainnet.toonprotocol.dev/agents): the two ways in (x402 over HTTP, or a toon node), every call, every price, what to tell your operator.
+- [How an agent rents](https://charter.mainnet.toonprotocol.dev/agents): the two ways in (x402 over HTTP, or a toon node), every call, every price, the home and how to SSH in, what to tell your operator.
 - [Live offers, JSON](https://charter.mainnet.toonprotocol.dev/v1/offers): the machines on sale right now. Free to read.
 - [Claude Code plugin](https://github.com/drew-dot-com/charter/tree/main/plugins/charter): `/plugin marketplace add drew-dot-com/charter` then `/plugin install charter@charter`. For an agent with a toon node.
 - [Storefront](https://charter.mainnet.toonprotocol.dev/): for a human with a browser wallet.

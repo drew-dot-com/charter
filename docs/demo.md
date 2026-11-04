@@ -317,3 +317,49 @@ tick is watched the same way. At most nine reads a watched hour (0.0009 USDC). T
 - [x] `toon` VM (Edison's `charter` CLI): source backup `~/src/charter.bak-20261104-1225-prewatch`, f7054f8 built 12:25 VM time,
   fresh source from `git archive`, `npm ci && npm run build`, `chmod +x dist/cli.js`.
 - Host and door unchanged: the host's lease machinery and the storefront's own poll were already right.
+
+## 13. The first home (plan section 8)
+
+The `charter-home` image on toon2: a box with a 2 GiB disk kept between leases, SSH in at an onion
+address, egress only through Charter's own Anyone client. Design:
+`docs/superpowers/specs/2026-11-04-home-image-design.md`; operating it: `docs/ops.md`, "Homes".
+Every id below is filled in when the step runs; none is known yet.
+
+- [ ] Build on the Mac (`npm test && npm run typecheck && npm run build`), tar `dist`, `src`,
+  `package.json`, `jobs/home`, `deploy/host`, copy into toon2 and untar over `~/src/charter`;
+  `chmod +x dist/host/main.js`. Source backup: `<path>`.
+- [ ] toon2: `docker build -t charter-home jobs/home`, then `CHARTER_IMAGE_TESTS=1 node --test
+  jobs/home/home.test.mjs` passes. Lima disk grown first or not: `<Drew's call>`.
+- [ ] No live lease (the `jq` line in `docs/ops.md`), then `sudo bash deploy/host/install-home.sh`;
+  anon on `172.19.0.1:9050`, `9080` and `53`, the `DOCKER-USER` drop and the `INPUT` rules in place.
+- [ ] The fence, from a container on `charter-home`: `https://example.com` direct fails; through
+  `-x http://172.19.0.1:9080` prints the page; `http://172.19.0.1:22` and `http://172.17.0.1:9150` fail.
+- [ ] Host env: backup `<path>`; `CHARTER_MAX_HOMES=1`, `CHARTER_ANON_HS_DIR`, `CHARTER_ANON_PIDFILE`,
+  `CHARTER_TENANT_CONNECTOR_URL`, `charter-home` in `CHARTER_ALLOW_IMAGES`; restart; `charter-host offer
+  --print` shows three images and `home: { diskGiB: 2, retentionDays: 7, slots: 1 }`.
+- [ ] Door: backup `/opt/charter.bak-<date>`, rsync, `compose up -d --build`; `GET /v1/offers` lists the
+  home terms. A bare home `POST /v1/leases` (lease `<leaseId>`) answers `awaiting_first_tick`, lapses to
+  `missed_tick` after 90 s, and leaves no record in `homes.json`.
+- [ ] Proof from the `toon` VM (Edison's node): `charter rent --offer <ref> --home test.pub
+  --max-intervals 2 --relay wss://relay.mainnet.toonprotocol.dev`. Lease `<leaseId>`, homeId `<homeId>`,
+  onion `<host>.anyone`, `access` set after `<seconds>` s.
+- [ ] `ssh` in over the node's SOCKS port; `curl https://example.com` works, `curl --noproxy '*' -m 10
+  https://example.com` fails; `echo kept > ~/kept`.
+- [ ] `systemctl --user restart charter-host` on toon2: the box is back with `~/kept`, `restarts: <n>`.
+- [ ] Let the lease lapse, open again with the same key: lease `<leaseId>`, `~/kept` there, same onion
+  address. Spend for the proof: `<units>` (expected about 0.02 USDC).
+- [ ] From inside the box: one `charter status` with `CHARTER_PAYER=toon-client` against a channel Drew
+  funds (channel `<id>`, Base ETH for the open included): `<result>`. If Node's env proxy does not carry
+  the payer, the fix is recorded here and in `docs/ops.md`.
+
+### Edison moves in (plan Task 15)
+
+- [ ] Edison's home opened from the `toon` VM with Edison's own key pair: lease `<leaseId>`, homeId
+  `<homeId>`.
+- [ ] Hermes installed with `uv`; config and `.env` copied in by Drew over `scp`; the charter CLI
+  installed; `~/.charter/boot.sh` starts the gateway and runs `charter renew` with
+  `CHARTER_PAYER=toon-client` on a Base channel Drew funds (2 USDC plus gas): channel `<id>`.
+- [ ] The box answers a Telegram message and pays one tick on its own (`<fulfil>`); then the Air's
+  gateway is stopped.
+- [ ] The milestone: one paid packet from the box to Jonathan's node through the edge: `<fulfil>`, event
+  `<event id>`.

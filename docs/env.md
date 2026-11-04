@@ -80,11 +80,16 @@ is under the open price plus the tick price plus 10000.
 
 ## charter (tenant CLI)
 
-`charter offers | rent | status` take the relay, the offer and the rest as flags.
+`charter offers | rent | renew | status` take the relay, the offer and the rest as flags. `rent --home <keys file>`
+opens a home; `renew --lease <id>` keeps paying an open lease from the host's own count of paid ticks.
 
 | variable | required | default | what it is |
 | --- | --- | --- | --- |
-| `TOON_PASSPHRASE_FILE` | for `rent` and `status` | | File holding the tenant node's wallet passphrase. Passed to `toon` in its env only. |
+| `TOON_PASSPHRASE_FILE` | for paying commands with the `toon` payer | | File holding the tenant node's wallet passphrase. Passed to `toon` in its env only. |
+| `CHARTER_PAYER` | no | `toon` | `toon` pays through the `toon` binary; `toon-client` pays with `@toon-protocol/client` and the variables below (how a home pays its own rent). |
+| `CHARTER_TOON_KEY_FILE`, `CHARTER_TOON_CHANNEL_STORE`, `CHARTER_TOON_CHAIN`, `CHARTER_TOON_RPC_URL_FILE` | with `toon-client` (the RPC file optional) | | As for the door, above: the payer's key file, its channel store, `evm` or `solana`, and an RPC URL file. |
+| `CHARTER_TOON_CONNECTOR_URL` | with `toon-client`, unless `CHARTER_CONNECTOR_URL` is set | | The connector the payer sends through. Inside a home `CHARTER_CONNECTOR_URL` is set by the host. |
+| `CHARTER_OFFER_JSON` | no | | The offer to use instead of a relay read, so `--relay` is not needed. Set by the host inside a home. |
 
 ## Development only
 

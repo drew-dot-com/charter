@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Charter for agents</title>
-  <meta name="description" content="How an agent rents a sandboxed machine on Charter: every HTTP call, every price in USDC, the two ways to pay (x402 over HTTP, or a toon node), and what to tell your operator.">
+  <meta name="description" content="How an agent rents a sandboxed machine or a home on Charter: every HTTP call, every price in USDC, the two ways to pay (x402 over HTTP, or a toon node), how to SSH into a home, and what to tell your operator.">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
   <link rel="stylesheet" href="style.css">
@@ -24,10 +24,11 @@
     <p class="lede">This page is written for the model reading it. Charter rents a sandboxed machine by the hour, 0.007 USDC an hour, paid in USDC on Base, with no account, no API key and no signup. The machine-readable summary is <a href="/llms.txt">/llms.txt</a>.</p>
 
     <h2>What you get, and what it costs</h2>
-    <p>One container, 1 CPU and 1 GiB, for as long as you keep paying. Two jobs run today:</p>
+    <p>One container, 1 CPU and 1 GiB, for as long as you keep paying. Three jobs run today:</p>
     <ul>
       <li><code>charter-job-python</code>: your Python 3 script, at most 8 KiB, NumPy included, no network. You get stdout, stderr and the exit code back.</li>
       <li><code>charter-job-fetch</code>: one to five pages loaded in a headless browser through a hidden exit. You get the text (32 KiB a page) and a screenshot of each.</li>
+      <li><code>charter-home</code>: a box of your own. A 2 GiB disk that is kept between leases, SSH in at an onion address on the Anyone network, and network out only through the Anyone network. No output: you log in. See <a href="#home">Home</a>.</li>
     </ul>
     <table class="recent">
       <tr><th>item</th><th>USDC</th><th>who pays</th></tr>
@@ -35,7 +36,7 @@
       <tr><td>opening a lease</td><td class="num">0.001</td><td>the storefront, when you come in over HTTP; you, from a toon node</td></tr>
       <tr><td>a status read or one output part</td><td class="num">0.0001</td><td>the storefront, when you come in over HTTP; you, from a toon node</td></tr>
     </table>
-    <p>Those are the one live host's prices. The authoritative number is <code>tickPrice</code> in <a href="/v1/offers">/v1/offers</a>, in micro-USDC (<code>7000</code> is 0.007), and <code>intervalSeconds</code> says what a tick buys (3600). A python job that finishes inside its first hour costs 0.007 USDC. A full day costs about 0.17; 30 days about 5 USDC, which is about the price of the cheapest VPS, for a box nobody signed up for. Only the two jobs above run today, and the python job has no network: this is an hour of sandboxed compute at a time, paid ahead as far as you like, not yet a server to live in. Until 2026-11-04 the interval was 30 seconds at 0.005.</p>
+    <p>Those are the one live host's prices. The authoritative number is <code>tickPrice</code> in <a href="/v1/offers">/v1/offers</a>, in micro-USDC (<code>7000</code> is 0.007), and <code>intervalSeconds</code> says what a tick buys (3600). A python job that finishes inside its first hour costs 0.007 USDC. A full day costs about 0.17; 30 days about 5 USDC, which is about the price of the cheapest VPS, for a box nobody signed up for. Three jobs run today: the python job has no network and the fetch job hands back pages, while the home has network through the Anyone network, a 2 GiB disk and SSH in. The live host has one home slot. Until 2026-11-04 the interval was 30 seconds at 0.005.</p>
     <p>Status: live on Base mainnet since 2026-10-17, one host, first-party. Every renter so far has been an operator of the project. Every mainnet lease has a receipt on <a href="https://charter.ar.io/#proof">the About page</a>.</p>
 
     <h2>Before you spend</h2>
@@ -46,14 +47,14 @@
 
     <h3>1. Read the offers (free)</h3>
 <pre>GET /v1/offers</pre>
-    <p>A JSON array. Each offer has <code>offerId</code>, <code>cpu</code>, <code>memoryMiB</code>, <code>intervalSeconds</code>, <code>tickPrice</code> (micro-USDC, a string), <code>images</code>, <code>hiddenHost</code>, <code>hiddenEgress</code>, <code>expiresAt</code> (epoch ms) and <code>leases</code> (how many paid leases this host has served). Pick an offer whose <code>images</code> lists your job. An empty array means no host is up: do not retry in a loop.</p>
+    <p>A JSON array. Each offer has <code>offerId</code>, <code>cpu</code>, <code>memoryMiB</code>, <code>intervalSeconds</code>, <code>tickPrice</code> (micro-USDC, a string), <code>images</code>, <code>hiddenHost</code>, <code>hiddenEgress</code>, <code>expiresAt</code> (epoch ms) and <code>leases</code> (how many paid leases this host has served). A host that runs homes also has <code>home</code>: <code>{"diskGiB": 2, "retentionDays": 7, "slots": 1}</code> on the live host. Pick an offer whose <code>images</code> lists your job. An empty array means no host is up: do not retry in a loop.</p>
 
     <h3>2. Open a lease (free)</h3>
 <pre>POST /v1/leases
 Content-Type: application/json
 
 {"offerId": "&lt;offerId&gt;", "python": {"script": "import numpy as np\nprint(np.arange(5).sum())\n"}}</pre>
-    <p>Or, for the fetch job, <code>{"offerId": "…", "urls": ["https://example.com"]}</code> with one to five URLs. The answer is <code>{"leaseId", "state"}</code>. <code>awaiting_first_tick</code> means the container exists and waits for tick 0, which the host gives you 90 seconds to pay. <code>closed</code> with <code>closedReason</code> <code>busy</code> means the host is running another lease; wait a few minutes and try again, once. <code>boot_failed</code> with an <code>error</code> means your job was refused (<code>image_not_allowed</code>, <code>arg_not_allowed</code>, <code>bad_input</code>). A 503 <code>capacity</code> means the storefront is out of headroom for today.</p>
+    <p>Or, for the fetch job, <code>{"offerId": "…", "urls": ["https://example.com"]}</code> with one to five URLs. For a home, <code>{"offerId": "…", "home": {"sshKeys": ["ssh-ed25519 AAAA… comment"]}}</code> (see <a href="#home">Home</a>). The answer is <code>{"leaseId", "state"}</code>. <code>awaiting_first_tick</code> means the container exists and waits for tick 0, which the host gives you 90 seconds to pay. <code>closed</code> with <code>closedReason</code> <code>busy</code> means the host is running another lease, or its home slot is taken; wait a few minutes and try again, once. <code>closed</code> with <code>home_in_use</code> means a live lease already holds the home those keys name (on a host with one home slot that answers <code>busy</code> first). <code>boot_failed</code> with an <code>error</code> means your job was refused (<code>image_not_allowed</code>, <code>arg_not_allowed</code>, <code>bad_input</code>). A 503 <code>capacity</code> means the storefront is out of headroom for today.</p>
 
     <h3>3. Pay a tick (0.007 USDC)</h3>
 <pre>POST /v1/leases/&lt;leaseId&gt;/ticks
@@ -69,7 +70,7 @@ Content-Type: application/json
     <h3>5. Read the state and the output (free)</h3>
 <pre>GET /v1/leases/&lt;leaseId&gt;
 GET /v1/leases/&lt;leaseId&gt;/output/0</pre>
-    <p>The first answers <code>{"lease": {"state", "paidIntervals", "paidThrough", "outputParts", "closedReason", "landing"}, "stopped", "offer"}</code>. On a long lease poll it about once a minute: a lease has 40 free host reads plus 68 for each paid hour (8 a tick and one a paid minute), and past that the storefront serves its last answer. The storefront caches each read for 5 seconds and rate limits you past that. When <code>state</code> is <code>done</code> and <code>outputParts</code> is set, fetch parts <code>0</code> to <code>outputParts - 1</code>. A python part is <code>{"kind": "python", "exitCode", "signal", "timedOut", "seconds", "stdout", "stderr", "stdoutTruncated", "stderrTruncated"}</code>. A fetch part is <code>{"pages": [{"url", "text", "jpegBase64"}]}</code>.</p>
+    <p>The first answers <code>{"lease": {"state", "paidIntervals", "paidThrough", "outputParts", "closedReason", "landing"}, "stopped", "offer"}</code>. On a long lease poll it about once a minute: a lease has 40 free host reads plus 68 for each paid hour (8 a tick and one a paid minute), and past that the storefront serves its last answer. The storefront caches each read for 5 seconds and rate limits you past that. When <code>state</code> is <code>done</code> and <code>outputParts</code> is set, fetch parts <code>0</code> to <code>outputParts - 1</code>. A python part is <code>{"kind": "python", "exitCode", "signal", "timedOut", "seconds", "stdout", "stderr", "stdoutTruncated", "stderrTruncated"}</code>. A fetch part is <code>{"pages": [{"url", "text", "jpegBase64"}]}</code>. A home lease never reaches <code>done</code> and has no output; its lease also carries <code>homeId</code>, <code>restarts</code> and <code>access</code> (below).</p>
 
     <h2>Way 2: a toon node</h2>
     <p>For an agent that runs a <a href="https://github.com/toon-protocol/toon_cli">toon_cli</a> node with a funded channel. You then pay the host directly, open and reads included, and the same channel pays every other seller on the TOON mesh. The whole procedure, packet by packet, is the <code>renting-charter-compute</code> skill in the <code>charter</code> Claude Code plugin:</p>
@@ -77,13 +78,70 @@ GET /v1/leases/&lt;leaseId&gt;/output/0</pre>
 /plugin install charter@charter</pre>
     <p>Its <code>references/lease-loop.sh</code> runs one whole lease as one command. The skill needs <code>toon</code> 0.3 and a route from your node to the host's ILP address; adding a peering deposits money and is your operator's decision.</p>
 
+    <h2 id="home">Home: a box you can live in</h2>
+    <p>A home is a lease on the <code>charter-home</code> image: a box with a disk that outlives the lease, reached over SSH. It runs while it is paid, at the same 0.007 USDC an hour, and never finishes by itself. The live host has one home slot (<code>home.slots</code> in the offer); while it is taken an open answers <code>busy</code>, and a second home needs a second host.</p>
+
+    <h3>Open it</h3>
+<pre>POST /v1/leases
+Content-Type: application/json
+
+{"offerId": "&lt;offerId&gt;", "home": {"sshKeys": ["ssh-ed25519 AAAA… comment"]}}</pre>
+    <p>1 to 8 public keys, each an <code>ssh-ed25519</code>, <code>ecdsa-sha2-nistp256</code>, <code>-nistp384</code>, <code>-nistp521</code> or <code>ssh-rsa</code> line under 1024 bytes. Public keys only: never send a private key or any other secret to Charter. Then pay ticks exactly as above. From a toon node the open's job is <code>{"image": "charter-home", "args": {"SSH_KEYS": "&lt;the key lines joined by a newline&gt;"}}</code>.</p>
+
+    <h3>Find it</h3>
+    <p>The lease status of a running home carries:</p>
+<pre>"homeId": "&lt;16 hex&gt;",
+"restarts": 0,
+"access": {"ssh": {"host": "&lt;56 characters&gt;.anyone", "port": 22, "user": "tenant"}}</pre>
+    <p><code>access</code> is <code>null</code> (or absent) until the host has published the home's onion address, within about a minute of the first tick. Poll about once a minute until it is set. <code>restarts</code> counts the times the host re-created the box.</p>
+
+    <h3>Get in</h3>
+<pre>ssh -o ProxyCommand="nc -x 127.0.0.1:&lt;your Anyone SOCKS port&gt; %h %p" tenant@&lt;host&gt;</pre>
+    <p>The address is an onion on the Anyone network, so you need an Anyone client and its SOCKS port. A toon node has one. No Anyone client, no way in: there is no clearnet address. The keys you opened with are the only logins. The box's host key is made once on your disk, so its fingerprint stays the same across restarts and leases; pin it the first time.</p>
+
+    <h3>What is inside</h3>
+    <ul>
+      <li>Debian bookworm-slim. User <code>tenant</code> (uid 10001), no root, no setuid programs. Python 3 with <code>venv</code> and <code>pip</code>, <code>uv</code>, Node 22, <code>git</code>, <code>curl</code>, <code>jq</code>, <code>rsync</code>, <code>tmux</code>. 1 CPU, 1 GiB, 512 processes.</li>
+      <li><code>/home/tenant</code> is your disk. The rest of the root filesystem is read-only, and <code>/tmp</code> is 256 MiB of memory.</li>
+      <li><code>~/.charter/boot.sh</code>, if it exists and is executable, runs in the background at every start, with its output in <code>~/.charter/boot.log</code>. This is how your agent comes back after a restart.</li>
+      <li><code>/charter/paid-through</code> holds the epoch ms your paid time runs out, rewritten on every tick, so the box can see its own clock without a paid read. <code>CHARTER_LEASE_ID</code>, <code>CHARTER_HOME_ID</code>, <code>CHARTER_OFFER_JSON</code> (the host's offer) and <code>CHARTER_CONNECTOR_URL</code> are in the environment.</li>
+    </ul>
+
+    <h3>Network: all of it through Anyone</h3>
+    <p>The box has no direct route anywhere. Everything leaves through the host's Anyone client: <code>HTTP_PROXY</code> and <code>HTTPS_PROXY</code> are <code>http://172.19.0.1:9080</code>, <code>ALL_PROXY</code> is <code>socks5h://172.19.0.1:9050</code>, and names resolve over the Anyone network too. The variables are set in every SSH session and for <code>boot.sh</code>, and <code>NODE_USE_ENV_PROXY=1</code> makes Node's <code>fetch</code> use them. curl, pip, uv, git and npm work as they are. A program that opens a raw socket to the internet fails. The box reaches nothing on the host or its LAN. Expect it to be slow, hidden, and sometimes refused by a service that dislikes shared exits.</p>
+
+    <h3>The disk, and who it belongs to</h3>
+    <ul>
+      <li>2 GiB, ext4. A full disk fails inside the box; it does not grow.</li>
+      <li>Your key set is the home's identity: <code>homeId</code> is a hash of the sorted keys. The same keys open the same home, on the same disk and the same onion address. There is no key rotation: a different set of keys is a different home, and a lost private key is a lost home once the retention runs out.</li>
+      <li>After a lease that paid at least one tick closes, the disk is kept 7 days, free. A lease that never paid a tick has its disk removed when it closes.</li>
+      <li>Anyone with your public keys can open your home and hold it, though not enter it: while their lease lives, yours is refused (<code>busy</code> on the live host, whose one slot their lease fills; <code>home_in_use</code> on a host with slots to spare). Add to the set a key whose public half you have shown nobody, and nobody else can name your home (that makes it a new home).</li>
+      <li>The operator can read your disk, and can enter any container on the machine. Treat it as a VPS whose provider you have not met: keep secrets elsewhere or encrypt them, and keep a copy of what matters.</li>
+      <li>Secrets go in over SSH, never through Charter: <code>scp .env tenant@&lt;host&gt;:</code> with the same <code>ProxyCommand</code>.</li>
+    </ul>
+
+    <h3>What the host promises about uptime</h3>
+    <ul>
+      <li>No uptime figure. Expect restarts. Your disk survives them; your processes do not, so put what must run in <code>~/.charter/boot.sh</code>.</li>
+      <li>A tick pays an hour from the end of the paid time. Pay the next tick half an hour early (the tenant loop already does) so a short outage does not end the lease. Paying several ticks ahead buys that much patience and nothing else; a lease that closes refunds nothing.</li>
+      <li>A closed home keeps its disk and onion address for 7 days. Open again with the same keys.</li>
+      <li>A restart of the host program leaves a running home alone. A reboot of its VM puts a paid home back on its disk (<code>restarts</code> goes up), as long as the paid time has not run out.</li>
+    </ul>
+
+    <h3>Paying for the box from inside the box</h3>
+    <p>The first open and tick come from outside, since the box does not exist yet. After that the box can pay its own rent with the <code>charter</code> command line from the <a href="https://github.com/drew-dot-com/charter">Charter repository</a>, installed in the box, with <code>CHARTER_PAYER=toon-client</code> and a wallet of the box's own (<code>CHARTER_TOON_KEY_FILE</code>, <code>CHARTER_TOON_CHANNEL_STORE</code>, <code>CHARTER_TOON_CHAIN</code>). The connector and the offer are already in the box as <code>CHARTER_CONNECTOR_URL</code> and <code>CHARTER_OFFER_JSON</code>, so no relay read is needed:</p>
+<pre>charter renew --offer &lt;pubkey&gt;:&lt;offerId&gt; --lease "$CHARTER_LEASE_ID" --max-intervals &lt;n&gt;</pre>
+    <p><code>renew</code> reads the lease, pays from the host's own count of paid ticks, and sends its first tick at once. Put it in <code>boot.sh</code>. The box's wallet needs USDC in a channel to the connector in <code>CHARTER_CONNECTOR_URL</code>, plus a little Base ETH for the one on-chain channel open. 2 USDC runs the box about 10 days: 12 days of rent, less the status reads <code>renew</code> makes (about 8 an hour at 0.0001).</p>
+
     <h2>What to tell your operator</h2>
     <p>If you have no funded wallet, relay this: Charter needs a wallet holding USDC on Base and nothing else. 0.05 USDC runs seven hours; 1 USDC runs about six days; about 5 USDC runs a month. There is no account to create. Through a toon node instead, the operator funds a channel to a peer that routes to Charter's host, and that one channel pays Charter and every other TOON seller.</p>
+    <p>For a home, relay this: a home costs 0.007 USDC an hour, about 5 USDC a month, in a wallet or a channel; a channel also needs a little Base ETH for its one on-chain open. If the box pays its own rent, it needs 2 USDC in its own channel (about 10 days) and a little Base ETH for that channel's open. Its disk is readable by the host operator, so the operator should decide what secrets go in it.</p>
 
     <h2>Trust, plainly</h2>
     <ul>
       <li>The storefront is a paying hop: it pays the host one interval only after your payment for it has verified, and never holds more than one interval of your money. Deposits sit in x402's <code>batch-settlement</code> contract on Base, not with Charter. That contract is immutable, with no rescue path.</li>
       <li>Your script runs under gVisor with no network, 1 CPU and 1 GiB, for as long as it is paid, on a home machine. Do not send secrets in a script; the host operator can read it.</li>
+      <li>A home runs as an unprivileged user with no capabilities, its network fenced to the Anyone proxies. The host operator can read its disk and enter it; nothing in it is private from them.</li>
       <li>Charter is one operator's project with one host. If the host is down, <code>/v1/offers</code> is empty and nothing can be charged.</li>
       <li>Source, MIT: <a href="https://github.com/drew-dot-com/charter">github.com/drew-dot-com/charter</a>. The door is <code>src/door/server.ts</code>; where this page and the source differ, the source wins.</li>
     </ul>
