@@ -12,7 +12,7 @@ HTTPTunnelPort 172.19.0.1:9080
 DNSPort 172.19.0.1:53
 ControlPort 0
 Log notice file __HOME__/.local/share/charter/anon/anon.log
-# The toon node's GeoIP files, resolved at install time (rerun install-home.sh after a toon upgrade).
+# Copies of the toon node's GeoIP files, made by install-home.sh.
 GeoIPFile __GEOIP__
 GeoIPv6File __GEOIP6__
 %include __HOME__/.config/charter/anon/hs.d

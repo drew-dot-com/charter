@@ -28,6 +28,8 @@ fi
 anon_dir=$(dirname "$anon_src")
 
 # GeoIP files: as the node's own anonrc names them, else beside the binary.
+# Copied next to the anon copy below, so a toon upgrade that removes the old
+# version directory cannot break Charter's anon.
 node_rc="$home/.toon/agent-node/overlay/anonrc"
 geoip=$(sed -n 's/^GeoIPFile[[:space:]]\{1,\}//p' "$node_rc" 2>/dev/null | head -n 1 || true)
 geoip6=$(sed -n 's/^GeoIPv6File[[:space:]]\{1,\}//p' "$node_rc" 2>/dev/null | head -n 1 || true)
@@ -39,18 +41,19 @@ done
 
 [ -x /usr/sbin/losetup ] || { echo "install-home: no /usr/sbin/losetup" >&2; exit 1; }
 
-changed=0
-# put <src> <dest> <mode> <owner:group>: install only when the content differs,
-# through a temp file and a rename, so a running anon's binary is never written over.
+anon_changed=0
+# put <src> <dest> <mode> <owner:group> [anon]: install only when the content
+# differs, through a temp file and a rename, so a running anon's binary is never
+# written over. "anon" marks a file a running anon must restart to pick up.
 put() {
-  local src=$1 dest=$2 mode=$3 owner=$4
+  local src=$1 dest=$2 mode=$3 owner=$4 marks=${5:-}
   if [ -f "$dest" ] && cmp -s "$src" "$dest"; then
     chmod "$mode" "$dest"; chown "$owner" "$dest"; return 0
   fi
   install -m "$mode" -o "${owner%%:*}" -g "${owner##*:}" "$src" "$dest.new"
   mv -f "$dest.new" "$dest"
   echo "install-home: wrote $dest"
-  changed=1
+  if [ "$marks" = anon ]; then anon_changed=1; fi
 }
 
 tmp=$(mktemp -d)
@@ -58,18 +61,21 @@ trap 'rm -rf "$tmp"' EXIT
 
 # Directories, made by the host user so every parent is theirs. anon refuses a
 # DataDirectory that others can read; hs.d holds the homes' onion configs.
-as_user mkdir -p "$home/.local/bin" "$home/.config/charter/anon/hs.d" "$home/.local/share/charter/anon"
+geo_dir="$home/.local/share/charter/anon/geoip"
+as_user mkdir -p "$home/.local/bin" "$home/.config/charter/anon/hs.d" "$geo_dir"
 chmod 0700 "$home/.config/charter/anon" "$home/.config/charter/anon/hs.d" "$home/.local/share/charter/anon"
 
-put "$anon_src" "$home/.local/bin/anon" 0755 "$user:$group"
+put "$anon_src" "$home/.local/bin/anon" 0755 "$user:$group" anon
+put "$geoip" "$geo_dir/geoip" 0644 "$user:$group" anon
+put "$geoip6" "$geo_dir/geoip6" 0644 "$user:$group" anon
 
-sed -e "s|__HOME__|$home|g" -e "s|__GEOIP__|$geoip|g" -e "s|__GEOIP6__|$geoip6|g" \
+sed -e "s|__HOME__|$home|g" -e "s|__GEOIP__|$geo_dir/geoip|g" -e "s|__GEOIP6__|$geo_dir/geoip6|g" \
   "$here/anonrc" > "$tmp/anonrc"
-put "$tmp/anonrc" "$home/.config/charter/anon/anonrc" 0644 "$user:$group"
+put "$tmp/anonrc" "$home/.config/charter/anon/anonrc" 0644 "$user:$group" anon
 
 sed -e "s|__USER__|$user|g" -e "s|__GROUP__|$group|g" -e "s|__HOME__|$home|g" \
   "$here/charter-anon.service" > "$tmp/charter-anon.service"
-put "$tmp/charter-anon.service" /etc/systemd/system/charter-anon.service 0644 root:root
+put "$tmp/charter-anon.service" /etc/systemd/system/charter-anon.service 0644 root:root anon
 put "$here/charter-home-net.service" /etc/systemd/system/charter-home-net.service 0644 root:root
 put "$here/charter-home-net.sh" /usr/local/bin/charter-home-net.sh 0755 root:root
 
@@ -88,10 +94,12 @@ was_active=0
 systemctl is-active --quiet charter-anon.service && was_active=1
 systemctl enable --now charter-anon.service
 # A running anon keeps its old binary and config until restarted.
-if [ "$was_active" = 1 ] && [ "$changed" = 1 ]; then systemctl restart charter-anon.service; fi
+if [ "$was_active" = 1 ] && [ "$anon_changed" = 1 ]; then systemctl restart charter-anon.service; fi
 
 echo
 echo "install-home: done. Check:"
 echo "  ss -ltunp | grep 172.19.0.1     # anon on tcp 9050 and 9080, udp 53"
 echo "  sudo iptables -S DOCKER-USER    # -i br-... -j DROP"
+echo "  sudo iptables -S INPUT | grep 172.19.0.1   # anon's ports refused to anything but the bridge"
 echo "  sudo iptables -S INPUT | grep br-   # four ACCEPTs, then the DROP"
+echo "  sudo ip6tables -S INPUT | grep br-  # the IPv6 DROP"

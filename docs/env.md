@@ -35,8 +35,8 @@ Secrets never go in these variables: a variable names the file that holds one.
 | `CHARTER_HOME_DIR` | no | `<CHARTER_DATA_DIR>/homes` | Per home: `<homeId>/hs` (its onion keys, mode 700), `<homeId>/disk.img` (the disk) and `<homeId>/charter/`. |
 | `CHARTER_HOME_NETWORK` | no | `charter-home` | Docker network homes run on, made with its firewall by `charter-home-net.service`. |
 | `CHARTER_HOME_GATEWAY` | no | `172.19.0.1` | That network's gateway, where anon listens; a home's DNS and proxy variables point here. Must match `deploy/host/anonrc`. |
-| `CHARTER_HOME_SOCKS_PORT` | no | `9050` | Anon's SOCKS port on the gateway (a home's `ALL_PROXY`). The firewall opens only this, the HTTP port and 53. |
-| `CHARTER_HOME_HTTP_PORT` | no | `9080` | Anon's HTTP tunnel port on the gateway (a home's `HTTP_PROXY` and `HTTPS_PROXY`). |
+| `CHARTER_HOME_SOCKS_PORT` | no | `9050` | Anon's SOCKS port on the gateway (a home's `ALL_PROXY`). The firewall opens only this, the HTTP port and 53. Must also match `deploy/host/anonrc` and `deploy/host/charter-home-net.sh`, which hard-code it. |
+| `CHARTER_HOME_HTTP_PORT` | no | `9080` | Anon's HTTP tunnel port on the gateway (a home's `HTTP_PROXY` and `HTTPS_PROXY`). Must also match `deploy/host/anonrc` and `deploy/host/charter-home-net.sh`, which hard-code it. |
 
 Fixed, not configurable: the first tick is due within 90 s of the container's creation (published
 as `firstTickGraceSeconds`), later ticks within 10 s of the paid time, a lease may stay booting 120 s,

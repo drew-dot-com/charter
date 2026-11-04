@@ -16,3 +16,5 @@ ExecStart=/usr/local/bin/charter-home-net.sh
 
 [Install]
 WantedBy=multi-user.target
+# So `systemctl start docker` after a stop brings this back too.
+WantedBy=docker.service
