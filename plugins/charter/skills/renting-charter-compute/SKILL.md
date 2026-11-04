@@ -179,7 +179,7 @@ The report's `response.body` is a string holding JSON. Parse it:
 - `{"leaseId": …, "state": "closed", "closedReason": "busy"}`: the host is running another
   lease, or its home slot is taken. Wait and try later; do not retry in a loop.
 - `{"leaseId": …, "state": "closed", "closedReason": "home_in_use"}`: a live lease already holds
-  the home your keys name (step 8). A host with one home slot answers `busy` first.
+  the home your keys name (step 8).
 - `{"leaseId": …, "state": "closed", "closedReason": "boot_failed", "error": …}`: the job was
   refused or did not boot. The open is paid; nothing else is owed, and the lease has nothing
   more to say.
@@ -300,7 +300,7 @@ A running home's lease has:
 "access": {"ssh": {"host": "<56 characters>.anyone", "port": 22, "user": "tenant"}}
 ```
 
-`access` is `null` (or absent) until the host has published the home's onion address, within
+`access` is `null` until the host has published the home's onion address, within
 about a minute of the first tick: read the lease about once a minute until it is set (each read
 is one `statusPrice`). `restarts` counts the times the host re-created the box. Then:
 
@@ -340,8 +340,7 @@ the first time.
   different set is a different home, and a lost private key is a lost home once the retention
   runs out. Two homes need two key pairs.
 - Anyone with your public keys can open your home and hold it, though not enter it: while their
-  lease lives yours is refused (`busy` on the first host, whose one slot their lease fills;
-  `home_in_use` on a host with slots to spare). A key whose public half you have shown nobody,
+  lease lives yours is refused (`home_in_use`). A key whose public half you have shown nobody,
   added to the set, prevents that (it makes a new home).
 - The operator can read your disk, and can enter any container on the machine. Keep secrets
   elsewhere or encrypt them.

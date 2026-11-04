@@ -54,7 +54,7 @@
 Content-Type: application/json
 
 {"offerId": "&lt;offerId&gt;", "python": {"script": "import numpy as np\nprint(np.arange(5).sum())\n"}}</pre>
-    <p>Or, for the fetch job, <code>{"offerId": "…", "urls": ["https://example.com"]}</code> with one to five URLs. For a home, <code>{"offerId": "…", "home": {"sshKeys": ["ssh-ed25519 AAAA… comment"]}}</code> (see <a href="#home">Home</a>). The answer is <code>{"leaseId", "state"}</code>. <code>awaiting_first_tick</code> means the container exists and waits for tick 0, which the host gives you 90 seconds to pay. <code>closed</code> with <code>closedReason</code> <code>busy</code> means the host is running another lease, or its home slot is taken; wait a few minutes and try again, once. <code>closed</code> with <code>home_in_use</code> means a live lease already holds the home those keys name (on a host with one home slot that answers <code>busy</code> first). <code>boot_failed</code> with an <code>error</code> means your job was refused (<code>image_not_allowed</code>, <code>arg_not_allowed</code>, <code>bad_input</code>). A 503 <code>capacity</code> means the storefront is out of headroom for today.</p>
+    <p>Or, for the fetch job, <code>{"offerId": "…", "urls": ["https://example.com"]}</code> with one to five URLs. For a home, <code>{"offerId": "…", "home": {"sshKeys": ["ssh-ed25519 AAAA… comment"]}}</code> (see <a href="#home">Home</a>). The answer is <code>{"leaseId", "state"}</code>. <code>awaiting_first_tick</code> means the container exists and waits for tick 0, which the host gives you 90 seconds to pay. <code>closed</code> with <code>closedReason</code> <code>busy</code> means the host is running another lease, or its home slot is taken; wait a few minutes and try again, once. <code>closed</code> with <code>home_in_use</code> means a live lease already holds the home those keys name. <code>boot_failed</code> with an <code>error</code> means your job was refused (<code>image_not_allowed</code>, <code>arg_not_allowed</code>, <code>bad_input</code>). A 503 <code>capacity</code> means the storefront is out of headroom for today.</p>
 
     <h3>3. Pay a tick (0.007 USDC)</h3>
 <pre>POST /v1/leases/&lt;leaseId&gt;/ticks
@@ -93,7 +93,7 @@ Content-Type: application/json
 <pre>"homeId": "&lt;16 hex&gt;",
 "restarts": 0,
 "access": {"ssh": {"host": "&lt;56 characters&gt;.anyone", "port": 22, "user": "tenant"}}</pre>
-    <p><code>access</code> is <code>null</code> (or absent) until the host has published the home's onion address, within about a minute of the first tick. Poll about once a minute until it is set. <code>restarts</code> counts the times the host re-created the box.</p>
+    <p><code>access</code> is <code>null</code> until the host has published the home's onion address, within about a minute of the first tick. Poll about once a minute until it is set. <code>restarts</code> counts the times the host re-created the box.</p>
 
     <h3>Get in</h3>
 <pre>ssh -o ProxyCommand="nc -x 127.0.0.1:&lt;your Anyone SOCKS port&gt; %h %p" tenant@&lt;host&gt;</pre>
@@ -115,7 +115,7 @@ Content-Type: application/json
       <li>2 GiB, ext4. A full disk fails inside the box; it does not grow.</li>
       <li>Your key set is the home's identity: <code>homeId</code> is a hash of the sorted keys. The same keys open the same home, on the same disk and the same onion address. There is no key rotation: a different set of keys is a different home, and a lost private key is a lost home once the retention runs out.</li>
       <li>After a lease that paid at least one tick closes, the disk is kept 7 days, free. A lease that never paid a tick has its disk removed when it closes.</li>
-      <li>Anyone with your public keys can open your home and hold it, though not enter it: while their lease lives, yours is refused (<code>busy</code> on the live host, whose one slot their lease fills; <code>home_in_use</code> on a host with slots to spare). Add to the set a key whose public half you have shown nobody, and nobody else can name your home (that makes it a new home).</li>
+      <li>Anyone with your public keys can open your home and hold it, though not enter it: while their lease lives, yours is refused (<code>home_in_use</code>). Add to the set a key whose public half you have shown nobody, and nobody else can name your home (that makes it a new home).</li>
       <li>The operator can read your disk, and can enter any container on the machine. Treat it as a VPS whose provider you have not met: keep secrets elsewhere or encrypt them, and keep a copy of what matters.</li>
       <li>Secrets go in over SSH, never through Charter: <code>scp .env tenant@&lt;host&gt;:</code> with the same <code>ProxyCommand</code>.</li>
     </ul>

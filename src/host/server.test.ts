@@ -422,6 +422,9 @@ test('open for a home refuses bad keys, a full house and a home already in use',
     const full = await t.post(t.urls.open, '/open', { job: homeJob(normalizeSshKeys([KEY2])!) });
     assert.deepEqual(full.body, { leaseId: full.body.leaseId, state: 'closed', closedReason: 'busy' });
     assert.equal(t.store.get(full.body.leaseId)!.closedReason, 'busy');
+    // The same keys while the only slot is full: the slot is not the reason.
+    const again = await t.post(t.urls.open, '/open', { job: HOME });
+    assert.deepEqual(again.body, { leaseId: again.body.leaseId, state: 'closed', closedReason: 'home_in_use' });
   } finally {
     t.done();
   }

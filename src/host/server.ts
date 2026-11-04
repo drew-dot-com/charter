@@ -95,9 +95,9 @@ export function hostApps(deps: HostDeps): { open: express.Express; tick: express
     // The counts and the write happen with no await between them, so two opens cannot both pass.
     if (home) {
       const homes = store.all().filter((l) => isLive(l) && isHome(l));
-      if (homes.length >= maxHomes) return refuse('busy');
       // One disk, one box: a second lease on the same keys would mount it twice.
       if (homes.some((l) => l.homeId === lease.homeId)) return refuse('home_in_use');
+      if (homes.length >= maxHomes) return refuse('busy');
     }
     if (live() >= maxLeases) return refuse('busy');
     store.put(lease);

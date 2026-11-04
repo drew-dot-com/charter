@@ -154,6 +154,7 @@ test('a home lease is born with its homeId and never becomes done on exit', () =
   assert.equal(isHome(l), true);
   assert.equal(l.homeId, homeIdOf(normalizeSshKeys([KEY])!));
   assert.equal(l.restarts, 0);
+  assert.equal(l.access, null);
   const running = onTick(onBooted(l, 1000), 0, 1000, 60_000).lease;
   assert.equal(onJobExit(running, 0), running);
   assert.equal(onHomeRestarted(running).restarts, 1);

@@ -34,7 +34,7 @@ export function newLease(id: string, offer: Offer, job: JobSpec, now: number, ho
   const l: Lease = { id, offerId: offer.id, job, state: 'booting', createdAt: now, paidIntervals: 0 };
   if (isHome(l)) {
     if (!homeId) throw new Error('homeId required for a home');
-    return { ...l, homeId, restarts: 0 };
+    return { ...l, homeId, restarts: 0, access: null };
   }
   return l;
 }
