@@ -300,19 +300,24 @@ const HOME_ID = homeIdOf(KEYS);
 const HOME = homeJob(KEYS);
 const GIB = 1024 ** 3;
 
-async function homeSetup(free = 10 * GIB, mkfsCode: () => number = () => 0) {
+async function homeSetup(free = 10 * GIB, mkfsCode: () => number = () => 0, rmGate?: Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), 'charter-home-'));
   const homesDir = join(root, 'homes');
   const kills: Array<[number, string]> = [];
   const tools: string[] = [];
   // Volumes docker knows about; inspect succeeds only after create.
   const volumes = new Set<string>();
-  const { exec, calls } = fake((args) => {
+  const { exec: fakeExec, calls } = fake((args) => {
     if (args[0] === 'volume' && args[1] === 'inspect') return { code: volumes.has(args[2]!) ? 0 : 1 };
     if (args[0] === 'volume' && args[1] === 'create') volumes.add(args[args.length - 1]!);
     if (args[0] === 'volume' && args[1] === 'rm') volumes.delete(args[args.length - 1]!);
     return { code: 0 };
   });
+  // A held `volume rm` lets a test keep a removal mid-flight.
+  const exec: Exec = async (args, env) => {
+    if (rmGate && args[0] === 'volume' && args[1] === 'rm') await rmGate;
+    return fakeExec(args, env);
+  };
   const homes = new HomeStore();
   const pidFile = join(root, 'anon.pid');
   await writeFile(pidFile, '4242\n');
@@ -530,6 +535,27 @@ test('removeHome retires the onion, removes the volume, the directory and the re
   await assert.rejects(access(join(t.homesDir, HOME_ID)));
   assert.equal(t.homes.get(HOME_ID), undefined);
   await t.r.removeHome(HOME_ID);
+});
+
+test('an ensureHome that arrives mid-removal waits for it and builds a fresh disk', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((res) => (release = res));
+  const t = await homeSetup(10 * GIB, () => 0, gate);
+  await t.r.ensureHome(HOME_ID);
+  t.tools.length = 0;
+  const removing = t.r.removeHome(HOME_ID);
+  let opened = false;
+  const opening = t.r.ensureHome(HOME_ID).then((rec) => ((opened = true), rec));
+  await new Promise((res) => setTimeout(res, 20));
+  assert.equal(opened, false);
+  assert.deepEqual(t.tools, []);
+  release();
+  await removing;
+  const rec = await opening;
+  assert.equal(t.tools.filter((x) => x.startsWith('truncate')).length, 1);
+  assert.equal(t.tools.filter((x) => x.startsWith('mkfs')).length, 1);
+  assert.deepEqual(t.homes.get(HOME_ID), rec);
+  await access(join(t.homesDir, HOME_ID, 'charter'));
 });
 
 test('writePaidThrough writes the epoch ms where the box reads it', async () => {

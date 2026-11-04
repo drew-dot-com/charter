@@ -244,6 +244,12 @@ export function dockerRunner(opts: {
   }
 
   let chain: Promise<void> = Promise.resolve();
+  // A rejected call never poisons the chain.
+  const serial = <T>(work: () => Promise<T>): Promise<T> => {
+    const run = chain.then(work);
+    chain = run.then(() => undefined, () => undefined);
+    return run;
+  };
 
   return {
     async create(leaseId, job) {
@@ -349,9 +355,7 @@ export function dockerRunner(opts: {
 
     ensureHome(homeId) {
       // One at a time across all ids: concurrent calls would race on the same disk file or take the same port.
-      const run = chain.then(() => makeHome(homeId));
-      chain = run.then(() => undefined, () => undefined);
-      return run;
+      return serial(() => makeHome(homeId));
     },
 
     async publishHome(homeId) {
@@ -369,14 +373,17 @@ export function dockerRunner(opts: {
       return host ? { ssh: { host, port: 22, user: 'tenant' } } : null;
     },
 
+    // On the ensureHome chain, so an open that arrives mid-removal waits and builds a fresh disk.
     async removeHome(homeId) {
       const h = needHome();
       checkHomeId(homeId);
-      // First, so anon never serves a conf whose directory is gone.
-      await retireHiddenService(h.anon, homeId);
-      await removeVolume(exec, volumeName(homeId));
-      await rm(join(h.homesDir, homeId), { recursive: true, force: true });
-      h.homes.delete(homeId);
+      return serial(async () => {
+        // First, so anon never serves a conf whose directory is gone.
+        await retireHiddenService(h.anon, homeId);
+        await removeVolume(exec, volumeName(homeId));
+        await rm(join(h.homesDir, homeId), { recursive: true, force: true });
+        h.homes.delete(homeId);
+      });
     },
 
     async writePaidThrough(homeId, paidThrough) {
