@@ -15,3 +15,15 @@ export function parseSshKeys(text: string): string[] | string {
   }
   return lines.map((l) => l.t);
 }
+
+/**
+ * The command a renter pastes into a shell to reach a running home over the Anyone client. Built from what
+ * the host sent, so it is given only for the exact shape the host publishes: an onion name (the host's own
+ * check in src/host/anon.ts), user tenant, port 22. Anything else is undefined and the page says pending.
+ */
+export function sshLine(access: unknown): string | undefined {
+  const ssh = (access as { ssh?: unknown } | null | undefined)?.ssh as { host?: unknown; port?: unknown; user?: unknown } | null | undefined;
+  if (!ssh || typeof ssh.host !== 'string' || !/^[a-z2-7]{56}\.anyone$/.test(ssh.host)) return undefined;
+  if (ssh.user !== 'tenant' || ssh.port !== 22) return undefined;
+  return `ssh -o ProxyCommand="nc -x 127.0.0.1:9050 %h %p" tenant@${ssh.host}`;
+}

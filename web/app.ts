@@ -7,7 +7,7 @@ import { CHOOSE_WALLET, NO_WALLET, chooseWallet, discoverWallets, requestAccount
 import { BASE_CHAIN_ID_HEX, type Eip1193 } from './wallet.js';
 import { channelSummary, readChannels, type ChannelSummary } from './channel.js';
 import { newTimeline, noteOutput, observe, type Timeline } from './timeline.js';
-import { parseSshKeys } from './keys.js';
+import { parseSshKeys, sshLine } from './keys.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -428,10 +428,14 @@ function rentForm(o: PublicOffer, close: () => void): HTMLElement {
   area.spellcheck = false;
   const label = el('label');
   label.htmlFor = area.id;
+  const homeNotes = el('div', undefined,
+    el('p', 'note', 'The same keys open the same disk later. Anyone with your public keys can open your home and hold it, though not enter it.'),
+    el('p', 'note', 'The operator can read your disk. Keep secrets elsewhere or encrypt them.'));
   const show = (m: JobMode) => {
     drafts[mode] = area.value;
     mode = m;
     area.value = drafts[m];
+    homeNotes.hidden = m !== 'home';
     if (m === 'python') {
       label.textContent = 'Python script to run. Up to 8 KiB, NumPy included, no network. Its output comes back when it finishes.';
       area.placeholder = 'print("hello")';
@@ -475,7 +479,7 @@ function rentForm(o: PublicOffer, close: () => void): HTMLElement {
     close();
   }, true);
   let picker = dev ? null : walletPicker();
-  form.append(...(choose ? [choose] : []), label, area, ...(picker ? [picker] : []), status, el('div', 'actions', start, cancel));
+  form.append(...(choose ? [choose] : []), label, area, homeNotes, ...(picker ? [picker] : []), status, el('div', 'actions', start, cancel));
   form.addEventListener('submit', (ev) => {
     ev.preventDefault();
     void (async () => {
@@ -673,7 +677,8 @@ async function readStatus(p: LeasePage): Promise<void> {
         p.t.intervalSeconds = offer.intervalSeconds;
       }
       observe(p.story, p.t.lease!, Date.now(), p.offer?.tickPrice);
-      if (lease.state === 'done' && p.output.state === 'idle') void loadOutput(p);
+      // A home has no output to fetch; the access region says what a finished home means.
+      if (lease.state === 'done' && p.output.state === 'idle' && lease.job.image !== HOME_IMAGE) void loadOutput(p);
     } else if (a.status === 404) {
       p.t.halt = { message: 'The door does not know this lease.', retry: false };
     } else if (a.status === 429) {
@@ -855,22 +860,23 @@ function render(p: LeasePage): void {
 
   // A running home: how to reach it. The host publishes the onion address a little after the first tick.
   const home = lease?.job.image === HOME_IMAGE;
-  const raw = home && lease?.state === 'running' ? lease.access?.ssh : undefined;
-  // The line is pasted into a shell: show it only when every part is plain.
-  const ssh = raw && /^[a-z2-7]{56}\.anyone$/.test(raw.host) && /^[a-z_][a-z0-9_-]{0,31}$/.test(raw.user) && Number.isInteger(raw.port) && raw.port > 0 && raw.port < 65536 ? raw : undefined;
+  const ssh = home && lease?.state === 'running' ? sshLine(lease.access) : undefined;
   const restarts = home ? lease?.restarts ?? 0 : 0;
-  setRegion(ui.access, `${home}|${lease?.state}|${ssh?.user}@${ssh?.host}:${ssh?.port}|${restarts}`, () => {
+  setRegion(ui.access, `${home}|${lease?.state}|${ssh}|${restarts}`, () => {
     if (!home || !lease) return [];
     const out: Child[] = [];
+    // Only while running: the address goes with the container, so a stopped home shows no SSH line.
     if (lease.state === 'running') {
       out.push(el('h2', undefined, 'Your home'));
       if (ssh) {
-        const port = ssh.port === 22 ? '' : ` -p ${ssh.port}`;
-        out.push(el('pre', 'mono', `ssh -o ProxyCommand="nc -x 127.0.0.1:9050 %h %p"${port} ${ssh.user}@${ssh.host}`));
+        out.push(el('pre', 'mono', ssh));
         out.push(el('p', 'note', 'needs an Anyone client; see the ', link('agents page', '/agents', false)));
       } else {
         out.push(el('p', 'muted', 'address pending'));
       }
+    } else if (lease.state === 'done') {
+      // The host never marks a home done; if one arrives, say what is true rather than wait for output.
+      out.push(el('p', 'muted', 'This home is closed. Its disk is kept for 7 days; open again with the same keys to get it back.'));
     }
     if (restarts > 0) out.push(el('p', 'muted', `The host restarted this home ${restarts} ${restarts === 1 ? 'time' : 'times'}.`));
     return out;
