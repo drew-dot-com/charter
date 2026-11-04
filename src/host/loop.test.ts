@@ -28,6 +28,12 @@ function fakeRunner(over: Partial<Runner> = {}) {
     stop: async (id) => void stops.push(id),
     output: async () => Buffer.alloc(0),
     alive: async () => true,
+    ensureHome: async () => ({ homeId: '', port: 0, createdAt: 0, paidOnce: false }),
+    publishHome: async () => undefined,
+    retireHome: async () => undefined,
+    homeAccess: async () => null,
+    removeHome: async () => undefined,
+    writePaidThrough: async () => undefined,
     ...over,
   };
   return { r, stops };

@@ -1,9 +1,24 @@
 import { constants } from 'node:fs';
-import { chmod, lstat, mkdir, open } from 'node:fs/promises';
+import { access, chmod, lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Exec } from '../exec.js';
-import { FETCH_IMAGE, MAX_SCRIPT_BYTES, PYTHON_IMAGE } from '../jobs.js';
-import type { JobSpec } from '../types.js';
+import { FETCH_IMAGE, HOME_IMAGE, homeIdOf, MAX_SCRIPT_BYTES, normalizeSshKeys, PYTHON_IMAGE } from '../jobs.js';
+import type { HomeAccess, JobSpec } from '../types.js';
+import { onionHostname, publishHiddenService, retireHiddenService, type AnonDeps } from './anon.js';
+import {
+  allocatePort,
+  createDisk,
+  diskPath,
+  ensureVolume,
+  freeBytes as statFreeBytes,
+  HOME_DISK_GIB,
+  HOME_FREE_FLOOR_BYTES,
+  HomeError,
+  removeVolume,
+  volumeName,
+  type HomeRecord,
+  type HomeStore,
+} from './homes.js';
 
 export type RunnerErrorCode = 'image_not_allowed' | 'arg_not_allowed' | 'bad_input' | 'bad_output' | 'boot_failed';
 
@@ -28,12 +43,26 @@ export interface Runner {
   /** Bytes of /out/result.json. */
   output(leaseId: string): Promise<Buffer>;
   alive(leaseId: string): Promise<boolean>;
+  /** The home's record (a fresh port if new), its disk if the file is missing, and its volume. */
+  ensureHome(homeId: string): Promise<HomeRecord>;
+  /** Exposes the home's sshd on its onion. */
+  publishHome(homeId: string): Promise<void>;
+  /** Drops the onion service, keeping its keys. */
+  retireHome(homeId: string): Promise<void>;
+  /** How to reach the home, once anon has published its hostname. */
+  homeAccess(homeId: string): Promise<HomeAccess | null>;
+  /** Volume, directory, then record: the home is gone for good. */
+  removeHome(homeId: string): Promise<void>;
+  /** Tells the box how far it is paid, in epoch ms. */
+  writePaidThrough(homeId: string, paidThrough: number): Promise<void>;
 }
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 /** Largest result.json the host will read back from a job. */
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** What homeIdOf yields; anything else could escape homesDir. */
+const HOME_ID = /^[0-9a-f]{16}$/;
 
 /** What a job image may be given and how it is fenced in. */
 export interface JobProfile {
@@ -41,10 +70,32 @@ export interface JobProfile {
   args: string[];
   /** Largest value of any one arg, in UTF-8 bytes. */
   maxArgBytes: number;
-  /** `proxy`: the default bridge, with the host's proxy handed in. `none`: no network at all. */
-  network: 'proxy' | 'none';
+  /**
+   * `proxy`: the default bridge, with the host's proxy handed in. `none`: no network at all.
+   * `home`: the homes bridge, whose only way out is the Anyone proxies.
+   */
+  network: 'proxy' | 'none' | 'home';
+  /** Default 256. */
+  pidsLimit?: number;
   /** Extra `docker create` flags for this image only. */
   flags: string[];
+}
+
+export interface HomeRunnerOpts {
+  homesDir: string;
+  /** The docker network homes join. */
+  network: string;
+  /** Its gateway, where anon listens for SOCKS, HTTP tunnels and DNS. */
+  gateway: string;
+  socksPort: number;
+  httpPort: number;
+  homes: HomeStore;
+  anon: AnonDeps;
+  tools: { truncate: Exec; mkfs: Exec };
+  offerJson: string;
+  connectorUrl: string;
+  freeBytes?: (dir: string) => Promise<number>;
+  now?: () => number;
 }
 
 /**
@@ -62,6 +113,14 @@ export const JOB_PROFILES: Record<string, JobProfile> = {
     network: 'none',
     flags: ['--tmpfs', '/tmp:size=64m', '--memory-swap', '1g', '--ulimit', 'fsize=8388608', '-e', `CHARTER_WALL_SECONDS=${PYTHON_WALL_SECONDS}`],
   },
+  [HOME_IMAGE]: {
+    args: ['SSH_KEYS'],
+    maxArgBytes: 9 * 1024,
+    network: 'home',
+    pidsLimit: 512,
+    // A home outlives its process: docker brings the box back after a crash or a host reboot.
+    flags: ['--tmpfs', '/tmp:size=256m', '--tmpfs', '/run', '--restart', 'unless-stopped'],
+  },
 };
 
 function profileFor(image: string, allowArgs?: string[]): JobProfile {
@@ -75,6 +134,38 @@ function name(leaseId: string): string {
 }
 
 /** A loopback proxy on the host is reached from the container as host.docker.internal. */
+function checkHomeId(homeId: string): string {
+  if (!HOME_ID.test(homeId)) throw new RunnerError('bad_input', 'home id');
+  return homeId;
+}
+
+/** The home's network, disk, port, read-only charter dir and box env, after the shared flags. */
+function homeArgs(profile: JobProfile, rec: HomeRecord, homeId: string, leaseId: string, h: HomeRunnerOpts): string[] {
+  if (profile.network !== 'home') throw new RunnerError('bad_input', 'not a home profile');
+  const http = `http://${h.gateway}:${h.httpPort}`;
+  const env = [
+    `HTTP_PROXY=${http}`,
+    `HTTPS_PROXY=${http}`,
+    `ALL_PROXY=socks5h://${h.gateway}:${h.socksPort}`,
+    'NO_PROXY=127.0.0.1,localhost',
+    'NODE_USE_ENV_PROXY=1',
+    `CHARTER_LEASE_ID=${leaseId}`,
+    `CHARTER_HOME_ID=${homeId}`,
+    `CHARTER_OFFER_JSON=${h.offerJson}`,
+    `CHARTER_CONNECTOR_URL=${h.connectorUrl}`,
+    'CHARTER_PAID_THROUGH_FILE=/charter/paid-through',
+  ];
+  return [
+    '--network', h.network,
+    '--dns', h.gateway,
+    // Loopback only: the onion service is the one way in.
+    '-p', `127.0.0.1:${rec.port}:2222`,
+    '--mount', `type=volume,src=${volumeName(homeId)},dst=/home/tenant`,
+    '-v', `${join(h.homesDir, homeId, 'charter')}:/charter:ro`,
+    ...env.flatMap((e) => ['-e', e]),
+  ];
+}
+
 function containerProxy(proxy: string): string {
   const u = new URL(proxy);
   if (u.hostname === '127.0.0.1' || u.hostname === 'localhost') {
@@ -93,15 +184,27 @@ export function dockerRunner(opts: {
   allowArgs?: string[];
   /** An OCI runtime for every job, such as `runsc` (gVisor). Default: docker's own. */
   runtime?: string;
+  /** Without it the host serves no homes. */
+  home?: HomeRunnerOpts;
 }): Runner {
   const { exec, outRoot, allow, proxy, runtime } = opts;
   const docker = (args: string[]) => exec(args, {});
+  const needHome = (): HomeRunnerOpts => {
+    if (!opts.home) throw new RunnerError('image_not_allowed', HOME_IMAGE);
+    return opts.home;
+  };
+  const record = (h: HomeRunnerOpts, homeId: string): HomeRecord => {
+    const rec = h.homes.get(homeId);
+    if (!rec) throw new RunnerError('bad_input', 'no home record');
+    return rec;
+  };
 
   return {
     async create(leaseId, job) {
       if (!allow.includes(job.image)) throw new RunnerError('image_not_allowed', job.image);
       const cname = name(leaseId);
       const profile = profileFor(job.image, opts.allowArgs);
+      const h = profile.network === 'home' ? needHome() : undefined;
       const env: string[] = [];
       for (const [k, v] of Object.entries(job.args)) {
         if (!profile.args.includes(k)) throw new RunnerError('arg_not_allowed', k);
@@ -110,26 +213,38 @@ export function dockerRunner(opts: {
         if (Buffer.byteLength(v, 'utf8') > profile.maxArgBytes) throw new RunnerError('bad_input', `${k} too large`);
         env.push('-e', `${k}=${v}`);
       }
-      const out = join(outRoot, leaseId);
-      await mkdir(out, { recursive: true });
-      // The job runs as an unprivileged user in the container and must be able to write here.
-      await chmod(out, 0o777);
+      let home: { rec: HomeRecord; homeId: string } | undefined;
+      if (h) {
+        const keys = normalizeSshKeys((job.args.SSH_KEYS ?? '').split('\n'));
+        if (!keys) throw new RunnerError('bad_input', 'SSH_KEYS');
+        const homeId = homeIdOf(keys);
+        home = { rec: record(h, homeId), homeId };
+      }
 
       const argv = [
         'create',
         '--name', cname,
         '--cpus', '1',
         '--memory', '1g',
-        '--pids-limit', '256',
+        '--pids-limit', String(profile.pidsLimit ?? 256),
         '--read-only',
         // No Linux capabilities, and no setuid path back to any.
         '--cap-drop', 'ALL',
         '--security-opt', 'no-new-privileges',
-        '-v', `${out}:/out`,
-        ...profile.flags,
       ];
+      // A home writes its own disk; only jobs hand a result back through /out.
+      if (!home) {
+        const out = join(outRoot, leaseId);
+        await mkdir(out, { recursive: true });
+        // The job runs as an unprivileged user in the container and must be able to write here.
+        await chmod(out, 0o777);
+        argv.push('-v', `${out}:/out`);
+      }
+      argv.push(...profile.flags);
       if (runtime) argv.push('--runtime', runtime);
-      if (profile.network === 'none') {
+      if (h && home) {
+        argv.push(...homeArgs(profile, home.rec, home.homeId, leaseId, h));
+      } else if (profile.network === 'none') {
         argv.push('--network', 'none');
       } else if (proxy) {
         argv.push('--add-host', 'host.docker.internal:host-gateway');
@@ -184,6 +299,74 @@ export function dockerRunner(opts: {
     async alive(leaseId) {
       const r = await docker(['inspect', '-f', '{{.State.Running}}', name(leaseId)]);
       return r.code === 0 && r.stdout.trim() === 'true';
+    },
+
+    async ensureHome(homeId) {
+      const h = needHome();
+      checkHomeId(homeId);
+      let rec = h.homes.get(homeId);
+      if (!rec) {
+        rec = {
+          homeId,
+          port: allocatePort(h.homes.all().map((r) => r.port)),
+          createdAt: (h.now ?? Date.now)(),
+          paidOnce: false,
+        };
+        h.homes.put(rec);
+      }
+      const dir = join(h.homesDir, homeId);
+      const disk = diskPath(h.homesDir, homeId);
+      try {
+        const missing = await access(disk).then(() => false, () => true);
+        if (missing) {
+          await mkdir(h.homesDir, { recursive: true });
+          const free = await (h.freeBytes ?? statFreeBytes)(h.homesDir);
+          // A sparse disk can grow to its full size: keep the floor even then.
+          if (free - HOME_DISK_GIB * 1024 ** 3 < HOME_FREE_FLOOR_BYTES) throw new RunnerError('boot_failed', 'no disk');
+          await mkdir(dir, { recursive: true });
+          await createDisk(h.tools, disk, HOME_DISK_GIB);
+        }
+        await ensureVolume(exec, volumeName(homeId), disk);
+      } catch (e) {
+        if (e instanceof HomeError) throw new RunnerError('boot_failed', e.message);
+        throw e;
+      }
+      // docker create needs the bind source to exist.
+      await mkdir(join(dir, 'charter'), { recursive: true });
+      return rec;
+    },
+
+    async publishHome(homeId) {
+      const h = needHome();
+      const rec = record(h, checkHomeId(homeId));
+      await publishHiddenService(h.anon, homeId, rec.port);
+    },
+
+    async retireHome(homeId) {
+      await retireHiddenService(needHome().anon, checkHomeId(homeId));
+    },
+
+    async homeAccess(homeId) {
+      const host = await onionHostname(needHome().anon, checkHomeId(homeId));
+      return host ? { ssh: { host, port: 22, user: 'tenant' } } : null;
+    },
+
+    async removeHome(homeId) {
+      const h = needHome();
+      checkHomeId(homeId);
+      await removeVolume(exec, volumeName(homeId));
+      await rm(join(h.homesDir, homeId), { recursive: true, force: true });
+      h.homes.delete(homeId);
+    },
+
+    async writePaidThrough(homeId, paidThrough) {
+      const dir = join(needHome().homesDir, checkHomeId(homeId), 'charter');
+      await mkdir(dir, { recursive: true });
+      const file = join(dir, 'paid-through');
+      const tmp = `${file}.tmp-${process.pid}`;
+      // The box polls this file: it must never see a half-written number.
+      await writeFile(tmp, `${Math.floor(paidThrough)}\n`);
+      await rename(tmp, file);
     },
   };
 }

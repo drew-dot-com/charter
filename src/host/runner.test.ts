@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, stat, symlink } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, writeFile, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Exec } from '../exec.js';
-import { dockerRunner, RunnerError } from './runner.js';
+import { dockerRunner, RunnerError, type HomeRunnerOpts } from './runner.js';
+import { homeIdOf, homeJob, normalizeSshKeys } from '../jobs.js';
+import { HomeStore } from './homes.js';
 
 type Call = { args: string[]; env: Record<string, string> };
 
@@ -290,4 +292,206 @@ test('output refuses a result.json that is a directory', async () => {
   await mkdir(join(root, 'l1', 'result.json'), { recursive: true });
   const r = dockerRunner({ exec, outRoot: root, allow: [] });
   await assert.rejects(r.output('l1'), (e: unknown) => e instanceof RunnerError && e.code === 'bad_output');
+});
+
+const KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGx1bWFueXJhbmRvbWJ5dGVzMTIzNDU2Nzg5MDEyMzQ1 edison@air';
+const KEYS = normalizeSshKeys([KEY])!;
+const HOME_ID = homeIdOf(KEYS);
+const HOME = homeJob(KEYS);
+const GIB = 1024 ** 3;
+
+async function homeSetup(free = 10 * GIB) {
+  const root = await mkdtemp(join(tmpdir(), 'charter-home-'));
+  const homesDir = join(root, 'homes');
+  const kills: Array<[number, string]> = [];
+  const tools: string[] = [];
+  // Volumes docker knows about; inspect succeeds only after create.
+  const volumes = new Set<string>();
+  const { exec, calls } = fake((args) => {
+    if (args[0] === 'volume' && args[1] === 'inspect') return { code: volumes.has(args[2]!) ? 0 : 1 };
+    if (args[0] === 'volume' && args[1] === 'create') volumes.add(args[args.length - 1]!);
+    if (args[0] === 'volume' && args[1] === 'rm') volumes.delete(args[args.length - 1]!);
+    return { code: 0 };
+  });
+  const homes = new HomeStore();
+  const pidFile = join(root, 'anon.pid');
+  await writeFile(pidFile, '4242\n');
+  const home: HomeRunnerOpts = {
+    homesDir,
+    network: 'charter-home',
+    gateway: '172.19.0.1',
+    socksPort: 9050,
+    httpPort: 9080,
+    homes,
+    anon: { hsDir: join(root, 'hs.d'), homesDir, pidFile, kill: (pid, sig) => void kills.push([pid, sig]) },
+    tools: {
+      // Like the real truncate, it leaves the file behind, so a second ensureHome sees the disk.
+      truncate: async (args) => {
+        tools.push(`truncate ${args.join(' ')}`);
+        await writeFile(args[args.length - 1]!, '');
+        return { code: 0, stdout: '', stderr: '' };
+      },
+      mkfs: async (args) => {
+        tools.push(`mkfs ${args.join(' ')}`);
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    },
+    offerJson: '{"price":"7000"}',
+    connectorUrl: 'https://connector.mainnet.toonprotocol.dev',
+    freeBytes: async () => free,
+    now: () => 1_700_000_000_000,
+  };
+  const r = dockerRunner({ exec, outRoot: join(root, 'out'), allow: ['charter-home'], runtime: 'runsc', home });
+  return { r, calls, tools, kills, homes, home, homesDir, root };
+}
+
+test('create for a home puts the box on its network with its disk, its port and its env, and nothing of a job\'s', async () => {
+  const t = await homeSetup();
+  const rec = await t.r.ensureHome(HOME_ID);
+  assert.equal(rec.port, 22000);
+  t.calls.length = 0;
+  await t.r.create('l1', HOME);
+  const a = t.calls[0]!.args;
+  const has = (...seq: string[]) =>
+    assert.ok(a.some((_, i) => seq.every((s, j) => a[i + j] === s)), `argv missing ${seq.join(' ')}: ${a.join(' ')}`);
+  has('--network', 'charter-home');
+  has('--dns', '172.19.0.1');
+  has('-p', '127.0.0.1:22000:2222');
+  has('--mount', `type=volume,src=charter-home-${HOME_ID},dst=/home/tenant`);
+  has('-v', `${join(t.homesDir, HOME_ID, 'charter')}:/charter:ro`);
+  has('--pids-limit', '512');
+  has('--restart', 'unless-stopped');
+  has('--tmpfs', '/tmp:size=256m');
+  has('--tmpfs', '/run');
+  has('--runtime', 'runsc');
+  has('--read-only');
+  has('--cap-drop', 'ALL');
+  has('-e', 'HTTP_PROXY=http://172.19.0.1:9080');
+  has('-e', 'HTTPS_PROXY=http://172.19.0.1:9080');
+  has('-e', 'ALL_PROXY=socks5h://172.19.0.1:9050');
+  has('-e', 'NO_PROXY=127.0.0.1,localhost');
+  has('-e', 'NODE_USE_ENV_PROXY=1');
+  has('-e', 'CHARTER_LEASE_ID=l1');
+  has('-e', `CHARTER_HOME_ID=${HOME_ID}`);
+  has('-e', 'CHARTER_PAID_THROUGH_FILE=/charter/paid-through');
+  has('-e', 'CHARTER_OFFER_JSON={"price":"7000"}');
+  has('-e', 'CHARTER_CONNECTOR_URL=https://connector.mainnet.toonprotocol.dev');
+  has('-e', `SSH_KEYS=${KEYS.join('\n')}`);
+  assert.equal(a[a.length - 1], 'charter-home');
+  assert.ok(!a.some((x) => x.endsWith(':/out')));
+  assert.ok(!a.includes('--add-host'));
+  assert.ok(!a.some((x) => x.startsWith('CHARTER_PROXY')));
+  assert.equal(a.filter((x) => x === '--pids-limit').length, 1);
+  assert.equal(a.indexOf('--network'), a.indexOf('--dns') - 2);
+});
+
+test('create for a home refuses with no home record, bad keys, or a host without homes', async () => {
+  const t = await homeSetup();
+  await assert.rejects(t.r.create('l1', HOME), (e: unknown) => e instanceof RunnerError && e.code === 'bad_input');
+  await t.r.ensureHome(HOME_ID);
+  await assert.rejects(
+    t.r.create('l1', { image: 'charter-home', args: { SSH_KEYS: 'not a key' } }),
+    (e: unknown) => e instanceof RunnerError && e.code === 'bad_input',
+  );
+  const { exec, calls } = fake();
+  const bare = dockerRunner({ exec, outRoot: await outRoot(), allow: ['charter-home'] });
+  await assert.rejects(bare.create('l1', HOME), (e: unknown) => e instanceof RunnerError && e.code === 'image_not_allowed');
+  assert.equal(calls.length, 0);
+});
+
+test('ensureHome makes the disk and volume once and refuses a new disk under the free-space floor', async () => {
+  const t = await homeSetup();
+  const disk = join(t.homesDir, HOME_ID, 'disk.img');
+  const rec = await t.r.ensureHome(HOME_ID);
+  assert.deepEqual(rec, { homeId: HOME_ID, port: 22000, createdAt: 1_700_000_000_000, paidOnce: false });
+  assert.deepEqual(t.homes.get(HOME_ID), rec);
+  assert.deepEqual(t.tools, [`truncate -s 2G ${disk}`, `mkfs -F -q -m 0 ${disk}`]);
+  const vol = `charter-home-${HOME_ID}`;
+  assert.deepEqual(
+    t.calls.map((c) => c.args.slice(0, 2).join(' ')),
+    ['volume inspect', 'volume create'],
+  );
+  assert.ok(t.calls[1]!.args.includes(`device=${disk}`));
+  assert.equal(t.calls[1]!.args[t.calls[1]!.args.length - 1], vol);
+  assert.ok((await stat(join(t.homesDir, HOME_ID, 'charter'))).isDirectory());
+
+  t.tools.length = 0;
+  t.calls.length = 0;
+  assert.deepEqual(await t.r.ensureHome(HOME_ID), rec);
+  assert.deepEqual(t.tools, []);
+  assert.deepEqual(t.calls.map((c) => c.args.join(' ')), [`volume inspect ${vol}`]);
+
+  // A second home takes the next port.
+  const other = homeIdOf(normalizeSshKeys(['ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG90aGVy'])!);
+  assert.equal((await t.r.ensureHome(other)).port, 22001);
+
+  const low = await homeSetup(2 * GIB);
+  await assert.rejects(
+    low.r.ensureHome(HOME_ID),
+    (e: unknown) => e instanceof RunnerError && e.code === 'boot_failed' && e.message.includes('no disk'),
+  );
+  assert.deepEqual(low.tools, []);
+});
+
+test('ensureHome wraps a volume failure as boot_failed', async () => {
+  const t = await homeSetup();
+  const { exec } = fake(() => ({ code: 1, stderr: 'loop device busy' }));
+  const r = dockerRunner({ exec, outRoot: join(t.root, 'out'), allow: ['charter-home'], home: t.home });
+  await assert.rejects(
+    r.ensureHome(HOME_ID),
+    (e: unknown) => e instanceof RunnerError && e.code === 'boot_failed' && e.message.includes('loop device busy'),
+  );
+});
+
+test('publishHome and retireHome write and remove the hidden service and HUP anon', async () => {
+  const t = await homeSetup();
+  await t.r.ensureHome(HOME_ID);
+  await t.r.publishHome(HOME_ID);
+  const conf = join(t.home.anon.hsDir, `${HOME_ID}.conf`);
+  assert.match(await readFile(conf, 'utf8'), /HiddenServicePort 22 127\.0\.0\.1:22000/);
+  assert.equal((await stat(join(t.homesDir, HOME_ID, 'hs'))).mode & 0o777, 0o700);
+  assert.deepEqual(t.kills, [[4242, 'SIGHUP']]);
+  t.kills.length = 0;
+  await t.r.retireHome(HOME_ID);
+  await assert.rejects(access(conf));
+  assert.ok((await stat(join(t.homesDir, HOME_ID, 'hs'))).isDirectory());
+  assert.deepEqual(t.kills, [[4242, 'SIGHUP']]);
+});
+
+test('homeAccess is null until the hostname exists', async () => {
+  const t = await homeSetup();
+  await t.r.ensureHome(HOME_ID);
+  await t.r.publishHome(HOME_ID);
+  assert.equal(await t.r.homeAccess(HOME_ID), null);
+  const host = `${'a'.repeat(56)}.anyone`;
+  await writeFile(join(t.homesDir, HOME_ID, 'hs', 'hostname'), host + '\n');
+  assert.deepEqual(await t.r.homeAccess(HOME_ID), { ssh: { host, port: 22, user: 'tenant' } });
+});
+
+test('removeHome removes the volume, the directory and the record', async () => {
+  const t = await homeSetup();
+  await t.r.ensureHome(HOME_ID);
+  t.calls.length = 0;
+  await t.r.removeHome(HOME_ID);
+  assert.deepEqual(t.calls.map((c) => c.args.join(' ')), [`volume rm -f charter-home-${HOME_ID}`]);
+  await assert.rejects(access(join(t.homesDir, HOME_ID)));
+  assert.equal(t.homes.get(HOME_ID), undefined);
+});
+
+test('writePaidThrough writes the epoch ms where the box reads it', async () => {
+  const t = await homeSetup();
+  await t.r.ensureHome(HOME_ID);
+  await t.r.writePaidThrough(HOME_ID, 1_700_000_123_456);
+  const file = join(t.homesDir, HOME_ID, 'charter', 'paid-through');
+  assert.equal(await readFile(file, 'utf8'), '1700000123456\n');
+  await t.r.writePaidThrough(HOME_ID, 1_700_000_999_999);
+  assert.equal(await readFile(file, 'utf8'), '1700000999999\n');
+});
+
+test('home operations refuse an id that is not a home id', async () => {
+  const t = await homeSetup();
+  for (const id of ['../x', '', 'ABCDEF0123456789']) {
+    await assert.rejects(t.r.removeHome(id), (e: unknown) => e instanceof RunnerError && e.code === 'bad_input', id);
+  }
+  assert.equal(t.calls.length, 0);
 });
