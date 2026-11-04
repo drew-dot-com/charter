@@ -244,7 +244,7 @@ export function realGate(cfg: X402Config, priceOf: (leaseId: string) => Micro | 
         // Batch first: a client that speaks both deposits once and signs ticks silently.
         accepts: offerBatch ? [option('batch-settlement'), option('exact')] : [option('exact')],
         description:
-          'One 30 second interval of sandboxed compute on Charter (Python with NumPy, or a headless-browser fetch). Open a lease first, free: POST /v1/leases. The whole procedure is at https://charter.mainnet.toonprotocol.dev/agents',
+          'One paid interval of sandboxed compute on Charter: intervalSeconds in the offer, one hour at 0.007 USDC on the live host (Python with NumPy, or a headless-browser fetch). Open a lease first, free: POST /v1/leases. The whole procedure is at https://charter.mainnet.toonprotocol.dev/agents',
         mimeType: 'application/json',
         serviceName: 'charter',
         tags: ['compute', 'sandbox', 'python', 'fetch', 'toon'],
