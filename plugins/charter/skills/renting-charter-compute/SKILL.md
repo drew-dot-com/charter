@@ -287,8 +287,9 @@ charter renew --offer <pubkey>:<d> --lease <leaseId> --max-intervals <n> --relay
 
 `renew` reads the lease, pays from the host's own count of paid ticks, and sends its first tick at
 once. `--from <index>` is optional; when given it must equal that count, or nothing is paid.
-`references/lease-loop.sh` also pays a home's ticks, but never prints the address: read the lease
-(step 6) for it.
+`references/lease-loop.sh` also pays a home's ticks: since a home never reaches `done`, it runs
+until `<max-intervals>` ticks are paid and watched out, then exits 0. It never prints the address:
+read the lease (step 6) for it.
 
 ### Find it and get in
 
@@ -382,7 +383,7 @@ about 10 days: 12 days of rent, less the status reads `renew` makes (about 8 an 
 
 ### What to tell your operator
 
-A home costs 0.007 USDC an hour, about 5 USDC a month, in your node's channel; opening a channel
+A home costs 0.007 USDC an hour, about 5 USDC for 30 days, in your node's channel; opening a channel
 on Base also needs a little Base ETH. If the box pays its own rent, it needs 2 USDC in its own
 channel and a little Base ETH for that channel's on-chain open, and the operator moves the box's key in over SSH. The operator can read the disk,
 so the operator decides which secrets go in.

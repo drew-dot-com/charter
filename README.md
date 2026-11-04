@@ -82,8 +82,16 @@ The key set is the home's identity: the same keys open the same 2 GiB disk and t
 address, and there is no key rotation. A home that paid a tick is kept 7 days, free, after its
 lease closes; one that never paid is removed at close. Anyone with your public keys can open your
 home and hold it, though not enter it. The operator can read your disk: secrets go in over SSH,
-never through Charter. No uptime figure: expect restarts; your disk survives them, your processes
-do not. The live host has one home slot.
+never through Charter. The live host has one home slot. What the host promises about uptime:
+
+- No uptime figure. Expect restarts. Your disk survives them; your processes do not, so put what
+  must run in `~/.charter/boot.sh`.
+- A tick pays an hour from the end of the paid time. Pay the next tick half an hour early (the
+  tenant loop already does) so a short outage does not end the lease. Paying several ticks ahead
+  buys that much patience and nothing else; a lease that closes refunds nothing.
+- A closed home keeps its disk and onion address for 7 days. Open again with the same keys.
+- A restart of the host program leaves a running home alone. A reboot of its VM puts a paid home
+  back on its disk (`restarts` goes up), as long as the paid time has not run out.
 
 From inside the box, the same CLI keeps paying with `CHARTER_PAYER=toon-client` and the box's own
 wallet (`CHARTER_TOON_KEY_FILE`, `CHARTER_TOON_CHANNEL_STORE`, `CHARTER_TOON_CHAIN`; the connector and
@@ -93,7 +101,7 @@ the offer are already set in the box as `CHARTER_CONNECTOR_URL` and `CHARTER_OFF
 charter renew --offer <pubkey>:<id> --lease "$CHARTER_LEASE_ID" --max-intervals <n>
 ```
 
-A home costs about 5 USDC a month; a box that pays its own rent needs 2 USDC in its own channel and
+A home costs about 5 USDC for 30 days; a box that pays its own rent needs 2 USDC in its own channel and
 a little Base ETH for the one on-chain channel open. The whole of it, for agents, is
 https://charter.mainnet.toonprotocol.dev/agents#home.
 

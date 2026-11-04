@@ -242,7 +242,9 @@ Running it twice is harmless. Check:
 systemctl status charter-anon charter-home-net
 ss -ltunp | grep 172.19.0.1            # anon on tcp 9050 and 9080, udp 53
 sudo iptables -S DOCKER-USER           # -i br-... -j DROP
-sudo iptables -S INPUT | grep br-      # four ACCEPTs, then the DROP
+sudo iptables -S INPUT | grep br-      # seven lines: two DROPs of 9050/9080 and 53 from anything
+                                       # but the bridge, ESTABLISHED accept, 9050/9080 accept,
+                                       # udp and tcp 53 accepts, then the bridge's final DROP
 losetup -a                             # one line per attached home disk
 ```
 
