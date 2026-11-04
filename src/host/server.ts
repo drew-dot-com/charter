@@ -104,7 +104,8 @@ export function hostApps(deps: HostDeps): { open: express.Express; tick: express
     store.put(lease);
 
     // The packet is paid whatever happens, so a boot failure answers 200 with the reason.
-    const fail = async (error: string, stop: boolean) => {
+    const fail = async (error: string, stop: boolean, detail: string = error) => {
+      deps.log?.(`open ${leaseId} boot failed: ${detail}`);
       const cur = store.get(leaseId)!;
       const closed = onBootFailed(cur);
       if (closed !== cur) store.put(closed);
@@ -120,7 +121,7 @@ export function hostApps(deps: HostDeps): { open: express.Express; tick: express
     } catch (e) {
       const refused =
         e instanceof RunnerError && (e.code === 'image_not_allowed' || e.code === 'arg_not_allowed' || e.code === 'bad_input');
-      return void (await fail(e instanceof RunnerError ? e.code : 'boot_failed', !refused));
+      return void (await fail(e instanceof RunnerError ? e.code : 'boot_failed', !refused, e instanceof Error ? e.message : String(e)));
     }
 
     const cur = store.get(leaseId)!;

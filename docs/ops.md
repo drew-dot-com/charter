@@ -223,6 +223,8 @@ SSH in at an onion address. toon2 carries one (`CHARTER_MAX_HOMES=1`, counted in
 `CHARTER_MAX_LEASES=2`), so a home and one job can run at once. Design:
 `docs/superpowers/specs/2026-11-04-home-image-design.md`; variables: `docs/env.md`.
 
+The `charter-host` unit's `PATH` must include `/usr/sbin`, where `mkfs.ext4` for home disks lives; without it every home open answers `boot_failed` (the first deploy's failure), and the host log now says why.
+
 **What it adds to toon2.** Two system units, both installed and enabled by `sudo bash
 deploy/host/install-home.sh` from the repo in the VM, run as the host user with the toon node up:
 

@@ -11,7 +11,8 @@ After=network-online.target docker.service
 
 [Service]
 EnvironmentFile=%h/.config/charter/env
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# mkfs.ext4 for home disks is in /usr/sbin, so it must be on the PATH.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
 # Up to 120 s for the docker socket and `docker info`; on failure systemd restarts the unit.
 # A user manager's default TimeoutStartSec is 90 s, which would kill that wait first: 150 s covers it.
 TimeoutStartSec=150

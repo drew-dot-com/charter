@@ -39,11 +39,11 @@ function fakeRunner(over: Partial<Runner> = {}) {
   return { r, calls };
 }
 
-async function setup(over: Partial<Runner> = {}, maxLeases?: number, maxHomes?: number, homes?: HomeStore) {
+async function setup(over: Partial<Runner> = {}, maxLeases?: number, maxHomes?: number, homes?: HomeStore, log: (m: string) => void = () => undefined) {
   const store = new LeaseStore();
   const { r, calls } = fakeRunner(over);
   const apps = hostApps({
-    store, runner: r, offer: OFFER, now: () => T0, log: () => undefined,
+    store, runner: r, offer: OFFER, now: () => T0, log,
     ...(homes ? { homes } : {}),
     ...(maxLeases === undefined ? {} : { maxLeases }),
     ...(maxHomes === undefined ? {} : { maxHomes }),
@@ -565,6 +565,22 @@ test('a home whose container fails to start on tick 0 is closed boot_failed and 
     assert.ok(calls.includes(`retireHome ${HOME_ID}`));
     assert.ok(!calls.includes(`removeHome ${HOME_ID}`), 'it paid a tick: the disk is kept');
     assert.deepEqual(homes.get(HOME_ID), { homeId: HOME_ID, port: 2222, createdAt: T0, paidOnce: true, lastClosedAt: T0 });
+  } finally {
+    t.done();
+  }
+});
+
+test('a boot failure is logged with its detail while the renter gets only the code', async () => {
+  const lines: string[] = [];
+  const t = await setup(
+    { ensureHome: async () => { throw new RunnerError('boot_failed', 'no disk'); } },
+    5, 1, undefined, (m) => void lines.push(m),
+  );
+  try {
+    const r = await t.post(t.urls.open, '/open', { job: HOME });
+    assert.equal(r.body.closedReason, 'boot_failed');
+    assert.equal(r.body.error, 'boot_failed');
+    assert.ok(lines.some((l) => l.includes('boot failed') && l.includes('no disk')), lines.join('|'));
   } finally {
     t.done();
   }
