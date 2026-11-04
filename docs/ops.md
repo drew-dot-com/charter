@@ -145,8 +145,11 @@ the host's `leases.json` had nothing in `booting`, `awaiting_first_tick` or `run
 `stopped` flag is not the signal: it stays `false` on leases the host closed), the door ledger's newest
 lease was 2026-10-21, and the first offer republished three seconds after the restart.
 
-Rule for the next change: a restart of `charter-host` closes every live lease as `host_restart`. Check the
-host first: `limactl shell toon2 -- bash -lc 'jq "[.[] | select(.state==\"booting\" or .state==\"awaiting_first_tick\" or .state==\"running\")] | length" ~/.local/share/charter/leases.json'`
+Rule for the next change: a restart of the host program leaves running containers alone (jobs and
+homes); only a lease whose container is not running at host start is closed, and a home in that state is
+re-created when its paid time has not run out. A lease that is only created, not started (`booting` or
+`awaiting_first_tick`), has no running container, so a restart closes it as `host_restart`. Check the
+host first: `limactl shell toon2 -- bash -lc 'jq "[.[] | select(.state==\"booting\" or .state==\"awaiting_first_tick\")] | length" ~/.local/share/charter/leases.json'`
 must print 0.
 
 Proven 2026-10-27 20:51Z: two `POST /v1/leases` 16 seconds apart (`{"offerId": "<from /v1/offers>",
@@ -185,8 +188,8 @@ env (`CHARTER_TICK_PRICE`, with `CHARTER_INTERVAL_SECONDS` beside it), the `char
 (what the door, or any toon-node renter, pays the edge). The door needs no change: it snapshots each
 lease's offer at open, so leases opened on the old price keep it, and new leases take the new offer.
 
-Order: check for live leases first (a `charter-host` restart closes them, and a lease paid ahead is refunded
-nothing), then toon2 env and app, then the edge route, then read `/v1/offers` on the door. After that, rerun
+Order: check for leases only created, not started, first (a `charter-host` restart closes those; running
+containers, jobs and homes, are left alone), then toon2 env and app, then the edge route, then read `/v1/offers` on the door. After that, rerun
 `scripts/bazaar-tick.mjs` once (a paid tick) so PayAI's catalog shows the new price; its entry only changes
 on a payment.
 

@@ -91,6 +91,11 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
   const sealUrl = need(env, 'CHARTER_SEAL_URL');
   if (!isSealUrl(sealUrl)) throw new Error('CHARTER_SEAL_URL must be the connector /ilp URL (toon describe --json .description.httpEndpoint)');
 
+  const hostPubkey = env.CHARTER_HOST_PUBKEY?.trim() ?? '';
+  if (hostPubkey !== '' && !/^[0-9a-f]{64}$/.test(hostPubkey)) {
+    throw new Error('CHARTER_HOST_PUBKEY must be the host Nostr pubkey: 64 lowercase hex digits');
+  }
+
   const maxLeases = num(env, 'CHARTER_MAX_LEASES', 1);
   const maxHomes = count(env, 'CHARTER_MAX_HOMES', 0);
   if (allowImages.includes(HOME_IMAGE) && maxHomes === 0) {
@@ -132,8 +137,9 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
     home,
     offer: {
       id: need(env, 'CHARTER_OFFER_ID'),
-      // The signer's pubkey is stamped on the event when toon signs it.
-      hostPubkey: '',
+      // The signer's pubkey is stamped on the event when toon signs it. Set here only so the offer
+      // handed to a home box (CHARTER_OFFER_JSON) names its host and resolves `<pubkey>:<id>`.
+      hostPubkey,
       ilpBase: need(env, 'CHARTER_ILP_BASE'),
       sealKey,
       sealUrl,

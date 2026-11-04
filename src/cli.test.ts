@@ -276,6 +276,16 @@ test('renew attaches to a lease and pays from --from', async () => {
   assert.deepEqual(other.h.ticks, []);
 });
 
+test('inside a box the host offer has no pubkey, and <pubkey>:<id> still resolves by id and pays', async () => {
+  const env = { ...ENV, CHARTER_OFFER_JSON: offerToJson({ ...HOME, hostPubkey: '' }) };
+  const r = await homeCli(['renew', '--offer', `${'cd'.repeat(32)}:o1`, '--lease', 'b'.repeat(32), '--max-intervals', '2', '--json'], env, (h) => h.setPaid(1));
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(r.h.ticks, [1, 2]);
+  const wrongId = await homeCli(['renew', '--offer', `${'cd'.repeat(32)}:o9`, '--lease', 'b'.repeat(32), '--max-intervals', '2'], env, (h) => h.setPaid(1));
+  assert.equal(wrongId.code, 1);
+  assert.deepEqual(wrongId.h.ticks, []);
+});
+
 test('renew --from too high pays nothing and exits 2, naming both numbers', async () => {
   for (const from of ['2', '0']) {
     const r = await homeCli(['renew', '--offer', 'o1', '--lease', 'b'.repeat(32), '--from', from, '--max-intervals', '3'], BOX, (h) => h.setPaid(1));

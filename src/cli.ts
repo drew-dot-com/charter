@@ -77,8 +77,12 @@ export function resolveOffer(offers: Offer[], ref: string): Offer {
   const m = /^([0-9a-f]{64}):(.+)$/.exec(ref);
   if (m) {
     const exact = offers.find((x) => x.hostPubkey === m[1] && x.id === m[2]);
-    if (!exact) throw new Error(`no live offer ${ref}`);
-    return exact;
+    if (exact) return exact;
+    // A box's own offer (CHARTER_OFFER_JSON) has no pubkey when its host did not set CHARTER_HOST_PUBKEY:
+    // it is the one candidate and names no host, so the id alone picks it.
+    const only = offers.length === 1 ? offers[0]! : undefined;
+    if (only && only.hostPubkey === '' && only.id === m[2]) return only;
+    throw new Error(`no live offer ${ref}`);
   }
   const matches = offers.filter((x) => x.id === ref);
   if (matches.length === 0) throw new Error(`no live offer with id ${ref}`);

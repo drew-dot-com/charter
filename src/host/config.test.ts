@@ -114,3 +114,12 @@ test('the home image without a home slot is a configuration error', () => {
 test('more home slots than lease slots is an error', () => {
   assert.throws(() => loadConfig({ ...HOME_ENV, CHARTER_MAX_LEASES: '1', CHARTER_MAX_HOMES: '2' }), /CHARTER_MAX_HOMES/);
 });
+
+test('loadConfig reads CHARTER_HOST_PUBKEY into the offer and refuses one that is not 64 hex', () => {
+  assert.equal(loadConfig(ENV).offer.hostPubkey, '');
+  const pk = 'ab'.repeat(32);
+  assert.equal(loadConfig({ ...ENV, CHARTER_HOST_PUBKEY: ` ${pk} ` }).offer.hostPubkey, pk);
+  for (const bad of ['ab'.repeat(31), 'AB'.repeat(32), 'zz'.repeat(32), 'npub1xyz']) {
+    assert.throws(() => loadConfig({ ...ENV, CHARTER_HOST_PUBKEY: bad }), /CHARTER_HOST_PUBKEY/);
+  }
+});
