@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Offer } from './types.js';
-import { OFFER_KIND, offerFromEvent, offerToEvent, latestOffers } from './offer.js';
+import { OFFER_KIND, offerFromEvent, offerToEvent, offerToJson, offerFromJson, latestOffers } from './offer.js';
 
 const NOW = 1_800_000_000_000;
 const PUB = 'ab'.repeat(32);
@@ -160,4 +160,16 @@ test('F-C2: sealKey must be the 65-byte uncompressed hex key and sealUrl an http
   assert.equal(back.sealKey, SEAL_KEY);
   assert.equal(back.sealUrl, 'http://ev2ocvzg.anyone/ilp');
   assert.equal(back.firstTickGraceSeconds, 90);
+});
+
+test('an offer carries its home terms through the event and through JSON', () => {
+  const BASE = offer();
+  const o: Offer = { ...BASE, home: { diskGiB: 2, retentionDays: 7, slots: 1 } };
+  const ev = offerToEvent(o);
+  assert.deepEqual(JSON.parse(ev.content).home, { diskGiB: 2, retentionDays: 7, slots: 1 });
+  assert.deepEqual(offerFromEvent({ ...ev, pubkey: 'f'.repeat(64) }, 0)!.home, o.home);
+  assert.equal(offerFromEvent({ ...offerToEvent({ ...o, home: { diskGiB: 0, retentionDays: 7, slots: 1 } }), pubkey: 'f'.repeat(64) }, 0), null);
+  assert.equal(offerFromEvent({ ...offerToEvent(BASE), pubkey: 'f'.repeat(64) }, 0)!.home, undefined);
+  const back = offerFromJson(offerToJson({ ...o, expiresAt: 0 }));
+  assert.deepEqual(back, { ...o, expiresAt: 0 });
 });

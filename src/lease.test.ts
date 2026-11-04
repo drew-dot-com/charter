@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FIRST_TICK_GRACE_MS, GRACE_MS, LeaseError, due, newLease, onBootFailed, onBooted, onJobExit, onTick, tickLeadMs } from './lease.js';
+import { FIRST_TICK_GRACE_MS, GRACE_MS, LeaseError, due, newLease, onBootFailed, onBooted, onHomeRestarted, onJobExit, onTick, isHome, tickLeadMs } from './lease.js';
+import { homeIdOf, homeJob, normalizeSshKeys } from './jobs.js';
 import type { Offer, JobSpec } from './types.js';
 
 const t0 = 1_000_000;
@@ -142,4 +143,18 @@ test('tickLeadMs: half the interval, never under the 10 s grace', () => {
   assert.equal(tickLeadMs(120), 60_000);
   assert.equal(tickLeadMs(16), 10_000);
   assert.equal(tickLeadMs(1), 10_000);
+});
+
+const KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGx1bWFueXJhbmRvbWJ5dGVzMTIzNDU2Nzg5MDEyMzQ1 edison@air';
+
+test('a home lease is born with its homeId and never becomes done on exit', () => {
+  const job = homeJob(normalizeSshKeys([KEY])!);
+  const l = newLease('a'.repeat(32), offer, job, 1000);
+  assert.equal(isHome(l), true);
+  assert.equal(l.homeId, homeIdOf(normalizeSshKeys([KEY])!));
+  assert.equal(l.restarts, 0);
+  const running = onTick(onBooted(l, 1000), 0, 1000, 60_000).lease;
+  assert.equal(onJobExit(running, 0), running);
+  assert.equal(onHomeRestarted(running).restarts, 1);
+  assert.equal(isHome(newLease('b'.repeat(32), offer, { image: 'charter-job-python', args: { SCRIPT: 'x' } }, 1000)), false);
 });

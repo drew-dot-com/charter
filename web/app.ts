@@ -50,6 +50,7 @@ const CLOSE_REASON: Record<string, string> = {
   max_intervals: 'The lease reached its maximum length.',
   host_restart: 'The host restarted, so the lease closed.',
   busy: 'The machine is busy with another lease. Nothing is owed. Try again later.',
+  home_in_use: 'This home already has a lease. Nothing is owed.',
 };
 
 // ---------------------------------------------------------------------------

@@ -22,6 +22,8 @@ export interface Offer {
   hiddenEgress: boolean;
   /** Epoch ms. */
   expiresAt: number;
+  /** Present when the host offers a durable home (the `charter-home` image). */
+  home?: { diskGiB: number; retentionDays: number; slots: number };
 }
 
 export interface JobSpec {
@@ -31,7 +33,12 @@ export interface JobSpec {
 
 export type LeaseState = 'booting' | 'awaiting_first_tick' | 'running' | 'done' | 'closed';
 
-export type CloseReason = 'boot_failed' | 'missed_tick' | 'max_intervals' | 'host_restart' | 'busy';
+export type CloseReason = 'boot_failed' | 'missed_tick' | 'max_intervals' | 'host_restart' | 'busy' | 'home_in_use';
+
+/** Where a tenant reaches its running home. */
+export interface HomeAccess {
+  ssh: { host: string; port: number; user: string };
+}
 
 export interface Lease {
   id: string;
@@ -49,5 +56,11 @@ export interface Lease {
   paidThrough?: number;
   closedReason?: CloseReason;
   outputParts?: number;
+  /** Home lease only: the id of the persistent home (from the key set), so a later lease finds the same disk. */
+  homeId?: string;
+  /** Home lease only: how many times the host restarted the container after it exited. */
+  restarts?: number;
+  /** Home lease only: how to reach it once running. */
+  access?: HomeAccess | null;
   landing?: { chain: string; tx: string; shared: boolean };
 }

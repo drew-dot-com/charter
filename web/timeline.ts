@@ -31,6 +31,7 @@ const CLOSED: Record<string, string> = {
   max_intervals: 'the lease reached its maximum length.',
   host_restart: 'the host restarted.',
   busy: 'the machine was busy with another lease. Nothing is owed.',
+  home_in_use: 'this home already has a lease. Nothing is owed.',
 };
 
 const plural = (n: number, one: string): string => (n === 1 ? `1 ${one}` : `${n} ${one}s`);

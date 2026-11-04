@@ -1,3 +1,4 @@
+import { HOME_IMAGE, homeIdOf, normalizeSshKeys } from './jobs.js';
 import type { CloseReason, JobSpec, Lease, Offer } from './types.js';
 
 /** How long past the paid time a later tick may be late. */
@@ -29,7 +30,14 @@ export class LeaseError extends Error {
 }
 
 export function newLease(id: string, offer: Offer, job: JobSpec, now: number): Lease {
-  return { id, offerId: offer.id, job, state: 'booting', createdAt: now, paidIntervals: 0 };
+  const l: Lease = { id, offerId: offer.id, job, state: 'booting', createdAt: now, paidIntervals: 0 };
+  // The args were validated upstream, so the key set always normalizes.
+  if (isHome(l)) return { ...l, homeId: homeIdOf(normalizeSshKeys(job.args.SSH_KEYS.split('\n'))!), restarts: 0 };
+  return l;
+}
+
+export function isHome(l: Pick<Lease, 'job'>): boolean {
+  return l.job.image === HOME_IMAGE;
 }
 
 /** The container is created (not started). Only a booting lease can finish booting; anything else is returned unchanged. */
@@ -68,10 +76,15 @@ export function onTick(
   };
 }
 
-/** The job finished by itself. A lease that is already done or closed is returned unchanged. */
+/** The job finished by itself. A lease that is already done or closed is returned unchanged, and a home never finishes: the host restarts it. */
 export function onJobExit(l: Lease, outputParts: number): Lease {
-  if (l.state === 'done' || l.state === 'closed') return l;
+  if (l.state === 'done' || l.state === 'closed' || isHome(l)) return l;
   return { ...l, state: 'done', outputParts };
+}
+
+/** The host restarted a home's container after it exited. */
+export function onHomeRestarted(l: Lease): Lease {
+  return { ...l, restarts: (l.restarts ?? 0) + 1 };
 }
 
 /**

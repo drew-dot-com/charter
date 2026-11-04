@@ -31,6 +31,26 @@ export function offerToEvent(o: Offer): UnsignedEvent {
   return { kind: OFFER_KIND, tags, content };
 }
 
+/** The host's own offer as JSON: the content fields plus the id and key the event carries in tags and `pubkey`. */
+export function offerToJson(o: Offer): string {
+  return JSON.stringify(o, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
+}
+
+/** Unlike an event this may carry `expiresAt: 0`: it is the host's own offer, not a relay's. */
+export function offerFromJson(text: string): Offer | null {
+  let c: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+    c = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (typeof c.id !== 'string' || !c.id || typeof c.hostPubkey !== 'string') return null;
+  if (typeof c.expiresAt !== 'number' || !Number.isSafeInteger(c.expiresAt) || c.expiresAt < 0) return null;
+  return parseOfferContent(c, c.id, c.hostPubkey, c.expiresAt);
+}
+
 function tagValue(tags: string[][], name: string): string | undefined {
   return tags.find((t) => t[0] === name)?.[1];
 }
@@ -65,6 +85,49 @@ function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === 'string');
 }
 
+/** The content fields of an offer, shared by the relay event and the JSON a host hands its own box. */
+function parseOfferContent(c: Record<string, unknown>, id: string, hostPubkey: string, expiresAt: number): Offer | null {
+  const tickPrice = parsePrice(c.tickPrice);
+  const openPrice = parsePrice(c.openPrice);
+  const statusPrice = parsePrice(c.statusPrice);
+  if (tickPrice === null || openPrice === null || statusPrice === null) return null;
+
+  if (typeof c.ilpBase !== 'string' || !isSealKey(c.sealKey) || !isSealUrl(c.sealUrl)) return null;
+  if (!isPositiveInt(c.cpu) || !isPositiveInt(c.memoryMiB) || !isPositiveInt(c.intervalSeconds) || !isPositiveInt(c.firstTickGraceSeconds)) {
+    return null;
+  }
+  if (!isStringArray(c.images)) return null;
+  if (typeof c.hiddenHost !== 'boolean' || typeof c.hiddenEgress !== 'boolean') return null;
+
+  let home: Offer['home'];
+  if (c.home !== undefined) {
+    const h = c.home as Record<string, unknown> | null;
+    if (typeof h !== 'object' || h === null || Array.isArray(h)) return null;
+    if (!isPositiveInt(h.diskGiB) || !isPositiveInt(h.retentionDays) || !isPositiveInt(h.slots)) return null;
+    home = { diskGiB: h.diskGiB, retentionDays: h.retentionDays, slots: h.slots };
+  }
+
+  return {
+    id,
+    hostPubkey,
+    ilpBase: c.ilpBase,
+    sealKey: c.sealKey,
+    sealUrl: c.sealUrl,
+    cpu: c.cpu,
+    memoryMiB: c.memoryMiB,
+    intervalSeconds: c.intervalSeconds,
+    firstTickGraceSeconds: c.firstTickGraceSeconds,
+    tickPrice,
+    openPrice,
+    statusPrice,
+    images: c.images,
+    hiddenHost: c.hiddenHost,
+    hiddenEgress: c.hiddenEgress,
+    expiresAt,
+    ...(home ? { home } : {}),
+  };
+}
+
 /** `now` is epoch ms. Returns null for anything that is not a live, well-formed Charter offer. */
 export function offerFromEvent(ev: OfferEvent, now: number): Offer | null {
   if (!ev.tags.some((t) => t[0] === 'L' && t[1] === 'charter')) return null;
@@ -84,37 +147,7 @@ export function offerFromEvent(ev: OfferEvent, now: number): Offer | null {
   } catch {
     return null;
   }
-
-  const tickPrice = parsePrice(c.tickPrice);
-  const openPrice = parsePrice(c.openPrice);
-  const statusPrice = parsePrice(c.statusPrice);
-  if (tickPrice === null || openPrice === null || statusPrice === null) return null;
-
-  if (typeof c.ilpBase !== 'string' || !isSealKey(c.sealKey) || !isSealUrl(c.sealUrl)) return null;
-  if (!isPositiveInt(c.cpu) || !isPositiveInt(c.memoryMiB) || !isPositiveInt(c.intervalSeconds) || !isPositiveInt(c.firstTickGraceSeconds)) {
-    return null;
-  }
-  if (!isStringArray(c.images)) return null;
-  if (typeof c.hiddenHost !== 'boolean' || typeof c.hiddenEgress !== 'boolean') return null;
-
-  return {
-    id,
-    hostPubkey: ev.pubkey,
-    ilpBase: c.ilpBase,
-    sealKey: c.sealKey,
-    sealUrl: c.sealUrl,
-    cpu: c.cpu,
-    memoryMiB: c.memoryMiB,
-    intervalSeconds: c.intervalSeconds,
-    firstTickGraceSeconds: c.firstTickGraceSeconds,
-    tickPrice,
-    openPrice,
-    statusPrice,
-    images: c.images,
-    hiddenHost: c.hiddenHost,
-    hiddenEgress: c.hiddenEgress,
-    expiresAt,
-  };
+  return parseOfferContent(c, id, ev.pubkey, expiresAt);
 }
 
 /** Keeps the newest event per (pubkey, d), then drops any that are expired or malformed. `now` is epoch ms. */
