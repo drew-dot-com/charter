@@ -182,6 +182,8 @@ function homeArgs(profile: JobProfile, rec: HomeRecord, homeId: string, leaseId:
     '-p', `127.0.0.1:${rec.port}:2222`,
     '--mount', `type=volume,src=${volumeName(homeId)},dst=/home/tenant`,
     '-v', `${join(h.homesDir, homeId, 'charter')}:/charter:ro`,
+    // gVisor cannot reach docker's embedded resolver (127.0.0.11); names must resolve over the host's Anyone DNS port.
+    '-v', `${join(h.homesDir, homeId, 'charter', 'resolv.conf')}:/etc/resolv.conf:ro`,
     ...env.flatMap((e) => ['-e', e]),
   ];
 }
@@ -255,6 +257,10 @@ export function dockerRunner(opts: {
       await ensureVolume(exec, volumeName(homeId), device);
       // docker create needs the bind source to exist.
       await mkdir(join(dir, 'charter'), { recursive: true });
+      // Overwritten every call; chmod because writeFile keeps an existing file's mode.
+      const resolv = join(dir, 'charter', 'resolv.conf');
+      await writeFile(resolv, `nameserver ${h.gateway}\noptions ndots:0\n`, { mode: 0o644 });
+      await chmod(resolv, 0o644);
     } catch (e) {
       // An unformatted image would pass the next call's exists check and never get mkfs.
       if (madeDisk) {

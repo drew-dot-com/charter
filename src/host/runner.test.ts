@@ -420,6 +420,7 @@ test('create for a home puts the box on its network with its disk, its port and 
   has('-p', '127.0.0.1:22000:2222');
   has('--mount', `type=volume,src=charter-home-${HOME_ID},dst=/home/tenant`);
   has('-v', `${join(t.homesDir, HOME_ID, 'charter')}:/charter:ro`);
+  has('-v', `${join(t.homesDir, HOME_ID, 'charter', 'resolv.conf')}:/etc/resolv.conf:ro`);
   has('--pids-limit', '512');
   has('--restart', 'unless-stopped');
   has('--tmpfs', '/tmp:size=256m');
@@ -458,6 +459,17 @@ test('create for a home refuses with no home record, bad keys, or a host without
   const bare = dockerRunner({ exec, outRoot: await outRoot(), allow: ['charter-home'] });
   await assert.rejects(bare.create('l1', HOME), (e: unknown) => e instanceof RunnerError && e.code === 'image_not_allowed');
   assert.equal(calls.length, 0);
+});
+
+test('ensureHome writes the box a resolv.conf that points at anon, every time', async () => {
+  const t = await homeSetup();
+  const f = join(t.homesDir, HOME_ID, 'charter', 'resolv.conf');
+  await t.r.ensureHome(HOME_ID);
+  assert.equal(await readFile(f, 'utf8'), 'nameserver 172.19.0.1\noptions ndots:0\n');
+  await writeFile(f, 'nameserver 127.0.0.11\n');
+  await t.r.ensureHome(HOME_ID);
+  assert.equal(await readFile(f, 'utf8'), 'nameserver 172.19.0.1\noptions ndots:0\n');
+  assert.equal((await stat(f)).mode & 0o777, 0o644);
 });
 
 test('ensureHome makes the disk and volume once and refuses a new disk under the free-space floor', async () => {
@@ -665,7 +677,7 @@ test('writePaidThrough writes the epoch ms where the box reads it', async () => 
   // Two writes at once each use their own temp file; the last rename wins and nothing is left over.
   await Promise.all([t.r.writePaidThrough(HOME_ID, 1), t.r.writePaidThrough(HOME_ID, 2)]);
   assert.match(await readFile(file, 'utf8'), /^[12]\n$/);
-  assert.deepEqual(await readdir(join(t.homesDir, HOME_ID, 'charter')), ['paid-through']);
+  assert.deepEqual(await readdir(join(t.homesDir, HOME_ID, 'charter')), ['paid-through', 'resolv.conf']);
 });
 
 test('home operations refuse an id that is not a home id', async () => {

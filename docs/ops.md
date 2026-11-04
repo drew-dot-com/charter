@@ -253,6 +253,8 @@ sudo iptables -S INPUT | grep br-      # seven lines: two DROPs of 9050/9080 and
 losetup -a                             # one line per attached home disk
 ```
 
+The box's `/etc/resolv.conf` is the host's file (`<homesDir>/<homeId>/charter/resolv.conf`) pointing at anon's DNS port, because gVisor cannot use docker's embedded resolver.
+
 **Testing the proxies.** They answer only from the home bridge, not from the VM shell, so test from
 a container on it: `docker run --rm --network charter-home --dns 172.19.0.1 curlimages/curl -sS -m 10
 https://example.com` must fail, and the same with `-x http://172.19.0.1:9080` must print the page.
