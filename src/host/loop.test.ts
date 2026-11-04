@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { Lease, Offer } from '../types.js';
 import { OFFER_KIND } from '../offer.js';
 import { RunnerError, type Runner } from './runner.js';
-import { BOOT_TIMEOUT_MS, homeSweep, landAll, offerTick, reconcile, windowTick } from './loop.js';
+import { BOOT_TIMEOUT_MS, homeSweep, landAll, offerTick, reconcile, windowTick, type LoopDeps } from './loop.js';
 import { GRACE_MS, onTick } from '../lease.js';
 import { LeaseStore } from './store.js';
 import { HOME_RETENTION_MS, HomeStore, type HomeRecord } from './homes.js';
@@ -299,14 +299,15 @@ test('windowTick never watches a home\'s exit and fills its access once anon has
   const homes = homeStore({ homeId: HOME_ID });
   const asked: string[] = [];
   let ready = false;
+  let exits = 0;
   const { r } = fakeRunner({
-    exited: () => Promise.reject(new Error('a home exit is never watched')),
+    exited: () => { exits++; return new Promise<number>(() => undefined); },
     homeAccess: async (id) => {
       asked.push(id);
       return ready ? { ssh: { host: 'abc.anon', port: 22, user: 'tenant' } } : null;
     },
   });
-  const deps = { store, runner: r, homes, now: () => T0 + 1000 };
+  const deps: LoopDeps = { store, runner: r, homes, now: () => T0 + 1000 };
   await windowTick(deps);
   assert.equal(store.get('h')!.access ?? null, null, 'no hostname yet');
   ready = true;
@@ -315,6 +316,8 @@ test('windowTick never watches a home\'s exit and fills its access once anon has
   await windowTick(deps);
   assert.deepEqual(asked, [HOME_ID, HOME_ID], 'filled access is not asked again');
   assert.equal(store.get('h')!.state, 'running');
+  assert.equal(exits, 0);
+  assert.ok(!deps.watched!.has('h'));
 });
 
 test('windowTick publishes a running home\'s onion once per process, and retries a failed publish', async () => {
@@ -518,4 +521,77 @@ test('a returning home that paid before keeps its disk when its new lease never 
   assert.equal(store.get('back')!.closedReason, 'missed_tick');
   assert.deepEqual(removed, []);
   assert.equal(homes.get(HOME_ID)!.lastClosedAt, T0 - 1000, 'the paid retention clock is not reset by an unpaid lease');
+});
+
+test('a home re-opened while its unpaid lease was being stopped keeps its disk and record', async () => {
+  const store = new LeaseStore();
+  store.put(homeLease({ id: 'old', state: 'awaiting_first_tick', paidIntervals: 0, paidThrough: undefined, startedAt: undefined }));
+  const homes = homeStore({ homeId: HOME_ID });
+  const calls: string[] = [];
+  const { r } = fakeRunner({
+    // The server sees the old lease closed and opens a new one before stop returns.
+    stop: async () => void store.put(homeLease({ id: 'new', state: 'booting', paidIntervals: 0, createdAt: T0 + 90_001 })),
+    retireHome: async (id) => void calls.push(`retire ${id}`),
+    removeHome: async (id) => void calls.push(`remove ${id}`),
+  });
+  await windowTick({ store, runner: r, homes, now: () => T0 + 90_001 });
+  assert.equal(store.get('old')!.closedReason, 'missed_tick');
+  assert.deepEqual(calls, []);
+  assert.ok(homes.get(HOME_ID));
+});
+
+test('a home re-opened while removeHome runs keeps its record in the loop\'s store', async () => {
+  const store = new LeaseStore();
+  store.put(homeLease({ id: 'old', state: 'awaiting_first_tick', paidIntervals: 0, paidThrough: undefined, startedAt: undefined }));
+  const homes = homeStore({ homeId: HOME_ID });
+  const logs: string[] = [];
+  const { r } = fakeRunner({
+    removeHome: async () => void store.put(homeLease({ id: 'new', state: 'booting', paidIntervals: 0 })),
+  });
+  await windowTick({ store, runner: r, homes, now: () => T0 + 90_001, log: (m: string) => void logs.push(m) });
+  assert.ok(homes.get(HOME_ID));
+  assert.ok(logs.some((m) => /re-opened/.test(m)));
+});
+
+test('an unpaid home close lets removeHome retire the onion: no separate retire', async () => {
+  const store = new LeaseStore();
+  store.put(homeLease({ id: 'u', state: 'awaiting_first_tick', paidIntervals: 0, paidThrough: undefined, startedAt: undefined }));
+  const homes = homeStore({ homeId: HOME_ID });
+  const calls: string[] = [];
+  const { r } = fakeRunner({
+    retireHome: async (id) => void calls.push(`retire ${id}`),
+    removeHome: async (id) => void calls.push(`remove ${id}`),
+  });
+  await windowTick({ store, runner: r, homes, now: () => T0 + 90_001 });
+  assert.deepEqual(calls, [`remove ${HOME_ID}`]);
+});
+
+test('reconcile closes a booting home whose container is gone as host_restart', async () => {
+  const store = new LeaseStore();
+  store.put(homeLease({ id: 'h', state: 'booting', paidIntervals: 0, paidThrough: undefined, startedAt: undefined, bootedAt: undefined }));
+  const homes = homeStore({ homeId: HOME_ID });
+  let creates = 0;
+  const { r, stops } = fakeRunner({ alive: async () => false, create: async () => void creates++ });
+  await reconcile({ store, runner: r, homes, now: () => T0 + 1000 });
+  assert.equal(store.get('h')!.closedReason, 'host_restart');
+  assert.equal(creates, 0);
+  assert.deepEqual(stops, ['h']);
+  assert.equal(homes.get(HOME_ID), undefined);
+});
+
+test('reconcile closes a home whose re-create fails as host_restart without starting it', async () => {
+  const store = new LeaseStore();
+  store.put(homeLease({ id: 'h' }));
+  const homes = homeStore({ homeId: HOME_ID, paidOnce: true });
+  let starts = 0;
+  const { r, stops } = fakeRunner({
+    alive: async () => false,
+    create: async () => { throw new RunnerError('docker_failed', 'no image'); },
+    start: async () => void starts++,
+  });
+  await reconcile({ store, runner: r, homes, now: () => T0 + 1000, log: () => undefined });
+  assert.equal(store.get('h')!.closedReason, 'host_restart');
+  assert.equal(starts, 0);
+  assert.deepEqual(stops, ['h']);
+  assert.equal(homes.get(HOME_ID)!.lastClosedAt, T0 + 1000);
 });

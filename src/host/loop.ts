@@ -50,27 +50,36 @@ async function tryHome(deps: LoopDeps, what: string, f: () => Promise<void>): Pr
 }
 
 /**
- * After a home lease closed and its container stopped: drop its onion, then remove a home that
- * never paid or keep a paid one's disk for the retention time. A home another live lease holds is
- * left alone.
+ * After a home lease closed and its container stopped: remove a home that never paid, or drop a
+ * paid one's onion and keep its disk for the retention time. The server may open a new lease on the
+ * same home as soon as the old one is written closed, so liveness is read again after every await.
  */
 async function releaseHome(deps: LoopDeps, l: Lease, now: number): Promise<void> {
   const homeId = l.homeId;
-  if (!homeId || liveHomeIds(deps).has(homeId)) return;
-  await tryHome(deps, `retire ${homeId}`, () => deps.runner.retireHome(homeId));
+  if (!homeId) return;
+  const heldElsewhere = () => liveHomeIds(deps).has(homeId);
+  if (heldElsewhere()) return;
   deps.published?.delete(homeId);
   const rec = deps.homes?.get(homeId);
   if (l.paidIntervals === 0) {
     // A returning home that paid on an earlier lease keeps its disk; only a never-paid one goes.
     if (rec?.paidOnce) return;
-    if (await tryHome(deps, `remove ${homeId}`, () => deps.runner.removeHome(homeId))) deps.homes?.delete(homeId);
+    // removeHome retires the onion itself; no await sits between the check above and this call.
+    const ok = await tryHome(deps, `remove ${homeId}`, () => deps.runner.removeHome(homeId));
+    if (!ok) return;
+    if (heldElsewhere()) {
+      deps.log?.(`home ${homeId}: re-opened while it was being removed; record kept`);
+      return;
+    }
+    deps.homes?.delete(homeId);
     return;
   }
+  await tryHome(deps, `retire ${homeId}`, () => deps.runner.retireHome(homeId));
   if (!rec) {
     deps.log?.(`home ${homeId}: no record to mark closed`);
     return;
   }
-  deps.homes!.put({ ...rec, paidOnce: true, lastClosedAt: now });
+  deps.homes!.put({ ...(deps.homes!.get(homeId) ?? rec), paidOnce: true, lastClosedAt: now });
 }
 
 /** Close, stop, and for a home release it. */
