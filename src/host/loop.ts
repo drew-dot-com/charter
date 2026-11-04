@@ -3,7 +3,7 @@ import { offerToEvent } from '../offer.js';
 import type { ToonCli } from '../toon-cli.js';
 import type { Lease, Offer } from '../types.js';
 import { sweepDue, type HomeStore } from './homes.js';
-import type { Runner } from './runner.js';
+import { RunnerError, type Runner } from './runner.js';
 import { outputPartCount } from './server.js';
 import type { LeaseStore } from './store.js';
 
@@ -14,6 +14,9 @@ export const OFFER_LIFETIME_MS = 45 * 60_000;
 export const OFFER_REPUBLISH_MS = 20 * 60_000;
 /** How often closed homes are checked against the retention rules. */
 export const HOME_SWEEP_MS = 3_600_000;
+/** How long reconcile waits for dockerd at boot, asking every DOCKER_POLL_MS. */
+export const DOCKER_WAIT_MS = 120_000;
+export const DOCKER_POLL_MS = 2_000;
 
 export interface LoopDeps {
   store: LeaseStore;
@@ -26,6 +29,8 @@ export interface LoopDeps {
   /** Home ids whose onion conf this process has written. Created on first use. */
   published?: Set<string>;
   log?: (msg: string) => void;
+  /** Injectable for tests. Default: a real timer. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 function isLive(l: Lease): boolean {
@@ -196,15 +201,40 @@ export async function windowTick(deps: LoopDeps): Promise<void> {
  * (one that was only created, or never made) is removed. A paid running home is brought back instead.
  */
 export async function reconcile(deps: LoopDeps): Promise<void> {
+  // The host is a user unit, so it cannot be ordered after docker.service: at boot it may start first.
+  if (!(await waitForDocker(deps))) {
+    deps.log?.(`reconcile: docker did not answer in ${DOCKER_WAIT_MS / 1000} s; no lease judged, the next host start tries again`);
+    return;
+  }
   for (const l of deps.store.all()) {
     if (!isLive(l)) continue;
-    if (await deps.runner.alive(l.id)) continue;
+    let alive: boolean;
+    try {
+      alive = await deps.runner.alive(l.id);
+    } catch (e) {
+      if (!(e instanceof RunnerError && e.code === 'docker_unavailable')) throw e;
+      // No answer is not a dead container: a paid home must not be closed for docker's slowness.
+      deps.log?.(`reconcile: lease ${l.id} left as it is, docker unavailable: ${e.message}`);
+      continue;
+    }
+    if (alive) continue;
     const now = deps.now();
     if (isHome(l) && l.state === 'running') {
       await restartHome(deps, l, now);
       continue;
     }
     await closeAndStop(deps, l, 'host_restart', now);
+  }
+}
+
+/** Polls `docker info` until it answers or DOCKER_WAIT_MS has passed. */
+async function waitForDocker(deps: LoopDeps): Promise<boolean> {
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const until = deps.now() + DOCKER_WAIT_MS;
+  for (;;) {
+    if (await deps.runner.ready()) return true;
+    if (deps.now() >= until) return false;
+    await sleep(DOCKER_POLL_MS);
   }
 }
 

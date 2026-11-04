@@ -251,8 +251,30 @@ test('alive reads State.Running and is false when the container is gone', async 
   assert.deepEqual(calls[0]!.args, ['inspect', '-f', '{{.State.Running}}', 'charter-l1']);
   reply = { code: 0, stdout: 'false\n' };
   assert.equal(await r.alive('l1'), false);
-  reply = { code: 1, stdout: '' };
+  reply = { code: 1, stdout: '', stderr: 'Error: No such object: charter-l1\n' } as typeof reply;
   assert.equal(await r.alive('l1'), false);
+});
+
+test('alive is false on "No such container" and throws docker_unavailable when the daemon does not answer', async () => {
+  let reply: { code: number; stdout?: string; stderr?: string } = { code: 1, stderr: 'Error response from daemon: No such container: charter-l1' };
+  const { exec } = fake(() => reply);
+  const r = dockerRunner({ exec, outRoot: await outRoot(), allow: [] });
+  assert.equal(await r.alive('l1'), false);
+  reply = { code: 1, stderr: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' };
+  await assert.rejects(r.alive('l1'), (e: unknown) => e instanceof RunnerError && e.code === 'docker_unavailable');
+  // Exit 0 with anything but true or false is not an answer either.
+  reply = { code: 0, stdout: '' };
+  await assert.rejects(r.alive('l1'), (e: unknown) => e instanceof RunnerError && e.code === 'docker_unavailable');
+});
+
+test('ready runs docker info and is true only on exit 0', async () => {
+  let code = 0;
+  const { exec, calls } = fake(() => ({ code }));
+  const r = dockerRunner({ exec, outRoot: await outRoot(), allow: [] });
+  assert.equal(await r.ready(), true);
+  assert.deepEqual(calls[0]!.args, ['info']);
+  code = 1;
+  assert.equal(await r.ready(), false);
 });
 
 test('output reads result.json from the lease out dir', async () => {

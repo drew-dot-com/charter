@@ -50,6 +50,7 @@ export async function testHost(opts: TestHostOpts = {}): Promise<TestHost> {
     stop: async () => undefined,
     output: async () => Buffer.alloc(0),
     alive: async () => true,
+    ready: async () => true,
     ...opts.runner,
   };
   const apps = hostApps({ store, runner, offer: opts.offer ?? OFFER, now: () => clock.t + (opts.skewMs ?? 0) });

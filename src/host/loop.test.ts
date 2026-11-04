@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { Lease, Offer } from '../types.js';
 import { OFFER_KIND } from '../offer.js';
 import { RunnerError, type Runner } from './runner.js';
-import { BOOT_TIMEOUT_MS, homeSweep, landAll, offerTick, reconcile, windowTick, type LoopDeps } from './loop.js';
+import { BOOT_TIMEOUT_MS, DOCKER_WAIT_MS, homeSweep, landAll, offerTick, reconcile, windowTick, type LoopDeps } from './loop.js';
 import { GRACE_MS, onTick } from '../lease.js';
 import { LeaseStore } from './store.js';
 import { HOME_RETENTION_MS, HomeStore, type HomeRecord } from './homes.js';
@@ -45,6 +45,7 @@ function fakeRunner(over: Partial<Runner> = {}) {
     stop: async (id) => void stops.push(id),
     output: async () => Buffer.alloc(0),
     alive: async () => true,
+    ready: async () => true,
     ensureHome: async () => ({ homeId: '', port: 0, createdAt: 0, paidOnce: false }),
     publishHome: async () => undefined,
     retireHome: async () => undefined,
@@ -427,7 +428,7 @@ test('reconcile closes a home it cannot re-create as host_restart, keeping a pai
   const removed: string[] = [];
   const { r, stops } = fakeRunner({
     alive: async () => false,
-    start: async () => { throw new RunnerError('docker_failed', 'boom'); },
+    start: async () => { throw new RunnerError('boot_failed', 'boom'); },
     removeHome: async (id) => void removed.push(id),
   });
   await reconcile({ store, runner: r, homes, now: () => T0 + 1000, log: () => undefined });
@@ -608,7 +609,7 @@ test('reconcile closes a home whose re-create fails as host_restart without star
   let starts = 0;
   const { r, stops } = fakeRunner({
     alive: async () => false,
-    create: async () => { throw new RunnerError('docker_failed', 'no image'); },
+    create: async () => { throw new RunnerError('boot_failed', 'no image'); },
     start: async () => void starts++,
   });
   await reconcile({ store, runner: r, homes, now: () => T0 + 1000, log: () => undefined });
@@ -617,4 +618,69 @@ test('reconcile closes a home whose re-create fails as host_restart without star
   // Once before the re-create, once on close; stop is docker rm -f, so the second is a no-op.
   assert.deepEqual(stops, ['h', 'h']);
   assert.equal(homes.get(HOME_ID)!.lastClosedAt, T0 + 1000);
+});
+
+test('reconcile waits for docker and, if it never answers, judges no lease', async () => {
+  const store = new LeaseStore();
+  const before = homeLease({ id: 'h' });
+  store.put(before);
+  store.put(lease({ id: 'j', paidThrough: T0 + 30_000 }));
+  const homes = homeStore({ homeId: HOME_ID, paidOnce: true });
+  const calls: string[] = [];
+  const note = (n: string) => async () => void calls.push(n);
+  let clock = T0;
+  const slept: number[] = [];
+  const logs: string[] = [];
+  const { r, stops } = fakeRunner({
+    ready: async () => false,
+    alive: async () => { calls.push('alive'); return false; },
+    create: note('create'), start: note('start'), ensureHome: async () => { calls.push('ensureHome'); return homes.get(HOME_ID)!; },
+  });
+  await reconcile({
+    store, runner: r, homes, now: () => clock, log: (m) => void logs.push(m),
+    sleep: async (ms) => { slept.push(ms); clock += ms; },
+  });
+  assert.deepEqual(calls, []);
+  assert.deepEqual(stops, []);
+  assert.deepEqual(store.get('h'), before);
+  assert.equal(store.get('j')!.state, 'running');
+  assert.ok(slept.every((ms) => ms === 2000));
+  assert.ok(clock - T0 >= DOCKER_WAIT_MS && clock - T0 <= DOCKER_WAIT_MS + 2000);
+  assert.ok(logs.some((m) => /docker/.test(m)));
+});
+
+test('reconcile proceeds once docker answers after two misses', async () => {
+  const store = new LeaseStore();
+  store.put(lease({ id: 'gone', paidThrough: T0 + 30_000 }));
+  let asks = 0;
+  let sleeps = 0;
+  const { r, stops } = fakeRunner({ ready: async () => ++asks > 2, alive: async () => false });
+  await reconcile({ store, runner: r, now: () => T0, sleep: async () => void sleeps++ });
+  assert.equal(asks, 3);
+  assert.equal(sleeps, 2);
+  assert.equal(store.get('gone')!.closedReason, 'host_restart');
+  assert.deepEqual(stops, ['gone']);
+});
+
+test('reconcile leaves a lease alone when alive says docker is unavailable', async () => {
+  const store = new LeaseStore();
+  const before = homeLease({ id: 'h' });
+  store.put(before);
+  store.put(lease({ id: 'gone', paidThrough: T0 + 30_000 }));
+  const homes = homeStore({ homeId: HOME_ID, paidOnce: true });
+  let creates = 0;
+  const logs: string[] = [];
+  const { r, stops } = fakeRunner({
+    alive: async (id) => {
+      if (id === 'h') throw new RunnerError('docker_unavailable', 'Cannot connect to the Docker daemon');
+      return false;
+    },
+    create: async () => void creates++,
+  });
+  await reconcile({ store, runner: r, homes, now: () => T0 + 1000, log: (m) => void logs.push(m) });
+  assert.deepEqual(store.get('h'), before);
+  assert.equal(creates, 0);
+  assert.equal(store.get('gone')!.closedReason, 'host_restart');
+  assert.deepEqual(stops, ['gone']);
+  assert.ok(logs.some((m) => m.includes('h') && /docker/.test(m)));
 });

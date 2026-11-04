@@ -24,7 +24,14 @@ import {
   type HomeStore,
 } from './homes.js';
 
-export type RunnerErrorCode = 'image_not_allowed' | 'arg_not_allowed' | 'bad_input' | 'bad_output' | 'boot_failed';
+export type RunnerErrorCode =
+  | 'image_not_allowed'
+  | 'arg_not_allowed'
+  | 'bad_input'
+  | 'bad_output'
+  | 'boot_failed'
+  /** docker did not answer: nothing can be said about any container. */
+  | 'docker_unavailable';
 
 export class RunnerError extends Error {
   constructor(
@@ -46,7 +53,13 @@ export interface Runner {
   stop(leaseId: string): Promise<void>;
   /** Bytes of /out/result.json. */
   output(leaseId: string): Promise<Buffer>;
+  /**
+   * True when the container runs, false when docker says it is stopped or does not exist.
+   * Rejects with `docker_unavailable` when docker gives no answer, so a caller never reads that as dead.
+   */
   alive(leaseId: string): Promise<boolean>;
+  /** `docker info` answers: the daemon is up. */
+  ready(): Promise<boolean>;
   /** The home's record (a fresh port if new), its disk if the file is missing, and its volume. */
   ensureHome(homeId: string): Promise<HomeRecord>;
   /** Exposes the home's sshd on its onion. */
@@ -364,7 +377,15 @@ export function dockerRunner(opts: {
 
     async alive(leaseId) {
       const r = await docker(['inspect', '-f', '{{.State.Running}}', name(leaseId)]);
-      return r.code === 0 && r.stdout.trim() === 'true';
+      const out = r.stdout.trim();
+      if (r.code === 0 && (out === 'true' || out === 'false')) return out === 'true';
+      if (r.code !== 0 && /No such object|No such container/.test(r.stderr)) return false;
+      // At boot dockerd may not answer yet: that is not a dead container.
+      throw new RunnerError('docker_unavailable', r.stderr.trim() || `inspect exit ${r.code}`);
+    },
+
+    async ready() {
+      return (await docker(['info'])).code === 0;
     },
 
     ensureHome(homeId) {

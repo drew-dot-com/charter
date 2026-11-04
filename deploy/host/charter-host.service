@@ -5,11 +5,16 @@
 # The toon node must be up (`toon up`) and the three apps added (docs/demo.md).
 [Unit]
 Description=Charter host: compute leases paid over TOON
+# A user unit cannot order against docker.service (a system unit): this After= is ignored.
+# The ExecStartPre below waits for dockerd instead, and reconcile waits again before judging leases.
 After=network-online.target docker.service
 
 [Service]
 EnvironmentFile=%h/.config/charter/env
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Up to 120 s for the docker socket and `docker info`; on failure systemd restarts the unit.
+# `$$` is systemd's escape for a literal `$`.
+ExecStartPre=/bin/sh -c 'for i in $$(seq 1 60); do [ -S /var/run/docker.sock ] && docker info >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1'
 ExecStart=%h/.local/bin/charter-host run
 Restart=on-failure
 RestartSec=5
