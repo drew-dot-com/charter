@@ -105,7 +105,7 @@ export async function createDisk(
 }
 
 /** The loop device a disk image is attached to, from `losetup -j` output, or undefined. */
-function loopDevice(out: string): string | undefined {
+export function loopDevice(out: string): string | undefined {
   return /^(\/dev\/loop\d+)(?::|\s*$)/m.exec(out)?.[1];
 }
 
@@ -130,17 +130,25 @@ export async function detachDisk(losetup: Exec, device: string): Promise<void> {
 }
 
 export async function ensureVolume(docker: Exec, name: string, device: string): Promise<void> {
-  const r = await docker(['volume', 'inspect', '-f', '{{index .Options "device"}}', name], {});
+  const inspect = () => docker(['volume', 'inspect', '-f', '{{index .Options "device"}}', name], {});
+  const r = await inspect();
   if (r.code === 0) {
     if (r.stdout.trim() === device) return;
     // The loop number can change after a reboot: point the volume at the device the disk has now.
-    await removeVolume(docker, name);
+    // A volume still in use stays on the old device, which may now back another file: never go on.
+    const rm = await docker(['volume', 'rm', '-f', name], {});
+    if (rm.code !== 0) throw new HomeError('volume_failed', rm.stderr.trim());
   }
   const c = await docker(
     ['volume', 'create', '--driver', 'local', '--opt', 'type=ext4', '--opt', `device=${device}`, name],
     {},
   );
   if (c.code !== 0) throw new HomeError('volume_failed', c.stderr.trim());
+  // create returns an existing volume of the same name without comparing options: check what it made.
+  const after = await inspect();
+  if (after.code !== 0 || after.stdout.trim() !== device) {
+    throw new HomeError('volume_failed', `${name} is on ${after.stdout.trim() || 'nothing'}, not ${device}`);
+  }
 }
 
 export async function removeVolume(docker: Exec, name: string): Promise<void> {

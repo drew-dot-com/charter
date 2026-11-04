@@ -441,7 +441,7 @@ test('ensureHome makes the disk and volume once and refuses a new disk under the
   const vol = `charter-home-${HOME_ID}`;
   assert.deepEqual(
     t.calls.map((c) => c.args.slice(0, 2).join(' ')),
-    ['volume inspect', 'volume create'],
+    ['volume inspect', 'volume create', 'volume inspect'],
   );
   // docker gets the loop device the host attached, never the image file.
   assert.deepEqual(t.loopLog, [`losetup -j ${disk}`, `losetup --find --show ${disk}`]);
@@ -487,7 +487,7 @@ test('after a reboot an existing home is re-attached and its volume re-pointed a
   assert.deepEqual(t.tools, [], 'the disk is kept, never formatted again');
   assert.deepEqual(t.loopLog, [`losetup -j ${disk}`, `losetup --find --show ${disk}`]);
   assert.equal(t.loops.get(disk), '/dev/loop1');
-  assert.deepEqual(t.calls.map((c) => c.args.slice(0, 2).join(' ')), ['volume inspect', 'volume rm', 'volume create']);
+  assert.deepEqual(t.calls.map((c) => c.args.slice(0, 2).join(' ')), ['volume inspect', 'volume rm', 'volume create', 'volume inspect']);
   assert.equal(t.volumes.get(vol), '/dev/loop1');
 });
 

@@ -17,6 +17,7 @@ import {
   HOME_DISK_GIB,
   HOME_FREE_FLOOR_BYTES,
   HomeError,
+  loopDevice,
   removeVolume,
   volumeName,
   type HomeRecord,
@@ -252,8 +253,8 @@ export function dockerRunner(opts: {
 
   async function detachAttached(h: HomeRunnerOpts, disk: string): Promise<void> {
     const j = await h.tools.losetup(['-j', disk], {});
-    const dev = /^(\/dev\/loop\d+):/m.exec(j.stdout)?.[1];
-    if (j.code === 0 && dev) await detachDisk(h.tools.losetup, dev);
+    const dev = j.code === 0 ? loopDevice(j.stdout) : undefined;
+    if (dev) await detachDisk(h.tools.losetup, dev);
   }
 
   let chain: Promise<void> = Promise.resolve();

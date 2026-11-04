@@ -406,14 +406,15 @@ test('reconcile re-creates a paid home whose container is gone and counts the re
   const calls: string[] = [];
   const { r, stops } = fakeRunner({
     alive: async () => false,
+    stop: async (id) => void calls.push(`stop ${id}`),
     ensureHome: async (id) => (calls.push(`ensureHome ${id}`), { homeId: id, port: 22000, createdAt: 0, paidOnce: true }),
     create: async (id, job) => void calls.push(`create ${id} ${job.image}`),
     start: async (id) => void calls.push(`start ${id}`),
     publishHome: async (id) => void calls.push(`publish ${id}`),
   });
   await reconcile({ store, runner: r, homes, now: () => T0 + 1000 });
-  // ensureHome first: after a reboot it re-attaches the disk the new container mounts.
-  assert.deepEqual(calls, [`ensureHome ${HOME_ID}`, 'create h charter-home', 'start h', `publish ${HOME_ID}`]);
+  // The dead container goes first, so nothing pins the volume; then the disk is re-attached; then create.
+  assert.deepEqual(calls, ['stop h', `ensureHome ${HOME_ID}`, 'create h charter-home', 'start h', `publish ${HOME_ID}`]);
   assert.deepEqual(stops, []);
   assert.equal(store.get('h')!.state, 'running');
   assert.equal(store.get('h')!.restarts, 1);
@@ -431,7 +432,8 @@ test('reconcile closes a home it cannot re-create as host_restart, keeping a pai
   });
   await reconcile({ store, runner: r, homes, now: () => T0 + 1000, log: () => undefined });
   assert.equal(store.get('h')!.closedReason, 'host_restart');
-  assert.deepEqual(stops, ['h']);
+  // Once before the re-create, once on close; stop is docker rm -f, so the second is a no-op.
+  assert.deepEqual(stops, ['h', 'h']);
   assert.deepEqual(removed, []);
   assert.equal(homes.get(HOME_ID)!.lastClosedAt, T0 + 1000);
 });
@@ -594,7 +596,8 @@ test('reconcile closes a home whose disk cannot be re-attached as host_restart w
   await reconcile({ store, runner: r, homes, now: () => T0 + 1000, log: () => undefined });
   assert.equal(store.get('h')!.closedReason, 'host_restart');
   assert.equal(creates, 0);
-  assert.deepEqual(stops, ['h']);
+  // Once before the re-create, once on close; stop is docker rm -f, so the second is a no-op.
+  assert.deepEqual(stops, ['h', 'h']);
   assert.equal(homes.get(HOME_ID)!.lastClosedAt, T0 + 1000);
 });
 
@@ -611,6 +614,7 @@ test('reconcile closes a home whose re-create fails as host_restart without star
   await reconcile({ store, runner: r, homes, now: () => T0 + 1000, log: () => undefined });
   assert.equal(store.get('h')!.closedReason, 'host_restart');
   assert.equal(starts, 0);
-  assert.deepEqual(stops, ['h']);
+  // Once before the re-create, once on close; stop is docker rm -f, so the second is a no-op.
+  assert.deepEqual(stops, ['h', 'h']);
   assert.equal(homes.get(HOME_ID)!.lastClosedAt, T0 + 1000);
 });

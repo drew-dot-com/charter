@@ -88,25 +88,58 @@ test('ensureVolume throws volume_failed when create fails', async () => {
 
 const INSPECT = ['volume', 'inspect', '-f', '{{index .Options "device"}}', 'charter-home-h1'];
 
+/** docker's volume store for one name: create keeps an existing volume as it is, like the real one. */
+function volumes(device?: string, opts: { rmFails?: boolean } = {}) {
+  let dev = device;
+  return fake((a) => {
+    if (a[1] === 'inspect') return dev === undefined ? { code: 1, stderr: 'no such volume' } : { code: 0, stdout: `${dev}\n` };
+    if (a[1] === 'rm') {
+      if (opts.rmFails) return { code: 1, stderr: 'volume is in use - [abc123]\n' };
+      dev = undefined;
+      return { code: 0 };
+    }
+    if (a[1] === 'create') dev ??= a.find((x) => x.startsWith('device='))!.slice('device='.length);
+    return { code: 0 };
+  });
+}
+
 test('ensureVolume creates the volume on the loop device, with no o=loop, only when inspect fails', async () => {
-  const miss = fake((a) => ({ code: a[1] === 'inspect' ? 1 : 0 }));
+  const miss = volumes();
   await ensureVolume(miss.exec, 'charter-home-h1', '/dev/loop3');
-  assert.equal(miss.calls.length, 2);
-  assert.deepEqual(miss.calls[0]!.args, INSPECT);
-  assert.deepEqual(miss.calls[1]!.args, [
-    'volume', 'create', '--driver', 'local', '--opt', 'type=ext4', '--opt', 'device=/dev/loop3', 'charter-home-h1',
+  assert.deepEqual(miss.calls.map((c) => c.args), [
+    INSPECT,
+    ['volume', 'create', '--driver', 'local', '--opt', 'type=ext4', '--opt', 'device=/dev/loop3', 'charter-home-h1'],
+    INSPECT,
   ]);
-  const hit = fake(() => ({ code: 0, stdout: '/dev/loop3\n' }));
+  const hit = volumes('/dev/loop3');
   await ensureVolume(hit.exec, 'charter-home-h1', '/dev/loop3');
   assert.equal(hit.calls.length, 1);
 });
 
 test('ensureVolume recreates a volume that points at another loop device', async () => {
-  const f = fake((a) => ({ code: 0, stdout: a[1] === 'inspect' ? '/dev/loop1\n' : '' }));
+  const f = volumes('/dev/loop1');
   await ensureVolume(f.exec, 'charter-home-h1', '/dev/loop4');
-  assert.deepEqual(f.calls.map((c) => c.args.slice(0, 2).join(' ')), ['volume inspect', 'volume rm', 'volume create']);
+  assert.deepEqual(f.calls.map((c) => c.args.slice(0, 2).join(' ')), ['volume inspect', 'volume rm', 'volume create', 'volume inspect']);
   assert.deepEqual(f.calls[1]!.args, ['volume', 'rm', '-f', 'charter-home-h1']);
   assert.ok(f.calls[2]!.args.includes('device=/dev/loop4'));
+});
+
+test('ensureVolume refuses to go on when the stale volume cannot be removed', async () => {
+  const f = volumes('/dev/loop1', { rmFails: true });
+  await assert.rejects(
+    ensureVolume(f.exec, 'charter-home-h1', '/dev/loop4'),
+    (e: unknown) => e instanceof HomeError && e.code === 'volume_failed' && /in use/.test(e.message),
+  );
+  assert.ok(!f.calls.some((c) => c.args[1] === 'create'));
+});
+
+test('ensureVolume rejects a create that returned the old volume still on the old device', async () => {
+  // rm "succeeds" but the volume survives, so create hands back the existing one unchanged.
+  const f = fake((a) => (a[1] === 'inspect' ? { code: 0, stdout: '/dev/loop1\n' } : { code: 0 }));
+  await assert.rejects(
+    ensureVolume(f.exec, 'charter-home-h1', '/dev/loop4'),
+    (e: unknown) => e instanceof HomeError && e.code === 'volume_failed' && /\/dev\/loop1, not \/dev\/loop4/.test(e.message),
+  );
 });
 
 test('attachDisk attaches an unattached image and returns the printed device', async () => {

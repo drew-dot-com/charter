@@ -213,7 +213,9 @@ async function restartHome(deps: LoopDeps, l: Lease, now: number): Promise<void>
   const reason = due(l, now);
   if (reason !== null) return closeAndStop(deps, l, reason, now);
   try {
-    // After a host reboot the disk is detached: re-attach it and re-point its volume first.
+    // docker's own restart may have left a dead container holding the volume: remove it first, so the
+    // volume can be re-pointed. Then, after a host reboot, re-attach the disk before creating again.
+    await deps.runner.stop(l.id);
     if (l.homeId) await deps.runner.ensureHome(l.homeId);
     await deps.runner.create(l.id, l.job);
     await deps.runner.start(l.id);
