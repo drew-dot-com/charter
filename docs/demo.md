@@ -323,38 +323,58 @@ tick is watched the same way. At most nine reads a watched hour (0.0009 USDC). T
 The `charter-home` image on toon2: a box with a 2 GiB disk kept between leases, SSH in at an onion
 address, egress only through Charter's own Anyone client. Design:
 `docs/superpowers/specs/2026-11-04-home-image-design.md`; operating it: `docs/ops.md`, "Homes".
-Every id below is filled in when the step runs; none is known yet.
+Run 2026-11-04 15:39Z to 16:10Z with Drew present; the lapse and re-open step follows at 17:00Z.
 
-- [ ] Build on the Mac (`npm test && npm run typecheck && npm run build`), tar `dist`, `src`,
-  `package.json`, `jobs/home`, `deploy/host`, copy into toon2 and untar over `~/src/charter`;
-  `chmod +x dist/host/main.js`. Source backup: `<path>`.
-- [ ] toon2: `docker build -t charter-home jobs/home`, then `CHARTER_IMAGE_TESTS=1 node --test
-  jobs/home/home.test.mjs` passes. Lima disk grown first or not: `<Drew's call>`.
-- [ ] No live lease (the `jq` line in `docs/ops.md`), then `sudo bash deploy/host/install-home.sh`;
-  anon on `172.19.0.1:9050`, `9080` and `53`, the `DOCKER-USER` drop and the seven `INPUT` rules in place.
-- [ ] The fence, from a container on `charter-home`: `https://example.com` direct fails; through
-  `-x http://172.19.0.1:9080` prints the page; `http://172.19.0.1:22` and `http://172.17.0.1:9150` fail.
-- [ ] Host env: backup `<path>`; `CHARTER_MAX_HOMES=1`, `CHARTER_ANON_HS_DIR`, `CHARTER_ANON_PIDFILE`,
-  `CHARTER_TENANT_CONNECTOR_URL`, `charter-home` in `CHARTER_ALLOW_IMAGES`; restart; `charter-host offer
-  --print` shows three images and `home: { diskGiB: 2, retentionDays: 7, slots: 1 }`.
-- [ ] Door: backup `/opt/charter.bak-<date>`, rsync, `compose up -d --build`; `GET /v1/offers` lists the
-  home terms. A bare home `POST /v1/leases` (lease `<leaseId>`) answers `awaiting_first_tick`, lapses to
-  `missed_tick` after 90 s, and leaves no record in `homes.json`.
-- [ ] Proof from the `toon` VM (Edison's node): `charter rent --offer <ref> --home test.pub
-  --max-intervals 2 --relay wss://relay.mainnet.toonprotocol.dev`. Lease `<leaseId>`, homeId `<homeId>`,
-  onion `<host>.anyone`, `access` set after `<seconds>` s.
-- [ ] `ssh` in over the node's SOCKS port; `curl https://example.com` works, `curl --noproxy '*' -m 10
-  https://example.com` fails; `getent hosts example.com` resolves (proves DNS over anon through docker's
-  resolver); `curl -4 --noproxy '*' -m 10 http://172.19.0.1:9050` is refused, not hung; `echo kept > ~/kept`.
-- [ ] `systemctl --user restart charter-host` on toon2: the box is untouched (`restarts: 0`, the ssh
-  session still up). Then `docker rm -f charter-<leaseId>` and restart `charter-host` again: the box is
-  back with `~/kept`, `restarts: 1`.
-- [ ] Let the lease lapse, open again with the same key: lease `<leaseId>`, `~/kept` there, same onion
-  address. Spend for the proof: `<units>` (expected about 0.02 USDC).
+- [x] Built on the Mac at main 2aa60b1 (`npm test` 484, typecheck, build), tarred `dist`, `src`,
+  `package.json`, `jobs/home`, `deploy/host`, copied into toon2 over `~/src/charter`. Source backup:
+  `~/src/charter/dist.bak-20261104-prehome`.
+- [x] toon2: `docker build -t charter-home jobs/home` (image a6490f726b84, 709 MB), then
+  `CHARTER_IMAGE_TESTS=1 node --test jobs/home/home.test.mjs` exit 0 under runsc on a real loop disk.
+  Lima disk NOT grown (Drew's call: skip for now; 5.5 GiB free, one slot fits).
+- [x] No live lease; `sudo ./install-home.sh` wrote `~/.local/bin/anon`, the GeoIP copies, the anonrc,
+  both system units, `/usr/local/bin/charter-home-net.sh` and `/etc/sudoers.d/charter-home`; network
+  `charter-home` on `br-fe24d63a6a96`; anon bootstrapped 100% and listens on `172.19.0.1` tcp 9050, 9080
+  and udp 53; `DOCKER-USER` drop and the seven `INPUT` rules plus the `ip6tables` drop in place.
+- [x] The fence, from a container on `charter-home`: direct `https://example.com` 000; through
+  `-x http://172.19.0.1:9080` 200; through `socks5h://172.19.0.1:9050` 200; `http://172.19.0.1:22` and
+  `http://172.17.0.1:9150` time out; from the VM shell `172.19.0.1:9050` times out (by design);
+  `getent hosts example.com` resolves from a runc container; SOCKS to `172.19.0.1:22` is refused (97).
+- [x] Host env: backup `~/.config/charter/env.bak-20261104-prehome`; `CHARTER_MAX_HOMES=1`,
+  `CHARTER_ANON_HS_DIR`, `CHARTER_ANON_PIDFILE`, `CHARTER_TENANT_CONNECTOR_URL=https://connector.mainnet.toonprotocol.dev/ilp`,
+  `CHARTER_HOST_PUBKEY=cde9138b…fb91`, `charter-home` in `CHARTER_ALLOW_IMAGES`; restart at 15:52Z;
+  offer event `9663da03…2bcb` lists three images and `home: { diskGiB: 2, retentionDays: 7, slots: 1 }`.
+  First deploy failure: the unit's PATH lacked `/usr/sbin`, so `mkfs.ext4` could not spawn and a bare
+  home open answered `boot_failed` (lease `326859c3…`); fixed in the installed unit and in
+  `deploy/host/charter-host.service` (commit e339898, which also logs the boot failure's cause).
+- [x] Door: backup `/opt/charter.bak-20261104-prehome`, rsync, `compose up -d --build` (healthy, headroom
+  1945900). `GET /v1/offers` lists the home terms. Bare home open through the door: lease
+  `92aa7746…` `awaiting_first_tick` with record port 22000, a 2 GiB sparse `disk.img`, one loop device, the
+  volume and a created container; 100 s later `missed_tick`, `paidIntervals` 0, record, directory, loop
+  device, volume and container all gone.
+- [x] Proof from the `toon` VM (Edison's node): `charter rent --offer cde9138b…:toon2-fetch-1 --home
+  ~/charter-home-test-key.pub --max-intervals 1 --relay wss://relay.mainnet.toonprotocol.dev`. Lease
+  `8608c96c6091a62877bd79ebaf515094`, homeId `4bf93f0a2bde316f`, onion
+  `2sqyr6so7vzg67mjwxdzhhs3ik3gkfors4bferrwye37o4mesmmjp7yd.anyone`, `access` set and the ssh line printed
+  by the CLI within a minute of tick 0; paid through 1793829469079 (16:57:49Z).
+- [x] `ssh` in over the node's SOCKS port (65327): user `tenant`; env `HTTPS_PROXY`, `ALL_PROXY`,
+  `CHARTER_LEASE_ID` present in the session; `/charter/paid-through` readable; disk 2.0 GiB, 1.9 free;
+  `curl https://example.com` 200 through the proxy; `curl --noproxy '*'` 000; zero setuid files;
+  host key `SHA256:+cJSc0uD5192pg4AX2fZBlx5g9KQ7w/Lh5Z8uoq+H0g`; wrote `~/kept` and a long-running
+  `~/.charter/boot.sh`. Step 6 HTTP half: `NODE_USE_ENV_PROXY=1 node -e fetch(CHARTER_CONNECTOR_URL)`
+  answered 200 from inside the box (undici prints an experimental warning).
+  Found: `getent hosts example.com` resolved NOTHING in the box. Cause: under runsc docker's embedded
+  resolver (127.0.0.11) is unreachable; verified with two throwaway runsc containers (embedded: empty;
+  bind-mounted `resolv.conf` with `nameserver 172.19.0.1`: resolves). Fix: the host writes
+  `<home>/charter/resolv.conf` and mounts it at `/etc/resolv.conf` (commit 00886dd), deployed 16:06Z.
+- [x] `systemctl --user restart charter-host` at 16:05Z: the box untouched (container `StartedAt`
+  unchanged, `restarts: 0`). Then `docker rm -f charter-8608c96c…` and a restart at 16:07Z: the box
+  re-created on the same volume and port, `restarts: 1`, same onion, `/etc/resolv.conf` mounted from
+  the host, one loop device. In-box recheck of `~/kept`, `~/booted`, DNS and the host key: `<pending>`.
+- [ ] Let the lease lapse (16:57:49Z), open again with the same key: lease `<leaseId>`, `~/kept` there,
+  same onion address. Spend for the proof so far: open 1000 + tick 7000 + status reads.
 - [ ] From inside the box: one `charter status` with `CHARTER_PAYER=toon-client` against a channel Drew
-  funds (channel `<id>`, Base ETH for the open included): `<result>`. If Node's env proxy does not carry
-  the payer, the fix is recorded here and in `docs/ops.md`, and the docs' sentence about Node fetch
-  (`NODE_USE_ENV_PROXY=1`) changes before the door republish.
+  funds (channel `<id>`, Base ETH for the open included): `<result>`. The HTTP half (Node fetch through
+  the env proxy) is proven above; the toon-client half waits on the funded key.
 
 ### Edison moves in (plan Task 15)
 
