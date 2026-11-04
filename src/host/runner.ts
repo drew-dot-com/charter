@@ -1,4 +1,5 @@
 import { constants } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { access, chmod, lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Exec } from '../exec.js';
@@ -133,7 +134,6 @@ function name(leaseId: string): string {
   return `charter-${leaseId}`;
 }
 
-/** A loopback proxy on the host is reached from the container as host.docker.internal. */
 function checkHomeId(homeId: string): string {
   if (!HOME_ID.test(homeId)) throw new RunnerError('bad_input', 'home id');
   return homeId;
@@ -166,6 +166,7 @@ function homeArgs(profile: JobProfile, rec: HomeRecord, homeId: string, leaseId:
   ];
 }
 
+/** A loopback proxy on the host is reached from the container as host.docker.internal. */
 function containerProxy(proxy: string): string {
   const u = new URL(proxy);
   if (u.hostname === '127.0.0.1' || u.hostname === 'localhost') {
@@ -304,18 +305,18 @@ export function dockerRunner(opts: {
     async ensureHome(homeId) {
       const h = needHome();
       checkHomeId(homeId);
-      let rec = h.homes.get(homeId);
-      if (!rec) {
-        rec = {
-          homeId,
-          port: allocatePort(h.homes.all().map((r) => r.port)),
-          createdAt: (h.now ?? Date.now)(),
-          paidOnce: false,
-        };
-        h.homes.put(rec);
-      }
+      const existing = h.homes.get(homeId);
+      // Stored only once its disk and volume exist, so a refused or failed call leaves nothing behind.
+      const rec: HomeRecord = existing ?? {
+        homeId,
+        port: allocatePort(h.homes.all().map((r) => r.port)),
+        createdAt: (h.now ?? Date.now)(),
+        paidOnce: false,
+      };
       const dir = join(h.homesDir, homeId);
       const disk = diskPath(h.homesDir, homeId);
+      let madeDir = false;
+      let madeDisk = false;
       try {
         const missing = await access(disk).then(() => false, () => true);
         if (missing) {
@@ -323,16 +324,23 @@ export function dockerRunner(opts: {
           const free = await (h.freeBytes ?? statFreeBytes)(h.homesDir);
           // A sparse disk can grow to its full size: keep the floor even then.
           if (free - HOME_DISK_GIB * 1024 ** 3 < HOME_FREE_FLOOR_BYTES) throw new RunnerError('boot_failed', 'no disk');
-          await mkdir(dir, { recursive: true });
+          madeDir = (await mkdir(dir, { recursive: true })) !== undefined;
+          madeDisk = true;
           await createDisk(h.tools, disk, HOME_DISK_GIB);
         }
         await ensureVolume(exec, volumeName(homeId), disk);
+        // docker create needs the bind source to exist.
+        await mkdir(join(dir, 'charter'), { recursive: true });
       } catch (e) {
-        if (e instanceof HomeError) throw new RunnerError('boot_failed', e.message);
-        throw e;
+        // An unformatted image would pass the next call's exists check and never get mkfs.
+        if (madeDisk) {
+          await removeVolume(exec, volumeName(homeId));
+          await rm(madeDir ? dir : disk, { recursive: true, force: true });
+        }
+        if (e instanceof RunnerError) throw e;
+        throw new RunnerError('boot_failed', e instanceof Error ? e.message : String(e));
       }
-      // docker create needs the bind source to exist.
-      await mkdir(join(dir, 'charter'), { recursive: true });
+      if (!existing) h.homes.put(rec);
       return rec;
     },
 
@@ -354,16 +362,20 @@ export function dockerRunner(opts: {
     async removeHome(homeId) {
       const h = needHome();
       checkHomeId(homeId);
+      // First, so anon never serves a conf whose directory is gone.
+      await retireHiddenService(h.anon, homeId);
       await removeVolume(exec, volumeName(homeId));
       await rm(join(h.homesDir, homeId), { recursive: true, force: true });
       h.homes.delete(homeId);
     },
 
     async writePaidThrough(homeId, paidThrough) {
+      if (!Number.isFinite(paidThrough)) throw new RunnerError('bad_input', 'paidThrough');
       const dir = join(needHome().homesDir, checkHomeId(homeId), 'charter');
       await mkdir(dir, { recursive: true });
       const file = join(dir, 'paid-through');
-      const tmp = `${file}.tmp-${process.pid}`;
+      // Unique per call, so two writes in flight never share a temp file.
+      const tmp = `${file}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
       // The box polls this file: it must never see a half-written number.
       await writeFile(tmp, `${Math.floor(paidThrough)}\n`);
       await rename(tmp, file);

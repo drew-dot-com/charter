@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdtemp, mkdir, readFile, writeFile, stat, symlink } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readdir, readFile, writeFile, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Exec } from '../exec.js';
@@ -300,7 +300,7 @@ const HOME_ID = homeIdOf(KEYS);
 const HOME = homeJob(KEYS);
 const GIB = 1024 ** 3;
 
-async function homeSetup(free = 10 * GIB) {
+async function homeSetup(free = 10 * GIB, mkfsCode: () => number = () => 0) {
   const root = await mkdtemp(join(tmpdir(), 'charter-home-'));
   const homesDir = join(root, 'homes');
   const kills: Array<[number, string]> = [];
@@ -333,7 +333,8 @@ async function homeSetup(free = 10 * GIB) {
       },
       mkfs: async (args) => {
         tools.push(`mkfs ${args.join(' ')}`);
-        return { code: 0, stdout: '', stderr: '' };
+        const code = mkfsCode();
+        return { code, stdout: '', stderr: code === 0 ? '' : 'mkfs: bad superblock' };
       },
     },
     offerJson: '{"price":"7000"}',
@@ -431,6 +432,38 @@ test('ensureHome makes the disk and volume once and refuses a new disk under the
     (e: unknown) => e instanceof RunnerError && e.code === 'boot_failed' && e.message.includes('no disk'),
   );
   assert.deepEqual(low.tools, []);
+  assert.equal(low.homes.get(HOME_ID), undefined);
+  // The refusal reserved no port: the next new home still gets the first one.
+  low.home.freeBytes = async () => 10 * GIB;
+  assert.equal((await low.r.ensureHome(other)).port, 22000);
+});
+
+test('ensureHome cleans up after a failed mkfs, so the next call formats a fresh disk', async () => {
+  let n = 0;
+  const t = await homeSetup(10 * GIB, () => (n++ === 0 ? 1 : 0));
+  const disk = join(t.homesDir, HOME_ID, 'disk.img');
+  await assert.rejects(
+    t.r.ensureHome(HOME_ID),
+    (e: unknown) => e instanceof RunnerError && e.code === 'boot_failed' && e.message.includes('bad superblock'),
+  );
+  assert.equal(t.homes.get(HOME_ID), undefined);
+  await assert.rejects(access(join(t.homesDir, HOME_ID)));
+  t.tools.length = 0;
+  await t.r.ensureHome(HOME_ID);
+  assert.deepEqual(t.tools, [`truncate -s 2G ${disk}`, `mkfs -F -q -m 0 ${disk}`]);
+  assert.ok(t.homes.get(HOME_ID));
+});
+
+test('ensureHome wraps a filesystem failure as boot_failed', async () => {
+  const t = await homeSetup();
+  t.home.freeBytes = async () => {
+    throw new Error('statfs: EIO');
+  };
+  await assert.rejects(
+    t.r.ensureHome(HOME_ID),
+    (e: unknown) => e instanceof RunnerError && e.code === 'boot_failed' && e.message.includes('EIO'),
+  );
+  assert.equal(t.homes.get(HOME_ID), undefined);
 });
 
 test('ensureHome wraps a volume failure as boot_failed', async () => {
@@ -468,14 +501,19 @@ test('homeAccess is null until the hostname exists', async () => {
   assert.deepEqual(await t.r.homeAccess(HOME_ID), { ssh: { host, port: 22, user: 'tenant' } });
 });
 
-test('removeHome removes the volume, the directory and the record', async () => {
+test('removeHome retires the onion, removes the volume, the directory and the record, and is idempotent', async () => {
   const t = await homeSetup();
   await t.r.ensureHome(HOME_ID);
+  await t.r.publishHome(HOME_ID);
   t.calls.length = 0;
+  t.kills.length = 0;
   await t.r.removeHome(HOME_ID);
+  await assert.rejects(access(join(t.home.anon.hsDir, `${HOME_ID}.conf`)));
+  assert.deepEqual(t.kills, [[4242, 'SIGHUP']]);
   assert.deepEqual(t.calls.map((c) => c.args.join(' ')), [`volume rm -f charter-home-${HOME_ID}`]);
   await assert.rejects(access(join(t.homesDir, HOME_ID)));
   assert.equal(t.homes.get(HOME_ID), undefined);
+  await t.r.removeHome(HOME_ID);
 });
 
 test('writePaidThrough writes the epoch ms where the box reads it', async () => {
@@ -486,6 +524,17 @@ test('writePaidThrough writes the epoch ms where the box reads it', async () => 
   assert.equal(await readFile(file, 'utf8'), '1700000123456\n');
   await t.r.writePaidThrough(HOME_ID, 1_700_000_999_999);
   assert.equal(await readFile(file, 'utf8'), '1700000999999\n');
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
+    await assert.rejects(
+      t.r.writePaidThrough(HOME_ID, bad),
+      (e: unknown) => e instanceof RunnerError && e.code === 'bad_input',
+    );
+  }
+  assert.equal(await readFile(file, 'utf8'), '1700000999999\n');
+  // Two writes at once each use their own temp file; the last rename wins and nothing is left over.
+  await Promise.all([t.r.writePaidThrough(HOME_ID, 1), t.r.writePaidThrough(HOME_ID, 2)]);
+  assert.match(await readFile(file, 'utf8'), /^[12]\n$/);
+  assert.deepEqual(await readdir(join(t.homesDir, HOME_ID, 'charter')), ['paid-through']);
 });
 
 test('home operations refuse an id that is not a home id', async () => {
