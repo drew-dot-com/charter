@@ -187,7 +187,7 @@ const KEY_B = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGx1bWFueXJhbmRvbWJ5dGVzMTIzN
 const HOME: Offer = { ...OFFER, images: ['charter-job-fetch', 'charter-home'] };
 const ONION = 'a'.repeat(56) + '.anyone';
 
-/** A host for a home: it never finishes, and its status shows how to reach the box. */
+/** A host for a home: it never finishes, its status shows how to reach the box, and it orders ticks like onTick. */
 function homeHost(clock: { t: number }) {
   const opens: unknown[] = [];
   const ticks: number[] = [];
@@ -201,7 +201,10 @@ function homeHost(clock: { t: number }) {
         return { status: 200, body: { leaseId: 'b'.repeat(32), state: 'awaiting_first_tick' }, paid: o.amount };
       }
       if (app === 'charter-tick') {
-        ticks.push((req.body as { index: number }).index);
+        const index = (req.body as { index: number }).index;
+        ticks.push(index);
+        if (index < paidIntervals) return { status: 200, body: { paidIntervals, paidThrough, duplicate: true }, paid: o.amount };
+        if (index > paidIntervals) return { status: 409, body: { error: 'out_of_order' }, paid: o.amount };
         paidIntervals++;
         paidThrough = Math.max(paidThrough, clock.t) + 30_000;
         return { status: 200, body: { paidIntervals, paidThrough, duplicate: false }, paid: o.amount };
@@ -263,7 +266,7 @@ test('renew attaches to a lease and pays from --from', async () => {
   assert.equal(j.state, 'running');
   assert.equal(j.paidIntervals, 3);
 
-  for (const bad of [['--from', '-1'], ['--from', 'x'], []]) {
+  for (const bad of [['--from', '-1'], ['--from', 'x']]) {
     const u = await homeCli(['renew', '--offer', 'o1', '--lease', 'b'.repeat(32), '--max-intervals', '2', ...bad], BOX);
     assert.equal(u.code, 2, JSON.stringify(bad));
     assert.match(u.err, /--from/);
@@ -271,6 +274,28 @@ test('renew attaches to a lease and pays from --from', async () => {
   const other = await homeCli(['renew', '--offer', `${'ee'.repeat(32)}:o1`, '--lease', 'b'.repeat(32), '--from', '1', '--max-intervals', '2'], BOX);
   assert.equal(other.code, 1);
   assert.deepEqual(other.h.ticks, []);
+});
+
+test('renew --from too high pays nothing and exits 2, naming both numbers', async () => {
+  for (const from of ['2', '0']) {
+    const r = await homeCli(['renew', '--offer', 'o1', '--lease', 'b'.repeat(32), '--from', from, '--max-intervals', '3'], BOX, (h) => h.setPaid(1));
+    assert.equal(r.code, 2, r.err);
+    assert.deepEqual(r.h.ticks, []);
+    assert.match(r.err, new RegExp(`--from ${from} .* 1`));
+  }
+});
+
+test('renew without --from pays from the host count', async () => {
+  const r = await homeCli(['renew', '--offer', 'o1', '--lease', 'b'.repeat(32), '--max-intervals', '3'], BOX, (h) => h.setPaid(4));
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(r.h.ticks, [4, 5, 6]);
+});
+
+test('renew --from equal to the host count pays exactly --max-intervals ticks', async () => {
+  const r = await homeCli(['renew', '--offer', 'o1', '--lease', 'b'.repeat(32), '--from', '3', '--max-intervals', '4', '--json'], BOX, (h) => h.setPaid(3));
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(r.h.ticks, [3, 4, 5, 6]);
+  assert.equal(JSON.parse(r.out).paidIntervals, 7);
 });
 
 test('CHARTER_OFFER_JSON replaces the relay read', async () => {
@@ -281,6 +306,10 @@ test('CHARTER_OFFER_JSON replaces the relay read', async () => {
   const leaseId = JSON.parse(r.out).leaseId;
   const s = await homeCli(['status', 'o1', leaseId], BOX);
   assert.equal(s.code, 0, s.err);
+  assert.doesNotMatch(s.err, /--relay/);
+  const relayed = await homeCli(['status', 'o1', leaseId, '--relay', 'wss://r'], BOX);
+  assert.equal(relayed.code, 0, relayed.err);
+  assert.match(relayed.err, /CHARTER_OFFER_JSON; --relay is ignored/);
   const wrong = await homeCli(['status', 'o2', leaseId], BOX);
   assert.equal(wrong.code, 1);
   assert.match(wrong.err, /o2/);
@@ -306,6 +335,11 @@ test('CHARTER_PAYER=toon-client builds the client payer from env', async () => {
   // The node's own connector wins over the box's when both are set.
   const own = await cli(['status', 'o1', 'a'.repeat(32), '--relay', 'wss://r'], { ...env, CHARTER_TOON_CONNECTOR_URL: 'https://own.example' }, { makePayer: undefined });
   assert.equal(own.clientConfigs[0]!.connectorUrl, 'https://own.example');
+  const blank = await cli(['status', 'o1', 'a'.repeat(32), '--relay', 'wss://r'], { ...env, CHARTER_CONNECTOR_URL: '  ' }, { makePayer: undefined });
+  assert.equal(blank.code, 1);
+  assert.match(blank.err, /CHARTER_TOON_CONNECTOR_URL or CHARTER_CONNECTOR_URL is required/);
+  const padded = await cli(['status', 'o1', 'a'.repeat(32), '--relay', 'wss://r'], { ...env, CHARTER_CONNECTOR_URL: ' https://box-connector.example\n' }, { makePayer: undefined });
+  assert.equal(padded.clientConfigs[0]!.connectorUrl, 'https://box-connector.example');
   const missing = await cli(['status', 'o1', 'a'.repeat(32), '--relay', 'wss://r'], { ...env, CHARTER_TOON_KEY_FILE: '' }, { makePayer: undefined });
   assert.equal(missing.code, 1);
   assert.match(missing.err, /CHARTER_TOON_KEY_FILE is required/);

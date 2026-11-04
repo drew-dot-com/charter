@@ -48,7 +48,8 @@ export async function runLease(api: HostApi, o: Offer, job: JobSpec, opts: RunLe
     return { lease, spent: api.spent() - spent0, ...(opened.error ? { error: opened.error } : {}) };
   }
   emit({ kind: 'opened', leaseId: opened.leaseId });
-  const r = await continueLease(api, o, opened.leaseId, { ...opts, from: 0 });
+  // This tenant just opened the lease, so tick 0 is next and no read is needed first.
+  const r = await payLease(api, o, opened.leaseId, opts, false);
   return { ...r, spent: api.spent() - spent0 };
 }
 
@@ -56,14 +57,30 @@ function checkMaxIntervals(n: number): void {
   if (!Number.isSafeInteger(n) || n < 1) throw new Error('maxIntervals must be a positive integer');
 }
 
+/** The tick index a caller expected is not the host's count of paid ticks. No tick was paid. */
+export class FromMismatchError extends Error {
+  constructor(
+    readonly from: number,
+    readonly hostPaidIntervals: number,
+  ) {
+    super(`--from ${from} does not match the host's paid intervals ${hostPaidIntervals}; no tick was paid`);
+    this.name = 'FromMismatchError';
+  }
+}
+
 /**
- * Pay an open lease from tick `from` on, the same loop as after an open: up to `maxIntervals` more ticks,
- * until the job finishes or the lease closes. With `from` above 0 someone else paid the ticks before, so
- * the lease is read first and the paid time is seeded from the host's `paidThrough`.
+ * Pay an open lease someone may have paid before, with the loop runLease runs after its open: up to
+ * `maxIntervals` more ticks, until the job finishes or the lease closes. The lease is read first and the
+ * next tick index is the host's `paidIntervals`: a guessed index would buy duplicates (too low) or a paid
+ * 409 (too high). A `from` that differs from the host's count throws FromMismatchError before any tick.
  */
-export async function continueLease(api: HostApi, o: Offer, leaseId: string, opts: RunLeaseOpts & { from: number }): Promise<RunLeaseResult> {
+export async function continueLease(api: HostApi, o: Offer, leaseId: string, opts: RunLeaseOpts & { from?: number }): Promise<RunLeaseResult> {
+  return payLease(api, o, leaseId, opts, true);
+}
+
+async function payLease(api: HostApi, o: Offer, leaseId: string, opts: RunLeaseOpts & { from?: number }, attach: boolean): Promise<RunLeaseResult> {
   checkMaxIntervals(opts.maxIntervals);
-  if (!Number.isSafeInteger(opts.from) || opts.from < 0) throw new Error('from must be a non-negative integer');
+  if (opts.from !== undefined && (!Number.isSafeInteger(opts.from) || opts.from < 0)) throw new Error('from must be a non-negative integer');
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const emit = opts.onEvent ?? (() => undefined);
@@ -96,17 +113,20 @@ export async function continueLease(api: HostApi, o: Offer, leaseId: string, opt
 
   /**
    * Local (tenant clock) estimate of when the paid time runs out, counted from when a tick was SENT:
-   * the host's clock runs while the packet travels. Taken from the host only when continuing a lease
+   * the host's clock runs while the packet travels. Taken from the host only when attaching to a lease
    * this tenant did not pay before, as it has no send time of its own for those ticks.
    */
   let paidUntil: number | undefined;
-  /** The next tick index. Ticks sent since `from`, whatever the host reports, are the spend cap. */
-  let ticksSent = opts.from;
-  if (opts.from > 0) {
+  /** The next tick index. Ticks sent since `start`, whatever the host reports, are the spend cap. */
+  let ticksSent = 0;
+  if (attach) {
     const s = await settle();
     if (s.finished) return result(s.lease, s.output ? { output: s.output } : {});
+    if (opts.from !== undefined && opts.from !== s.lease.paidIntervals) throw new FromMismatchError(opts.from, s.lease.paidIntervals);
+    ticksSent = s.lease.paidIntervals;
     paidUntil = s.lease.paidThrough;
   }
+  const start = ticksSent;
 
   /** Pay the next tick. A 409 means the lease is no longer running: read it, never retry the tick. */
   const pay = async (): Promise<{ ended: RunLeaseResult } | { hostPaidThrough: boolean }> => {
@@ -155,7 +175,7 @@ export async function continueLease(api: HostApi, o: Offer, leaseId: string, opt
     }
     const s = await watchUntil(paidUntil! - leadMs);
     if (s.finished) return result(s.lease, s.output ? { output: s.output } : {});
-    if (ticksSent - opts.from >= opts.maxIntervals) {
+    if (ticksSent - start >= opts.maxIntervals) {
       // No more ticks, but the last interval is paid for: watch it out, to its end.
       const last = await watchUntil(paidUntil!);
       if (!last.finished) emit({ kind: 'stopped', reason: 'max_intervals' });

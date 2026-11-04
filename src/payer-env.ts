@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import type { ToonClientPayerConfig } from './payer.js';
 
-function need(env: Record<string, string | undefined>, name: string): string {
+/** The trimmed value of `name`, which must be set and not blank. */
+export function need(env: Record<string, string | undefined>, name: string): string {
   const v = env[name]?.trim();
   if (!v) throw new Error(`${name} is required`);
   return v;

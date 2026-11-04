@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { HostError, hostApi, type HostApi } from './host-api.js';
-import { continueLease, runLease, type LeaseEvent } from './run-lease.js';
+import { continueLease, FromMismatchError, runLease, type LeaseEvent } from './run-lease.js';
 import { exitJob, HOURLY, OFFER, testHost } from './test-host.js';
 import type { JobSpec } from '../types.js';
 
@@ -346,4 +346,41 @@ test('continueLease pays from the given index and stops at max-intervals without
   assert.equal(r.lease.paidIntervals, 4);
   // The paid time is seeded from the host's paidThrough: the last read is at its end, 20 s + 2 intervals out.
   assert.equal(t, 1_000_000 + 20_000 + 2 * 30_000);
+});
+
+/** A host fake that orders ticks like onTick: a duplicate below its count, a 409 out_of_order above it. */
+function orderedHost(paid: number, clock: { t: number }) {
+  const ticks: number[] = [];
+  let paidIntervals = paid;
+  let paidThrough = clock.t + 20_000;
+  const api: HostApi = {
+    open: async () => { throw new Error('open must not be called'); },
+    tick: async (_id, index) => {
+      ticks.push(index);
+      if (index < paidIntervals) return { paidIntervals, paidThrough, duplicate: true };
+      if (index > paidIntervals) throw new HostError(409, 'out_of_order');
+      paidIntervals++;
+      paidThrough = Math.max(paidThrough, clock.t) + 30_000;
+      return { paidIntervals, paidThrough, duplicate: false };
+    },
+    status: async (id) => ({ id, offerId: OFFER.id, job: JOB, state: 'running', createdAt: 0, paidIntervals, paidThrough }),
+    output: async () => Buffer.alloc(0),
+    outputPart: async () => { throw new Error('no output'); },
+    spent: () => 0n,
+  };
+  return { api, ticks };
+}
+
+test('continueLease reads the host count first: no from pays from it, a wrong from pays no tick', async () => {
+  const clock = { t: 1_000_000 };
+  const opts = { maxIntervals: 2, now: () => clock.t, sleep: async (ms: number) => void (clock.t += ms) };
+  const a = orderedHost(5, clock);
+  const r = await continueLease(a.api, OFFER, 'a'.repeat(32), opts);
+  assert.deepEqual(a.ticks, [5, 6]);
+  assert.equal(r.lease.paidIntervals, 7);
+  for (const from of [0, 4, 6]) {
+    const b = orderedHost(5, clock);
+    await assert.rejects(continueLease(b.api, OFFER, 'a'.repeat(32), { ...opts, from }), (e: unknown) => e instanceof FromMismatchError && e.hostPaidIntervals === 5 && e.from === from);
+    assert.deepEqual(b.ticks, []);
+  }
 });

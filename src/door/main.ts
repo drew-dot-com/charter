@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ToonClientPayer, serialized } from '../payer.js';
-import { toonClientConfigFromEnv } from '../payer-env.js';
+import { need, toonClientConfigFromEnv } from '../payer-env.js';
 import { hostApi } from '../tenant/host-api.js';
 import { fetchOffers } from '../tenant/offers.js';
 import { BatchSettlementChannelManager } from '@x402/evm/batch-settlement/server';
@@ -13,12 +13,6 @@ import { DoorLedger, LEDGER_FILE } from './ledger.js';
 import { doorApp } from './server.js';
 import { BASE_USDC, buildSchemes, facilitatorOffersBatch, type Schemes, type X402Config } from './x402.js';
 import { unblockCommand } from './unblock.js';
-
-function need(env: NodeJS.ProcessEnv, name: string): string {
-  const v = env[name]?.trim();
-  if (!v) throw new Error(`${name} is required`);
-  return v;
-}
 
 /** The door's own TOON wallet, which pays hosts. */
 async function doorPayer(env: NodeJS.ProcessEnv): Promise<ToonClientPayer> {
