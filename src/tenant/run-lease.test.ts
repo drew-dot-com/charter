@@ -384,3 +384,49 @@ test('continueLease reads the host count first: no from pays from it, a wrong fr
     assert.deepEqual(b.ticks, []);
   }
 });
+
+test('continueLease waits until a tick is due: paid two intervals out, the first tick goes at paidThrough - lead', async () => {
+  const t0 = 1_000_000;
+  let t = t0;
+  const tickedAt: number[] = [];
+  let paidIntervals = 3;
+  let paidThrough = t0 + 2 * 30_000;
+  const api: HostApi = {
+    open: async () => { throw new Error('open must not be called'); },
+    tick: async () => {
+      tickedAt.push(t);
+      paidIntervals++;
+      paidThrough += 30_000;
+      return { paidIntervals, paidThrough, duplicate: false };
+    },
+    status: async (id) => ({ id, offerId: OFFER.id, job: JOB, state: 'running', createdAt: 0, paidIntervals, paidThrough }),
+    output: async () => Buffer.alloc(0),
+    outputPart: async () => { throw new Error('no output'); },
+    spent: () => 0n,
+  };
+  const r = await continueLease(api, OFFER, 'a'.repeat(32), { maxIntervals: 1, now: () => t, sleep: async (ms) => void (t += ms) });
+  // OFFER is 30 s, so the lead is 15 s: due at 60 s - 15 s = 45 s after attaching, not before.
+  assert.deepEqual(tickedAt, [t0 + 45_000]);
+  assert.equal(r.lease.paidIntervals, 4);
+});
+
+test('continueLease that sees the lease close while waiting for the tick to be due pays nothing', async () => {
+  let t = 1_000_000;
+  let ticks = 0;
+  let reads = 0;
+  const paidThrough = t + 2 * 30_000;
+  const api: HostApi = {
+    open: async () => { throw new Error('open must not be called'); },
+    tick: async () => { ticks++; return { paidIntervals: 4, paidThrough, duplicate: false }; },
+    status: async (id) => ({
+      id, offerId: OFFER.id, job: JOB, createdAt: 0, paidIntervals: 3, paidThrough,
+      ...(++reads > 1 ? { state: 'closed' as const, closedReason: 'missed_tick' as const } : { state: 'running' as const }),
+    }),
+    output: async () => Buffer.alloc(0),
+    outputPart: async () => { throw new Error('no output'); },
+    spent: () => 0n,
+  };
+  const r = await continueLease(api, OFFER, 'a'.repeat(32), { maxIntervals: 3, now: () => t, sleep: async (ms) => void (t += ms) });
+  assert.equal(ticks, 0);
+  assert.equal(r.lease.state, 'closed');
+});

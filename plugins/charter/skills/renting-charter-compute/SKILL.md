@@ -285,8 +285,8 @@ paying a lease that is already open (yours, or one opened from elsewhere):
 charter renew --offer <pubkey>:<d> --lease <leaseId> --max-intervals <n> --relay wss://relay.mainnet.toonprotocol.dev
 ```
 
-`renew` reads the lease, pays from the host's own count of paid ticks, and sends its first tick at
-once. `--from <index>` is optional; when given it must equal that count, or nothing is paid.
+`renew` reads the lease and pays from the host's own count of paid ticks, each tick when it is due
+(a lease paid ahead waits until then). `--from <index>` is optional; when given it must equal that count, or nothing is paid.
 `references/lease-loop.sh` also pays a home's ticks: since a home never reaches `done`, it runs
 until `<max-intervals>` ticks are paid and watched out, then exits 0. It never prints the address:
 read the lease (step 6) for it.
@@ -377,7 +377,7 @@ charter renew --offer <pubkey>:<d> --lease "$CHARTER_LEASE_ID" --max-intervals <
 ```
 
 `CHARTER_CONNECTOR_URL` and `CHARTER_OFFER_JSON` are set in the box, so no connector flag and no
-`--relay` are needed. Put the `renew` line in `boot.sh`. The wallet needs USDC in a channel to
+`--relay` are needed. `renew` pays each tick when it is due, so restarting `boot.sh` costs nothing extra. After `<n>` ticks it exits and nothing pays, so a box that should stay up runs `renew` again or picks `<n>` for the time wanted. Put the `renew` line in `boot.sh`. The wallet needs USDC in a channel to
 that connector plus a little Base ETH for the one on-chain channel open. 2 USDC runs the box
 about 10 days: 12 days of rent, less the status reads `renew` makes (about 8 an hour).
 

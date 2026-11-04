@@ -126,7 +126,7 @@ async function payLease(api: HostApi, o: Offer, leaseId: string, opts: RunLeaseO
     ticksSent = s.lease.paidIntervals;
     paidUntil = s.lease.paidThrough;
   }
-  const start = ticksSent;
+  let start = ticksSent;
 
   /** Pay the next tick. A 409 means the lease is no longer running: read it, never retry the tick. */
   const pay = async (): Promise<{ ended: RunLeaseResult } | { hostPaidThrough: boolean }> => {
@@ -163,6 +163,17 @@ async function payLease(api: HostApi, o: Offer, leaseId: string, opts: RunLeaseO
       gap *= 2;
     }
   };
+
+  while (attach && paidUntil !== undefined && paidUntil - leadMs > now()) {
+    // Paid ahead (a restarted boot.sh, say): pay only when the tick is due, so a re-run costs no extra
+    // tick. The wait reads the lease, so a close meanwhile ends it with nothing paid.
+    const w = await watchUntil(paidUntil - leadMs);
+    if (w.finished) return result(w.lease, w.output ? { output: w.output } : {});
+    // Someone else may have paid meanwhile: take the host's count again, so no tick is a duplicate.
+    if (w.lease.paidIntervals === ticksSent) break;
+    ticksSent = start = w.lease.paidIntervals;
+    paidUntil = w.lease.paidThrough;
+  }
 
   let p = await pay();
   for (;;) {

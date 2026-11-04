@@ -101,6 +101,8 @@ the offer are already set in the box as `CHARTER_CONNECTOR_URL` and `CHARTER_OFF
 charter renew --offer <pubkey>:<id> --lease "$CHARTER_LEASE_ID" --max-intervals <n>
 ```
 
+`renew` pays each tick when it is due, so restarting `boot.sh` costs nothing extra. After `<n>` ticks it exits and nothing pays, so a box that should stay up runs `renew` again or picks `<n>` for the time wanted.
+
 A home costs about 5 USDC for 30 days; a box that pays its own rent needs 2 USDC in its own channel and
 a little Base ETH for the one on-chain channel open. The whole of it, for agents, is
 https://charter.mainnet.toonprotocol.dev/agents#home.
