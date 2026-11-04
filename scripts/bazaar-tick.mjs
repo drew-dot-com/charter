@@ -67,7 +67,7 @@ if (dryRun) {
   const header = res.headers.get('payment-required');
   if (res.status === 402 && header) {
     const required = b64json(header);
-    log(`accepts ${required.accepts.map((a) => `${a.scheme} ${a.amount} on ${a.network}`).join('; ')}`);
+    log(`accepts ${required.accepts.map((a) => `${a.scheme} ${a.amount} on ${a.network}`).join('; ')} (this lease's own price snapshot, not the live offer above)`);
     log(`bazaar declaration ${required.extensions?.bazaar ? 'present' : 'MISSING'}; description: ${required.resource?.description ?? ''}`);
     log('an exact-only client would pick:', required.accepts.find((a) => a.scheme === 'exact') ? 'exact (one authorization, no deposit)' : 'nothing');
   } else {
