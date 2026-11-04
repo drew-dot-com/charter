@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Exec } from '../exec.js';
@@ -56,6 +56,31 @@ test('createDisk runs truncate then mkfs with the pinned flags', async () => {
   await assert.rejects(
     createDisk({ truncate: t.exec, mkfs: bad.exec }, '/h/disk.img', 2),
     (e: unknown) => e instanceof HomeError && e.code === 'mkfs_failed' && /no space/.test(e.message),
+  );
+});
+
+test('createDisk refuses an existing file and labels a truncate failure', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'charter-disk-'));
+  const ok = fake();
+  const existing = join(dir, 'disk.img');
+  await writeFile(existing, 'paid data');
+  await assert.rejects(
+    createDisk({ truncate: ok.exec, mkfs: ok.exec }, existing, 2),
+    (e: unknown) => e instanceof HomeError && e.code === 'disk_exists',
+  );
+  assert.equal(ok.calls.length, 0);
+  const bad = fake(() => ({ code: 1, stderr: 'eperm' }));
+  await assert.rejects(
+    createDisk({ truncate: bad.exec, mkfs: ok.exec }, join(dir, 'new.img'), 2),
+    (e: unknown) => e instanceof HomeError && e.code === 'mkfs_failed' && e.message === 'truncate: eperm',
+  );
+});
+
+test('ensureVolume throws volume_failed when create fails', async () => {
+  const f = fake(() => ({ code: 1, stderr: ' boom\n' }));
+  await assert.rejects(
+    ensureVolume(f.exec, 'v', '/h/disk.img'),
+    (e: unknown) => e instanceof HomeError && e.code === 'volume_failed' && e.message === 'boom',
   );
 });
 

@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { statfs } from 'node:fs/promises';
+import { access, statfs } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { Exec } from '../exec.js';
 
@@ -18,7 +18,7 @@ export const HOME_PORT_BASE = 22000;
 
 export class HomeError extends Error {
   constructor(
-    readonly code: 'mkfs_failed' | 'no_disk',
+    readonly code: 'mkfs_failed' | 'no_disk' | 'volume_failed' | 'disk_exists',
     message: string,
   ) {
     super(message);
@@ -94,8 +94,11 @@ export async function createDisk(
   file: string,
   gib: number,
 ): Promise<void> {
+  // Never touch an existing image: mkfs would wipe a paid home.
+  const exists = await access(file).then(() => true, () => false);
+  if (exists) throw new HomeError('disk_exists', file);
   const t = await tools.truncate(['-s', `${gib}G`, file], {});
-  if (t.code !== 0) throw new HomeError('mkfs_failed', t.stderr);
+  if (t.code !== 0) throw new HomeError('mkfs_failed', `truncate: ${t.stderr}`);
   const m = await tools.mkfs(['-F', '-q', '-m', '0', file], {});
   if (m.code !== 0) throw new HomeError('mkfs_failed', m.stderr);
 }
@@ -103,10 +106,11 @@ export async function createDisk(
 export async function ensureVolume(docker: Exec, name: string, file: string): Promise<void> {
   const r = await docker(['volume', 'inspect', name], {});
   if (r.code === 0) return;
-  await docker(
+  const c = await docker(
     ['volume', 'create', '--driver', 'local', '--opt', 'type=ext4', '--opt', `device=${file}`, '--opt', 'o=loop', name],
     {},
   );
+  if (c.code !== 0) throw new HomeError('volume_failed', c.stderr.trim());
 }
 
 export async function removeVolume(docker: Exec, name: string): Promise<void> {
