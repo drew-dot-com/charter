@@ -18,8 +18,8 @@ export const MAX_SSH_KEYS = 8;
 /** Longest single key line. Fits a 4096-bit RSA key and keeps the sealed packet small. */
 export const MAX_SSH_KEY_BYTES = 1024;
 
-// Types sshd's authorized_keys takes that a renter plausibly holds; ssh-dss is long dead.
-const SSH_KEY = /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) ([A-Za-z0-9+/]+={0,2})(?: [\x20-\x7e]*)?$/;
+// The key types a home takes; ssh-dss is long dead and security-key types are not supported.
+const SSH_KEY = /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)) ([A-Za-z0-9+/]+={0,2})(?: [\x20-\x7e]*)?$/;
 
 /**
  * The key set a home is for: `v` must be an array of 1 to MAX_SSH_KEYS authorized_keys lines. Each is cut to

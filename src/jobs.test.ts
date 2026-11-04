@@ -76,11 +76,16 @@ test('normalizeSshKeys: comment, order, CRLF and duplicates do not change the ke
 test('normalizeSshKeys refuses what the box must not take', () => {
   const ok = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGx1bWFueXJhbmRvbWJ5dGVzMTIzNDU2Nzg5MDEyMzQ1';
   for (const [why, v] of [
-    ['empty', []], ['nine', Array.from({ length: 9 }, (_, i) => ok.replace('5', String(i)))],
-    ['not an array', ok], ['a number', [5]], ['unknown type', ['ssh-dss AAAA']],
+    ['empty', []], ['nine', Array.from({ length: 9 }, (_, i) => `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGx1bWFueXJhbmRvbWJ5dGVzMTIzNDU2Nzg5MDEyMzQ${i}`)],
+    ['not an array', ok], ['a number', [5]], ['unknown type', ['ssh-dss AAAA']], ['a security-key type', ['sk-ssh-ed25519@openssh.com AAAAGnNr']],
     ['bad base64', ['ssh-ed25519 not*base64']], ['over 1024 bytes', ['ssh-rsa ' + 'A'.repeat(1100)]],
     ['a NUL', [ok + '\0']], ['a newline inside', ['ssh-ed25519 AAAA\nssh-ed25519 BBBB']],
   ] as const) assert.equal(normalizeSshKeys(v as unknown), null, why);
+});
+
+test('normalizeSshKeys takes ecdsa-sha2-nistp256', () => {
+  const k = 'ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTY=';
+  assert.deepEqual(normalizeSshKeys([k + ' me']), [k]);
 });
 
 test('jobFromBody: { home: { sshKeys } } is a home job and excludes the other two', () => {
