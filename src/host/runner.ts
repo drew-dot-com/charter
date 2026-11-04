@@ -47,6 +47,12 @@ export interface JobProfile {
   flags: string[];
 }
 
+/**
+ * The python wrapper kills a script after CHARTER_WALL_SECONDS (its own default is 600 s, built for 30 s
+ * intervals). The paid time ends the job now, so the host sets the cap far past any lease: 30 days.
+ */
+export const PYTHON_WALL_SECONDS = 2_592_000;
+
 export const JOB_PROFILES: Record<string, JobProfile> = {
   [FETCH_IMAGE]: { args: ['URLS'], maxArgBytes: 16 * 1024, network: 'proxy', flags: ['--tmpfs', '/tmp'] },
   [PYTHON_IMAGE]: {
@@ -54,7 +60,7 @@ export const JOB_PROFILES: Record<string, JobProfile> = {
     maxArgBytes: MAX_SCRIPT_BYTES,
     // Renter code: no network, so it can reach no one, and nothing it writes can outgrow the caps.
     network: 'none',
-    flags: ['--tmpfs', '/tmp:size=64m', '--memory-swap', '1g', '--ulimit', 'fsize=8388608'],
+    flags: ['--tmpfs', '/tmp:size=64m', '--memory-swap', '1g', '--ulimit', 'fsize=8388608', '-e', `CHARTER_WALL_SECONDS=${PYTHON_WALL_SECONDS}`],
   },
 };
 

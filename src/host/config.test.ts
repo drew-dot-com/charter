@@ -18,8 +18,8 @@ const ENV = {
 test('loadConfig applies the v1 defaults', () => {
   const c = loadConfig(ENV);
   assert.deepEqual(c.ports, { open: 7401, tick: 7402, status: 7403 });
-  assert.equal(c.offer.intervalSeconds, 30);
-  assert.equal(c.offer.tickPrice, 5000n);
+  assert.equal(c.offer.intervalSeconds, 3600);
+  assert.equal(c.offer.tickPrice, 7000n);
   assert.equal(c.offer.openPrice, 1000n);
   assert.equal(c.offer.statusPrice, 100n);
   assert.equal(c.offer.hiddenHost, false);

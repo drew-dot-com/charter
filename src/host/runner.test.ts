@@ -184,6 +184,15 @@ test('the python job keeps the v1 limits and adds a capped /tmp, no swap and a p
   has('--security-opt', 'no-new-privileges');
   has('--tmpfs', '/tmp:size=64m');
   has('--ulimit', 'fsize=8388608');
+  // The wrapper's own 600 s cap was built for 30 s intervals; the paid time ends the job now.
+  has('-e', 'CHARTER_WALL_SECONDS=2592000');
+});
+
+test('the fetch job gets no wall cap variable', async () => {
+  const { exec, calls } = fake();
+  const r = dockerRunner({ exec, outRoot: await outRoot(), allow: ['charter-job-fetch'] });
+  await r.create('l1', JOB);
+  assert.ok(!calls[0]!.args.some((x) => x.startsWith('CHARTER_WALL_SECONDS')));
 });
 
 test('the fetch job keeps its v1 network: no --network flag, the proxy handed in', async () => {

@@ -83,9 +83,10 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
       sealUrl,
       cpu: num(env, 'CHARTER_CPU', 1),
       memoryMiB: num(env, 'CHARTER_MEMORY_MIB', 1024),
-      intervalSeconds: num(env, 'CHARTER_INTERVAL_SECONDS', 30),
+      // One hour at 0.007 USDC: about 5 USDC for 30 days, the price a model weighs against a 5 EUR VPS.
+      intervalSeconds: num(env, 'CHARTER_INTERVAL_SECONDS', 3600),
       firstTickGraceSeconds: FIRST_TICK_GRACE_MS / 1000,
-      tickPrice: price(env, 'CHARTER_TICK_PRICE', 5000n),
+      tickPrice: price(env, 'CHARTER_TICK_PRICE', 7000n),
       openPrice: price(env, 'CHARTER_OPEN_PRICE', 1000n),
       statusPrice: price(env, 'CHARTER_STATUS_PRICE', 100n),
       images: allowImages,
