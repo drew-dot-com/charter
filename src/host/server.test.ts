@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import type { Express } from 'express';
+import { homeIdOf, homeJob, normalizeSshKeys } from '../jobs.js';
 import { onJobExit } from '../lease.js';
 import type { JobSpec, Offer } from '../types.js';
 import { RunnerError, type Runner } from './runner.js';
@@ -36,10 +37,14 @@ function fakeRunner(over: Partial<Runner> = {}) {
   return { r, calls };
 }
 
-async function setup(over: Partial<Runner> = {}, maxLeases?: number) {
+async function setup(over: Partial<Runner> = {}, maxLeases?: number, maxHomes?: number) {
   const store = new LeaseStore();
   const { r, calls } = fakeRunner(over);
-  const apps = hostApps({ store, runner: r, offer: OFFER, now: () => T0, ...(maxLeases === undefined ? {} : { maxLeases }) });
+  const apps = hostApps({
+    store, runner: r, offer: OFFER, now: () => T0, log: () => undefined,
+    ...(maxLeases === undefined ? {} : { maxLeases }),
+    ...(maxHomes === undefined ? {} : { maxHomes }),
+  });
   const servers: Array<import('node:http').Server> = [];
   const base = async (app: Express) => {
     const s = app.listen(0, '127.0.0.1');
@@ -378,6 +383,150 @@ test('request bodies parse as JSON whatever the content-type says', async () => 
     });
     assert.equal(res.status, 200);
     assert.equal(((await res.json()) as any).paidIntervals, 1);
+  } finally {
+    t.done();
+  }
+});
+
+const KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGx1bWFueXJhbmRvbWJ5dGVzMTIzNDU2Nzg5MDEyMzQ1 edison@air';
+const KEY2 = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGx1bWFueXJhbmRvbWJ5dGVzMTIzNDU2Nzg5MDEyMzQ2 other@box';
+const HOME = homeJob(normalizeSshKeys([KEY])!);
+const HOME_ID = homeIdOf(normalizeSshKeys([KEY])!);
+
+/** Records the home calls in the same list as create/start/stop, so their order shows. */
+function homeRunner(calls: string[], over: Partial<Runner> = {}): Partial<Runner> {
+  return {
+    ensureHome: async (homeId) => {
+      calls.push(`ensureHome ${homeId}`);
+      return { homeId, port: 2222, createdAt: T0, paidOnce: false };
+    },
+    publishHome: async (homeId) => void calls.push(`publishHome ${homeId}`),
+    writePaidThrough: async (homeId, ms) => void calls.push(`writePaidThrough ${homeId} ${ms}`),
+    ...over,
+  };
+}
+
+test('open for a home refuses bad keys, a full house and a home already in use', async () => {
+  const calls: string[] = [];
+  const t = await setup(homeRunner(calls), 5, 1);
+  try {
+    for (const args of [{}, { SSH_KEYS: '' }, { SSH_KEYS: 'ssh-dss AAAA' }]) {
+      const r = await t.post(t.urls.open, '/open', { job: { image: 'charter-home', args } });
+      assert.equal(r.status, 400, JSON.stringify(args));
+      assert.equal(r.body.error, 'bad_request');
+    }
+    assert.deepEqual(t.store.all(), []);
+
+    const first = await t.post(t.urls.open, '/open', { job: HOME });
+    assert.equal(first.body.state, 'awaiting_first_tick');
+    const full = await t.post(t.urls.open, '/open', { job: homeJob(normalizeSshKeys([KEY2])!) });
+    assert.deepEqual(full.body, { leaseId: full.body.leaseId, state: 'closed', closedReason: 'busy' });
+    assert.equal(t.store.get(full.body.leaseId)!.closedReason, 'busy');
+  } finally {
+    t.done();
+  }
+
+  const calls2: string[] = [];
+  const u = await setup(homeRunner(calls2), 5, 2);
+  try {
+    const first = await u.post(u.urls.open, '/open', { job: HOME });
+    calls2.length = 0;
+    const same = await u.post(u.urls.open, '/open', { job: HOME });
+    assert.deepEqual(same.body, { leaseId: same.body.leaseId, state: 'closed', closedReason: 'home_in_use' });
+    assert.notEqual(same.body.leaseId, first.body.leaseId);
+    assert.equal(u.store.get(same.body.leaseId)!.closedReason, 'home_in_use');
+    assert.deepEqual(calls2, [], 'no disk and no container for a home in use');
+  } finally {
+    u.done();
+  }
+});
+
+test('open for a home makes the disk before the container, and a no-disk refusal is a boot failure', async () => {
+  const calls: string[] = [];
+  const t = await setup(homeRunner(calls, { create: async (id) => void calls.push(`create ${id}`) }), 5, 1);
+  try {
+    const r = await t.post(t.urls.open, '/open', { job: HOME });
+    assert.equal(r.body.state, 'awaiting_first_tick');
+    assert.deepEqual(calls, [`ensureHome ${HOME_ID}`, `create ${r.body.leaseId}`]);
+  } finally {
+    t.done();
+  }
+
+  const calls2: string[] = [];
+  const u = await setup(
+    homeRunner(calls2, {
+      ensureHome: async () => { throw new RunnerError('boot_failed', 'no disk'); },
+      create: async (id) => void calls2.push(`create ${id}`),
+    }),
+    5, 1,
+  );
+  try {
+    const r = await u.post(u.urls.open, '/open', { job: HOME });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { leaseId: r.body.leaseId, state: 'closed', closedReason: 'boot_failed', error: 'boot_failed' });
+    assert.equal(u.store.get(r.body.leaseId)!.closedReason, 'boot_failed');
+    assert.ok(!calls2.some((c) => c.startsWith('create')), 'no container without a disk');
+  } finally {
+    u.done();
+  }
+});
+
+test('tick 0 on a home starts the box, publishes its onion and writes the paid time; tick 1 writes it again', async () => {
+  const calls: string[] = [];
+  const t = await setup(homeRunner(calls, { start: async (id) => void calls.push(`start ${id}`) }), 5, 1);
+  try {
+    const leaseId = (await t.post(t.urls.open, '/open', { job: HOME })).body.leaseId as string;
+    calls.length = 0;
+    const r0 = await t.post(t.urls.tick, '/tick', { leaseId, index: 0 });
+    assert.equal(r0.status, 200);
+    assert.deepEqual(calls, [`writePaidThrough ${HOME_ID} ${T0 + 30_000}`, `start ${leaseId}`, `publishHome ${HOME_ID}`]);
+    assert.equal((await t.post(t.urls.tick, '/tick', { leaseId, index: 0 })).body.duplicate, true);
+    const r1 = await t.post(t.urls.tick, '/tick', { leaseId, index: 1 });
+    assert.equal(r1.status, 200);
+    assert.equal(calls.filter((c) => c.startsWith('publishHome')).length, 1);
+    assert.deepEqual(calls.filter((c) => c.startsWith('writePaidThrough')), [
+      `writePaidThrough ${HOME_ID} ${T0 + 30_000}`,
+      `writePaidThrough ${HOME_ID} ${T0 + 60_000}`,
+    ]);
+
+    // The status call answers the stored lease, home fields included.
+    const s = await t.get(t.urls.status, `/leases/${leaseId}`);
+    assert.equal(s.body.lease.homeId, HOME_ID);
+    assert.equal(s.body.lease.restarts, 0);
+    assert.deepEqual(s.body.lease, JSON.parse(JSON.stringify(t.store.get(leaseId))));
+  } finally {
+    t.done();
+  }
+});
+
+test('a failed publish or paid-time write on a home tick is logged and the tick still answers 200', async () => {
+  const calls: string[] = [];
+  const t = await setup(
+    homeRunner(calls, {
+      publishHome: async () => { throw new Error('tor down'); },
+      writePaidThrough: async () => { throw new Error('disk full'); },
+    }),
+    5, 1,
+  );
+  try {
+    const leaseId = (await t.post(t.urls.open, '/open', { job: HOME })).body.leaseId as string;
+    const r = await t.post(t.urls.tick, '/tick', { leaseId, index: 0 });
+    assert.equal(r.status, 200);
+    assert.equal(t.store.get(leaseId)!.state, 'running');
+    assert.equal(t.store.get(leaseId)!.startedAt, T0);
+  } finally {
+    t.done();
+  }
+});
+
+test('a home counts inside maxLeases', async () => {
+  const calls: string[] = [];
+  const t = await setup(homeRunner(calls), 1, 1);
+  try {
+    assert.equal((await t.post(t.urls.open, '/open', { job: HOME })).body.state, 'awaiting_first_tick');
+    const r = await t.post(t.urls.open, '/open', { job: { image: 'charter-job-python', args: { SCRIPT: 'print(1)' } } });
+    assert.equal(r.body.state, 'closed');
+    assert.equal(r.body.closedReason, 'busy');
   } finally {
     t.done();
   }

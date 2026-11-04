@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import express from 'express';
-import { LeaseError, newLease, onBootFailed, onBooted, onTick } from '../lease.js';
-import type { JobSpec, Offer } from '../types.js';
+import { normalizeSshKeys } from '../jobs.js';
+import { isHome, LeaseError, newLease, onBootFailed, onBooted, onTick } from '../lease.js';
+import type { CloseReason, JobSpec, Lease, Offer } from '../types.js';
 import { RunnerError, type Runner } from './runner.js';
 import type { LeaseStore } from './store.js';
 
@@ -12,6 +13,9 @@ export interface HostDeps {
   now: () => number;
   /** Live leases (booting, awaiting the first tick, running) at once. Default 1. */
   maxLeases?: number;
+  /** Live home leases at once, inside maxLeases. Default 0: no homes. */
+  maxHomes?: number;
+  log?: (msg: string) => void;
 }
 
 /** Size of one output slice a status call returns. */
@@ -68,21 +72,35 @@ export function hostApps(deps: HostDeps): { open: express.Express; tick: express
   const { store, runner, offer, now } = deps;
   const intervalMs = offer.intervalSeconds * 1000;
   const maxLeases = deps.maxLeases ?? 1;
-  const live = (): number =>
-    store.all().filter((l) => l.state === 'booting' || l.state === 'awaiting_first_tick' || l.state === 'running').length;
+  const maxHomes = deps.maxHomes ?? 0;
+  const log = deps.log ?? ((msg: string) => console.error(msg));
+  const isLive = (l: Lease): boolean => l.state === 'booting' || l.state === 'awaiting_first_tick' || l.state === 'running';
+  const live = (): number => store.all().filter(isLive).length;
 
   const open = newApp();
   open.post('/open', async (req, res) => {
     const job = parseJob(req.body);
     if (!job) return void res.status(400).json({ error: 'bad_request' });
 
+    const home = isHome({ job });
+    // newLease throws on a key set that does not normalize, so refuse it first.
+    if (home && !normalizeSshKeys(job.args.SSH_KEYS?.split('\n'))) return void res.status(400).json({ error: 'bad_request' });
+
     const leaseId = randomBytes(16).toString('hex');
-    // The count and the write happen with no await between them, so two opens cannot both pass.
-    if (live() >= maxLeases) {
-      store.put({ ...newLease(leaseId, offer, job, now()), state: 'closed', closedReason: 'busy' });
-      return void res.json({ leaseId, state: 'closed', closedReason: 'busy' });
+    const lease = newLease(leaseId, offer, job, now());
+    const refuse = (closedReason: CloseReason) => {
+      store.put({ ...lease, state: 'closed', closedReason });
+      res.json({ leaseId, state: 'closed', closedReason });
+    };
+    // The counts and the write happen with no await between them, so two opens cannot both pass.
+    if (home) {
+      const homes = store.all().filter((l) => isLive(l) && isHome(l));
+      if (homes.length >= maxHomes) return refuse('busy');
+      // One disk, one box: a second lease on the same keys would mount it twice.
+      if (homes.some((l) => l.homeId === lease.homeId)) return refuse('home_in_use');
     }
-    store.put(newLease(leaseId, offer, job, now()));
+    if (live() >= maxLeases) return refuse('busy');
+    store.put(lease);
 
     // The packet is paid whatever happens, so a boot failure answers 200 with the reason.
     const fail = async (error: string, stop: boolean) => {
@@ -94,6 +112,8 @@ export function hostApps(deps: HostDeps): { open: express.Express; tick: express
     };
 
     try {
+      // The disk comes first: create mounts it.
+      if (home) await runner.ensureHome(lease.homeId!);
       // Created, not started: nothing of the job runs until tick 0 is paid.
       await runner.create(leaseId, job);
     } catch (e) {
@@ -132,6 +152,11 @@ export function hostApps(deps: HostDeps): { open: express.Express; tick: express
     if (r.duplicate) return void res.json(answer);
     // Written before the start, so a repeat of tick 0 meanwhile is a duplicate, not a second start.
     store.put(r.lease);
+    const homeId = isHome(lease) ? lease.homeId! : undefined;
+    if (homeId) {
+      // The tick is paid, so it answers 200 even if the box cannot be told how long it has.
+      await runner.writePaidThrough(homeId, r.lease.paidThrough!).catch((e) => log(`home ${homeId}: paid time not written: ${String(e)}`));
+    }
     if (lease.state === 'awaiting_first_tick') {
       // Interval 0 is paid: only now does the job start.
       try {
@@ -148,6 +173,14 @@ export function hostApps(deps: HostDeps): { open: express.Express; tick: express
         return void res.status(409).json({ error: 'not_running' });
       }
       store.put({ ...cur, startedAt: now() });
+      if (homeId) {
+        // The box is running; a later window tick retries a failed publish.
+        try {
+          await runner.publishHome(homeId);
+        } catch (e) {
+          log(`home ${homeId}: onion not published: ${String(e)}`);
+        }
+      }
     }
     res.json(answer);
   });
