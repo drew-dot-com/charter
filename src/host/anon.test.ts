@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, stat, writeFile, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, stat, writeFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -21,6 +21,7 @@ async function setup(withPid = true) {
     homesDir: join(root, 'homes'),
     pidFile: join(root, 'anon.pid'),
     kill: (pid, sig) => void kills.push([pid, sig]),
+    readComm: async () => 'anon',
   };
   await mkdir(d.hsDir, { recursive: true });
   if (withPid) await writeFile(d.pidFile, '4242\n');
@@ -80,4 +81,23 @@ test('reloadAnon without a pid file throws no_pid and kills nothing', async () =
   await writeFile(d.pidFile, 'abc');
   await assert.rejects(reloadAnon(d), (e) => e instanceof AnonError && e.code === 'no_pid');
   assert.deepEqual(kills, []);
+});
+
+test('reloadAnon HUPs only a pid whose /proc comm is anon', async () => {
+  const { d, kills } = await setup();
+  const asked: number[] = [];
+  await reloadAnon({ ...d, readComm: async (pid) => (asked.push(pid), 'anon\n') });
+  assert.deepEqual(asked, [4242]);
+  assert.deepEqual(kills, [[4242, 'SIGHUP']]);
+  kills.length = 0;
+  // A stale pid file whose number now belongs to another process.
+  await assert.rejects(reloadAnon({ ...d, readComm: async () => 'node' }), (e) => e instanceof AnonError && e.code === 'no_pid');
+  await assert.rejects(reloadAnon({ ...d, readComm: async () => undefined }), (e) => e instanceof AnonError && e.code === 'no_pid');
+  assert.deepEqual(kills, []);
+});
+
+test('publishHiddenService leaves no temp file beside the conf', async () => {
+  const { d } = await setup();
+  await publishHiddenService(d, 'h1', 2201);
+  assert.deepEqual(await readdir(d.hsDir), ['h1.conf']);
 });

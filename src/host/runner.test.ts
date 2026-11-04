@@ -375,7 +375,7 @@ async function homeSetup(free = 10 * GIB, mkfsCode: () => number = () => 0, rmGa
     socksPort: 9050,
     httpPort: 9080,
     homes,
-    anon: { hsDir: join(root, 'hs.d'), homesDir, pidFile, kill: (pid, sig) => void kills.push([pid, sig]) },
+    anon: { hsDir: join(root, 'hs.d'), homesDir, pidFile, kill: (pid, sig) => void kills.push([pid, sig]), readComm: async () => 'anon' },
     tools: {
       // Like the real truncate, it leaves the file behind, so a second ensureHome sees the disk.
       truncate: async (args) => {

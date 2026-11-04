@@ -323,7 +323,7 @@ test('windowTick never watches a home\'s exit and fills its access once anon has
 
 test('windowTick publishes a running home\'s onion once per process, and retries a failed publish', async () => {
   const store = new LeaseStore();
-  store.put(homeLease({ id: 'h', access: { ssh: { host: 'abc.anon', port: 22, user: 'tenant' } } }));
+  store.put(homeLease({ id: 'h', paidThrough: T0 + 3_600_000, access: { ssh: { host: 'abc.anon', port: 22, user: 'tenant' } } }));
   const homes = homeStore({ homeId: HOME_ID });
   const published: string[] = [];
   let fail = true;
@@ -334,13 +334,22 @@ test('windowTick publishes a running home\'s onion once per process, and retries
       if (fail) throw new Error('no_pid');
     },
   });
-  const deps = { store, runner: r, homes, now: () => T0 + 1000, log: (m: string) => void logs.push(m) };
+  let now = T0 + 1000;
+  const deps = { store, runner: r, homes, now: () => now, log: (m: string) => void logs.push(m) };
   await windowTick(deps);
+  // A window tick a second: the failed publish is tried, and logged, once a minute, not every second.
+  for (let i = 0; i < 59; i++) {
+    now += 1000;
+    await windowTick(deps);
+  }
+  assert.deepEqual(published, [HOME_ID]);
+  assert.equal(logs.filter((m) => /no_pid/.test(m)).length, 1);
   fail = false;
+  now += 1000;
   await windowTick(deps);
+  now += 1000;
   await windowTick(deps);
   assert.deepEqual(published, [HOME_ID, HOME_ID]);
-  assert.ok(logs.some((m) => /no_pid/.test(m)));
 });
 
 test('a home that misses its tick keeps its disk when it paid, loses it when it never paid', async () => {

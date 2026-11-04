@@ -4,8 +4,17 @@ import type { ToonCli } from '../toon-cli.js';
 import type { Lease, Offer } from '../types.js';
 import { sweepDue, type HomeStore } from './homes.js';
 import { RunnerError, type Runner } from './runner.js';
-import { outputPartCount } from './server.js';
 import type { LeaseStore } from './store.js';
+
+/** Size of one output slice a status call returns. Here, not in server.ts, so this file imports nothing from it. */
+export const OUTPUT_PART_BYTES = 48 * 1024;
+
+export function outputPartCount(bytes: number): number {
+  return Math.ceil(bytes / OUTPUT_PART_BYTES);
+}
+
+/** A home whose onion publish failed is tried again, and logged, at most this often. */
+export const HOME_PUBLISH_RETRY_MS = 60_000;
 
 /** A lease may stay `booting` this long before it is closed `boot_failed`. */
 export const BOOT_TIMEOUT_MS = 120_000;
@@ -28,6 +37,8 @@ export interface LoopDeps {
   homes?: HomeStore;
   /** Home ids whose onion conf this process has written. Created on first use. */
   published?: Set<string>;
+  /** When a failed onion publish was last tried, per home. Created on first use. */
+  publishTriedAt?: Map<string, number>;
   log?: (msg: string) => void;
   /** Injectable for tests. Default: a real timer. */
   sleep?: (ms: number) => Promise<void>;
@@ -87,8 +98,11 @@ async function releaseHome(deps: LoopDeps, l: Lease, now: number): Promise<void>
   deps.homes!.put({ ...(deps.homes!.get(homeId) ?? rec), paidOnce: true, lastClosedAt: now });
 }
 
-/** Close, stop, and for a home release it. */
-async function closeAndStop(deps: LoopDeps, l: Lease, reason: NonNullable<Lease['closedReason']>, now: number): Promise<void> {
+/**
+ * Close, stop, and for a home release it. Exported for the tick handler, so a home whose container
+ * cannot start after a paid tick 0 is released the same way: onion retired, disk kept as paid.
+ */
+export async function closeAndStop(deps: LoopDeps, l: Lease, reason: NonNullable<Lease['closedReason']>, now: number): Promise<void> {
   const closed = close(deps, l, reason);
   await stop(deps, l.id);
   if (isHome(closed)) await releaseHome(deps, closed, now);
@@ -99,8 +113,15 @@ async function tendHome(deps: LoopDeps, l: Lease): Promise<void> {
   const homeId = l.homeId;
   if (!homeId) return;
   const published = (deps.published ??= new Set());
-  if (!published.has(homeId) && deps.homes?.get(homeId)) {
-    if (await tryHome(deps, `publish ${homeId}`, () => deps.runner.publishHome(homeId))) published.add(homeId);
+  const triedAt = (deps.publishTriedAt ??= new Map());
+  const last = triedAt.get(homeId);
+  // Once a minute, not every second: a broken anon would otherwise fill the log.
+  if (!published.has(homeId) && deps.homes?.get(homeId) && (last === undefined || deps.now() - last >= HOME_PUBLISH_RETRY_MS)) {
+    triedAt.set(homeId, deps.now());
+    if (await tryHome(deps, `publish ${homeId}`, () => deps.runner.publishHome(homeId))) {
+      published.add(homeId);
+      triedAt.delete(homeId);
+    }
   }
   if (l.access == null) {
     let access = null;

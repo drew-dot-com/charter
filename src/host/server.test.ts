@@ -8,6 +8,7 @@ import type { JobSpec, Offer } from '../types.js';
 import { RunnerError, type Runner } from './runner.js';
 import { hostApps, OUTPUT_PART_BYTES } from './server.js';
 import { LeaseStore } from './store.js';
+import { HomeStore } from './homes.js';
 
 const OFFER: Offer = {
   id: 'o1', hostPubkey: '', ilpBase: 'g.test', sealKey: '0x04' + 'ab'.repeat(64), sealUrl: 'http://x.anyone/ilp', cpu: 1,
@@ -38,11 +39,12 @@ function fakeRunner(over: Partial<Runner> = {}) {
   return { r, calls };
 }
 
-async function setup(over: Partial<Runner> = {}, maxLeases?: number, maxHomes?: number) {
+async function setup(over: Partial<Runner> = {}, maxLeases?: number, maxHomes?: number, homes?: HomeStore) {
   const store = new LeaseStore();
   const { r, calls } = fakeRunner(over);
   const apps = hostApps({
     store, runner: r, offer: OFFER, now: () => T0, log: () => undefined,
+    ...(homes ? { homes } : {}),
     ...(maxLeases === undefined ? {} : { maxLeases }),
     ...(maxHomes === undefined ? {} : { maxHomes }),
   });
@@ -531,6 +533,38 @@ test('a home counts inside maxLeases', async () => {
     const r = await t.post(t.urls.open, '/open', { job: { image: 'charter-job-python', args: { SCRIPT: 'print(1)' } } });
     assert.equal(r.body.state, 'closed');
     assert.equal(r.body.closedReason, 'busy');
+  } finally {
+    t.done();
+  }
+});
+
+test('a home whose container fails to start on tick 0 is closed boot_failed and released: onion retired, record marked paid', async () => {
+  const calls: string[] = [];
+  const homes = new HomeStore();
+  homes.put({ homeId: HOME_ID, port: 2222, createdAt: T0, paidOnce: false });
+  const t = await setup(
+    homeRunner(calls, {
+      create: async (id) => void calls.push(`create ${id}`),
+      start: async () => { throw new RunnerError('boot_failed', 'start'); },
+      stop: async (id) => void calls.push(`stop ${id}`),
+      retireHome: async (id) => void calls.push(`retireHome ${id}`),
+      removeHome: async (id) => void calls.push(`removeHome ${id}`),
+    }),
+    5, 1, homes,
+  );
+  try {
+    const leaseId = (await t.post(t.urls.open, '/open', { job: HOME })).body.leaseId as string;
+    const r = await t.post(t.urls.tick, '/tick', { leaseId, index: 0 });
+    assert.equal(r.status, 409);
+    assert.equal(r.body.error, 'not_running');
+    const l = t.store.get(leaseId)!;
+    assert.equal(l.state, 'closed');
+    assert.equal(l.closedReason, 'boot_failed');
+    assert.equal(l.paidIntervals, 1);
+    assert.ok(calls.includes(`stop ${leaseId}`));
+    assert.ok(calls.includes(`retireHome ${HOME_ID}`));
+    assert.ok(!calls.includes(`removeHome ${HOME_ID}`), 'it paid a tick: the disk is kept');
+    assert.deepEqual(homes.get(HOME_ID), { homeId: HOME_ID, port: 2222, createdAt: T0, paidOnce: true, lastClosedAt: T0 });
   } finally {
     t.done();
   }

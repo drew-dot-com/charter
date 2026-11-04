@@ -91,10 +91,12 @@ async function main(argv: string[]): Promise<number> {
         : undefined,
   });
   // One object for reconcile, windowTick and homeSweep, so watched and published persist across ticks.
-  const deps = { store, runner, now, homes, log };
+  const deps = { store, runner, now, homes, log, published: new Set<string>() };
   await reconcile(deps);
 
-  const apps = hostApps({ store, runner, offer: cfg.offer, now, maxLeases: cfg.maxLeases, maxHomes: cfg.maxHomes, log });
+  const apps = hostApps({
+    store, runner, offer: cfg.offer, now, maxLeases: cfg.maxLeases, maxHomes: cfg.maxHomes, log, homes, published: deps.published,
+  });
   const servers = [
     apps.open.listen(cfg.ports.open, '127.0.0.1'),
     apps.tick.listen(cfg.ports.tick, '127.0.0.1'),

@@ -1,4 +1,5 @@
-import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export interface AnonDeps {
@@ -9,6 +10,17 @@ export interface AnonDeps {
   pidFile: string;
   /** Injectable so tests never signal a real process. */
   kill?: (pid: number, signal: 'SIGHUP') => void;
+  /** The process name in /proc/<pid>/comm, undefined when there is no such process. Injectable for tests. */
+  readComm?: (pid: number) => Promise<string | undefined>;
+}
+
+async function procComm(pid: number): Promise<string | undefined> {
+  try {
+    return await readFile(`/proc/${pid}/comm`, 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw e;
+  }
 }
 
 export class AnonError extends Error {
@@ -41,7 +53,11 @@ export async function reloadAnon(d: AnonDeps): Promise<void> {
   }
   const text = raw.trim();
   if (!/^\d+$/.test(text)) throw new AnonError('no_pid', `pid file ${d.pidFile} holds no pid`);
-  (d.kill ?? process.kill)(Number(text), 'SIGHUP');
+  const pid = Number(text);
+  // A stale pid file may name a process that is no longer anon: never signal anything else.
+  const comm = (await (d.readComm ?? procComm)(pid))?.trim();
+  if (comm !== 'anon') throw new AnonError('no_pid', `pid ${pid} from ${d.pidFile} is ${comm === undefined ? 'not running' : `${comm}, not anon`}`);
+  (d.kill ?? process.kill)(pid, 'SIGHUP');
 }
 
 /** Idempotent: rewriting the same conf and HUPing again is harmless. */
@@ -51,7 +67,11 @@ export async function publishHiddenService(d: AnonDeps, homeId: string, port: nu
   // mkdir's mode is masked by umask and skipped on an existing dir; anon refuses a looser one.
   await chmod(dir, 0o700);
   await mkdir(d.hsDir, { recursive: true });
-  await writeFile(join(d.hsDir, `${homeId}.conf`), hiddenServiceConf(d.homesDir, homeId, port) + '\n');
+  // Written aside and renamed in, so anon never reads half a conf. Dot-prefixed: anon's `%include`
+  // skips dotfiles, so a temp file left by a crash is never read as a service.
+  const tmp = join(d.hsDir, `.${homeId}.conf.tmp-${randomBytes(6).toString('hex')}`);
+  await writeFile(tmp, hiddenServiceConf(d.homesDir, homeId, port) + '\n');
+  await rename(tmp, join(d.hsDir, `${homeId}.conf`));
   await reloadAnon(d);
 }
 

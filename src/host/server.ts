@@ -3,8 +3,12 @@ import express from 'express';
 import { homeIdOf, normalizeSshKeys } from '../jobs.js';
 import { isHome, LeaseError, newLease, onBootFailed, onBooted, onTick } from '../lease.js';
 import type { CloseReason, JobSpec, Lease, Offer } from '../types.js';
+import type { HomeStore } from './homes.js';
+import { closeAndStop, OUTPUT_PART_BYTES } from './loop.js';
 import { RunnerError, type Runner } from './runner.js';
 import type { LeaseStore } from './store.js';
+
+export { OUTPUT_PART_BYTES, outputPartCount } from './loop.js';
 
 export interface HostDeps {
   store: LeaseStore;
@@ -16,13 +20,10 @@ export interface HostDeps {
   /** Live home leases at once, inside maxLeases. Default 0: no homes. */
   maxHomes?: number;
   log?: (msg: string) => void;
-}
-
-/** Size of one output slice a status call returns. */
-export const OUTPUT_PART_BYTES = 48 * 1024;
-
-export function outputPartCount(bytes: number): number {
-  return Math.ceil(bytes / OUTPUT_PART_BYTES);
+  /** The host's home records, so a home closed here is released as the loop releases one. */
+  homes?: HomeStore;
+  /** The loop's set of published homes, shared so a release here clears it there. */
+  published?: Set<string>;
 }
 
 const LEASE_ID = /^[0-9a-f]{32}$/;
@@ -162,9 +163,9 @@ export function hostApps(deps: HostDeps): { open: express.Express; tick: express
       try {
         await runner.start(leaseId);
       } catch {
-        const cur = store.get(leaseId)!;
-        store.put({ ...cur, state: 'closed', closedReason: 'boot_failed' });
-        await runner.stop(leaseId).catch(() => undefined);
+        // Tick 0 is paid, so a home keeps its disk as paid: the loop's close and release, not a bare close.
+        const loopDeps = { store, runner, now, log, ...(deps.homes ? { homes: deps.homes } : {}), ...(deps.published ? { published: deps.published } : {}) };
+        await closeAndStop(loopDeps, store.get(leaseId)!, 'boot_failed', now());
         return void res.status(409).json({ error: 'not_running' });
       }
       const cur = store.get(leaseId)!;
