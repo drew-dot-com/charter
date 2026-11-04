@@ -200,6 +200,51 @@ export function dockerRunner(opts: {
     return rec;
   };
 
+  /** ensureHome's work; only ever run through `chain`. */
+  async function makeHome(homeId: string): Promise<HomeRecord> {
+    const h = needHome();
+    checkHomeId(homeId);
+    const existing = h.homes.get(homeId);
+    // Stored only once its disk and volume exist, so a refused or failed call leaves nothing behind.
+    const rec: HomeRecord = existing ?? {
+      homeId,
+      port: allocatePort(h.homes.all().map((r) => r.port)),
+      createdAt: (h.now ?? Date.now)(),
+      paidOnce: false,
+    };
+    const dir = join(h.homesDir, homeId);
+    const disk = diskPath(h.homesDir, homeId);
+    let madeDir = false;
+    let madeDisk = false;
+    try {
+      const missing = await access(disk).then(() => false, () => true);
+      if (missing) {
+        await mkdir(h.homesDir, { recursive: true });
+        const free = await (h.freeBytes ?? statFreeBytes)(h.homesDir);
+        // A sparse disk can grow to its full size: keep the floor even then.
+        if (free - HOME_DISK_GIB * 1024 ** 3 < HOME_FREE_FLOOR_BYTES) throw new RunnerError('boot_failed', 'no disk');
+        madeDir = (await mkdir(dir, { recursive: true })) !== undefined;
+        madeDisk = true;
+        await createDisk(h.tools, disk, HOME_DISK_GIB);
+      }
+      await ensureVolume(exec, volumeName(homeId), disk);
+      // docker create needs the bind source to exist.
+      await mkdir(join(dir, 'charter'), { recursive: true });
+    } catch (e) {
+      // An unformatted image would pass the next call's exists check and never get mkfs.
+      if (madeDisk) {
+        await removeVolume(exec, volumeName(homeId));
+        await rm(madeDir ? dir : disk, { recursive: true, force: true });
+      }
+      if (e instanceof RunnerError) throw e;
+      throw new RunnerError('boot_failed', e instanceof Error ? e.message : String(e));
+    }
+    if (!existing) h.homes.put(rec);
+    return rec;
+  }
+
+  let chain: Promise<void> = Promise.resolve();
+
   return {
     async create(leaseId, job) {
       if (!allow.includes(job.image)) throw new RunnerError('image_not_allowed', job.image);
@@ -302,46 +347,11 @@ export function dockerRunner(opts: {
       return r.code === 0 && r.stdout.trim() === 'true';
     },
 
-    async ensureHome(homeId) {
-      const h = needHome();
-      checkHomeId(homeId);
-      const existing = h.homes.get(homeId);
-      // Stored only once its disk and volume exist, so a refused or failed call leaves nothing behind.
-      const rec: HomeRecord = existing ?? {
-        homeId,
-        port: allocatePort(h.homes.all().map((r) => r.port)),
-        createdAt: (h.now ?? Date.now)(),
-        paidOnce: false,
-      };
-      const dir = join(h.homesDir, homeId);
-      const disk = diskPath(h.homesDir, homeId);
-      let madeDir = false;
-      let madeDisk = false;
-      try {
-        const missing = await access(disk).then(() => false, () => true);
-        if (missing) {
-          await mkdir(h.homesDir, { recursive: true });
-          const free = await (h.freeBytes ?? statFreeBytes)(h.homesDir);
-          // A sparse disk can grow to its full size: keep the floor even then.
-          if (free - HOME_DISK_GIB * 1024 ** 3 < HOME_FREE_FLOOR_BYTES) throw new RunnerError('boot_failed', 'no disk');
-          madeDir = (await mkdir(dir, { recursive: true })) !== undefined;
-          madeDisk = true;
-          await createDisk(h.tools, disk, HOME_DISK_GIB);
-        }
-        await ensureVolume(exec, volumeName(homeId), disk);
-        // docker create needs the bind source to exist.
-        await mkdir(join(dir, 'charter'), { recursive: true });
-      } catch (e) {
-        // An unformatted image would pass the next call's exists check and never get mkfs.
-        if (madeDisk) {
-          await removeVolume(exec, volumeName(homeId));
-          await rm(madeDir ? dir : disk, { recursive: true, force: true });
-        }
-        if (e instanceof RunnerError) throw e;
-        throw new RunnerError('boot_failed', e instanceof Error ? e.message : String(e));
-      }
-      if (!existing) h.homes.put(rec);
-      return rec;
+    ensureHome(homeId) {
+      // One at a time across all ids: concurrent calls would race on the same disk file or take the same port.
+      const run = chain.then(() => makeHome(homeId));
+      chain = run.then(() => undefined, () => undefined);
+      return run;
     },
 
     async publishHome(homeId) {

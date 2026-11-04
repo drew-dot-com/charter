@@ -454,6 +454,22 @@ test('ensureHome cleans up after a failed mkfs, so the next call formats a fresh
   assert.ok(t.homes.get(HOME_ID));
 });
 
+test('two concurrent ensureHome calls for one id make its disk once and agree on the record', async () => {
+  const t = await homeSetup();
+  const [a, b] = await Promise.all([t.r.ensureHome(HOME_ID), t.r.ensureHome(HOME_ID)]);
+  assert.deepEqual(a, b);
+  assert.equal(t.tools.filter((x) => x.startsWith('truncate')).length, 1);
+  assert.equal(t.tools.filter((x) => x.startsWith('mkfs')).length, 1);
+  assert.deepEqual(t.homes.get(HOME_ID), a);
+});
+
+test('two concurrent ensureHome calls for new ids take different ports', async () => {
+  const t = await homeSetup();
+  const other = homeIdOf(normalizeSshKeys(['ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG90aGVy'])!);
+  const [a, b] = await Promise.all([t.r.ensureHome(HOME_ID), t.r.ensureHome(other)]);
+  assert.deepEqual([a.port, b.port], [22000, 22001]);
+});
+
 test('ensureHome wraps a filesystem failure as boot_failed', async () => {
   const t = await homeSetup();
   t.home.freeBytes = async () => {
