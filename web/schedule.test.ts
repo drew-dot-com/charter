@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Lease } from '../src/types.js';
-import { nextTickAt } from './schedule.js';
+import { nextTickAt, pollMs } from './schedule.js';
 
 function lease(over: Partial<Lease>): Lease {
   return {
@@ -40,4 +40,11 @@ test('done and closed leases are never due', () => {
 test('a lease that is still booting, or running without a paid time, is not due yet', () => {
   assert.equal(nextTickAt(lease({ state: 'booting' }), 50_000), null);
   assert.equal(nextTickAt(lease({ state: 'running' }), 50_000), null);
+});
+
+test('pollMs: every 5 s on a short or unknown interval, a sixtieth of the interval past 5 minutes', () => {
+  assert.equal(pollMs(undefined), 5_000);
+  assert.equal(pollMs(30), 5_000);
+  assert.equal(pollMs(300), 5_000);
+  assert.equal(pollMs(3600), 60_000);
 });

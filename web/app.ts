@@ -1,7 +1,7 @@
 import type { Lease } from '../src/types.js';
-import { ago, clock, decodeOutput, duration, formatUsdc, landingLink, offerFreshness, parseOffer, pricePerHour, shortHex, sizeLabel, type JobOutput, type PublicOffer, type PythonOutput } from './format.js';
+import { ago, clock, decodeOutput, duration, formatUsdc, landingLink, offerFreshness, parseOffer, perHourNote, shortHex, sizeLabel, type JobOutput, type PublicOffer, type PythonOutput } from './format.js';
 import { call, makePost, type Answer, type DoorInfo } from './pay.js';
-import { nextTickAt } from './schedule.js';
+import { nextTickAt, pollMs } from './schedule.js';
 import { applyStatus, clearHalt, newTickState, runTick, shouldTick, type TickState } from './ticker.js';
 import { CHOOSE_WALLET, NO_WALLET, chooseWallet, discoverWallets, requestAccounts } from './providers.js';
 import { BASE_CHAIN_ID_HEX, type Eip1193 } from './wallet.js';
@@ -11,7 +11,6 @@ import { newTimeline, noteOutput, observe, type Timeline } from './timeline.js';
 // ---------------------------------------------------------------------------
 // Constants
 
-const POLL_MS = 5_000;
 const POLL_FINAL_MS = 15_000;
 const STEP_MS = 1_000;
 const MAX_URLS = 5;
@@ -323,7 +322,9 @@ function offerRow(o: PublicOffer, now: number): HTMLElement {
     }));
   });
   rent.setAttribute('aria-label', `Rent ${sizeLabel(o.cpu, o.memoryMiB)}`);
-  const price = el('span', 'price', `${formatUsdc(BigInt(o.tickPrice))} per ${duration(o.intervalSeconds)}`, el('span', 'per', `${formatUsdc(pricePerHour(o.tickPrice, o.intervalSeconds))} an hour`));
+  const price = el('span', 'price', `${formatUsdc(BigInt(o.tickPrice))} per ${duration(o.intervalSeconds)}`);
+  const note = perHourNote(o.tickPrice, o.intervalSeconds);
+  if (note) price.append(el('span', 'per', note));
   head.append(el('span', 'buy', price, rent));
 
   const meta = el('div', 'card-meta');
@@ -672,7 +673,7 @@ function step(p: LeasePage): void {
   const now = Date.now();
   const final = isFinal(p.t.lease);
   const settled = final && !!p.t.lease?.landing && p.output.state !== 'loading' && p.output.state !== 'idle';
-  if (!p.polling && !settled && now - p.lastPoll >= (final ? POLL_FINAL_MS : POLL_MS)) void poll(p);
+  if (!p.polling && !settled && now - p.lastPoll >= (final ? POLL_FINAL_MS : pollMs(p.offer?.intervalSeconds))) void poll(p);
   if ((dev || wallet) && shouldTick(p.t, now)) void payTick(p);
   render(p);
   p.timer = window.setTimeout(() => step(p), STEP_MS);
@@ -698,7 +699,7 @@ function payTick(p: LeasePage): Promise<void> {
     // look again first, unless the last look was within the poll interval.
     refresh: async () => {
       if (p.polling) await p.polling;
-      else if (Date.now() - p.lastPoll >= POLL_MS) await poll(p);
+      else if (Date.now() - p.lastPoll >= pollMs(p.offer?.intervalSeconds)) await poll(p);
     },
     requestPoll: () => void (p.lastPoll = 0),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),

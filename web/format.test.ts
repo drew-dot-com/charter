@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ago, clock, decodeOutput, duration, formatUsdc, landingLink, offerFreshness, parseOffer, pricePerHour, shortHex, sizeLabel, tickOutcome } from './format.js';
+import { ago, clock, decodeOutput, duration, formatUsdc, landingLink, offerFreshness, parseOffer, perHourNote, pricePerHour, shortHex, sizeLabel, tickOutcome } from './format.js';
 
 const b64 = (s: string | Uint8Array) => Buffer.from(s).toString('base64');
 
@@ -166,4 +166,9 @@ test('parseOffer keeps the door-side stats and the egress flag when they are the
   const bare = parseOffer({ offerId: 'a:b', cpu: 1, memoryMiB: 1024, intervalSeconds: 30, tickPrice: '5000', hiddenHost: false, leases: 'x' });
   assert.equal(bare?.hiddenEgress, false);
   assert.equal(bare?.leases, undefined);
+});
+
+test('perHourNote is dropped when the interval is an hour (it would repeat the price)', () => {
+  assert.equal(perHourNote('5000', 30), '$0.60 an hour');
+  assert.equal(perHourNote('7000', 3600), undefined);
 });

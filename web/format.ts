@@ -22,6 +22,11 @@ export function pricePerHour(tickPrice: string, intervalSeconds: number): bigint
   return (BigInt(tickPrice) * 3600n) / BigInt(intervalSeconds);
 }
 
+/** The offer card's "an hour" note, or nothing when the interval is an hour and the note would repeat the price. */
+export function perHourNote(tickPrice: string, intervalSeconds: number): string | undefined {
+  return intervalSeconds === 3600 ? undefined : `${formatUsdc(pricePerHour(tickPrice, intervalSeconds))} an hour`;
+}
+
 export interface Landing {
   chain: string;
   tx: string;
