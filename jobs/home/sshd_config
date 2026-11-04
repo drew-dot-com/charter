@@ -1,0 +1,17 @@
+# sshd runs as tenant, not root: it can only ever log in tenant, by key.
+Port 2222
+HostKey /home/tenant/.ssh/host/ssh_host_ed25519_key
+AuthorizedKeysFile .ssh/authorized_keys
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+# PAM needs root to open a session.
+UsePAM no
+PermitRootLogin no
+AllowUsers tenant
+# The rootfs is read-only and /run belongs to root.
+PidFile none
+AllowTcpForwarding yes
+GatewayPorts no
+X11Forwarding no
+ClientAliveInterval 60
+StrictModes yes
