@@ -13,6 +13,8 @@ After=network-online.target docker.service
 EnvironmentFile=%h/.config/charter/env
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # Up to 120 s for the docker socket and `docker info`; on failure systemd restarts the unit.
+# A user manager's default TimeoutStartSec is 90 s, which would kill that wait first: 150 s covers it.
+TimeoutStartSec=150
 # `$$` is systemd's escape for a literal `$`.
 ExecStartPre=/bin/sh -c 'for i in $$(seq 1 60); do [ -S /var/run/docker.sock ] && docker info >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1'
 ExecStart=%h/.local/bin/charter-host run

@@ -251,7 +251,8 @@ test('alive reads State.Running and is false when the container is gone', async 
   assert.deepEqual(calls[0]!.args, ['inspect', '-f', '{{.State.Running}}', 'charter-l1']);
   reply = { code: 0, stdout: 'false\n' };
   assert.equal(await r.alive('l1'), false);
-  reply = { code: 1, stdout: '', stderr: 'Error: No such object: charter-l1\n' } as typeof reply;
+  // Exactly what Docker 29.1.3 on toon2 prints for a removed container.
+  reply = { code: 1, stdout: '', stderr: 'error: no such object: charter-l1\n' } as typeof reply;
   assert.equal(await r.alive('l1'), false);
 });
 
@@ -265,6 +266,12 @@ test('alive is false on "No such container" and throws docker_unavailable when t
   // Exit 0 with anything but true or false is not an answer either.
   reply = { code: 0, stdout: '' };
   await assert.rejects(r.alive('l1'), (e: unknown) => e instanceof RunnerError && e.code === 'docker_unavailable');
+});
+
+test('ready is false when docker info does not answer within the timeout', async () => {
+  const exec: Exec = (args) => (args[0] === 'info' ? new Promise(() => undefined) : Promise.resolve({ code: 0, stdout: '', stderr: '' }));
+  const r = dockerRunner({ exec, outRoot: await outRoot(), allow: [], readyTimeoutMs: 20 });
+  assert.equal(await r.ready(), false);
 });
 
 test('ready runs docker info and is true only on exit 0', async () => {

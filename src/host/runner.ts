@@ -81,6 +81,9 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** What homeIdOf yields; anything else could escape homesDir. */
 const HOME_ID = /^[0-9a-f]{16}$/;
 
+/** A hung dockerd must not stall reconcile: `ready` gives up on `docker info` after this. */
+export const READY_TIMEOUT_MS = 30_000;
+
 /** What a job image may be given and how it is fenced in. */
 export interface JobProfile {
   /** Job arg names a tenant may set. Anything else is refused, so a tenant cannot reach the host's env. */
@@ -204,6 +207,8 @@ export function dockerRunner(opts: {
   runtime?: string;
   /** Without it the host serves no homes. */
   home?: HomeRunnerOpts;
+  /** How long `ready` waits for `docker info`. Default READY_TIMEOUT_MS. */
+  readyTimeoutMs?: number;
 }): Runner {
   const { exec, outRoot, allow, proxy, runtime } = opts;
   const docker = (args: string[]) => exec(args, {});
@@ -379,13 +384,23 @@ export function dockerRunner(opts: {
       const r = await docker(['inspect', '-f', '{{.State.Running}}', name(leaseId)]);
       const out = r.stdout.trim();
       if (r.code === 0 && (out === 'true' || out === 'false')) return out === 'true';
-      if (r.code !== 0 && /No such object|No such container/.test(r.stderr)) return false;
+      // Docker 29 prints `error: no such object: <name>`; older ones capitalise it.
+      if (r.code !== 0 && /no such (object|container)/i.test(r.stderr)) return false;
       // At boot dockerd may not answer yet: that is not a dead container.
       throw new RunnerError('docker_unavailable', r.stderr.trim() || `inspect exit ${r.code}`);
     },
 
     async ready() {
-      return (await docker(['info'])).code === 0;
+      let timer: NodeJS.Timeout | undefined;
+      const timeout = new Promise<false>((res) => {
+        timer = setTimeout(() => res(false), opts.readyTimeoutMs ?? READY_TIMEOUT_MS);
+      });
+      try {
+        // On timeout the docker client is left to exit on its own; the answer is false either way.
+        return await Promise.race([docker(['info']).then((r) => r.code === 0), timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
     },
 
     ensureHome(homeId) {
