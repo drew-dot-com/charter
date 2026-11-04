@@ -60,7 +60,7 @@ export async function reloadAnon(d: AnonDeps): Promise<void> {
   (d.kill ?? process.kill)(pid, 'SIGHUP');
 }
 
-/** Idempotent: rewriting the same conf and HUPing again is harmless. */
+/** Idempotent: an unchanged conf is left alone and sends no HUP. */
 export async function publishHiddenService(d: AnonDeps, homeId: string, port: number): Promise<void> {
   const dir = join(d.homesDir, homeId, 'hs');
   await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -70,8 +70,12 @@ export async function publishHiddenService(d: AnonDeps, homeId: string, port: nu
   // Written aside and renamed in, so anon never reads half a conf. Dot-prefixed: anon's `%include`
   // skips dotfiles, so a temp file left by a crash is never read as a service.
   const tmp = join(d.hsDir, `.${homeId}.conf.tmp-${randomBytes(6).toString('hex')}`);
-  await writeFile(tmp, hiddenServiceConf(d.homesDir, homeId, port) + '\n');
-  await rename(tmp, join(d.hsDir, `${homeId}.conf`));
+  const conf = hiddenServiceConf(d.homesDir, homeId, port) + '\n';
+  const path = join(d.hsDir, `${homeId}.conf`);
+  // A HUP resets anon's circuits, so an unchanged conf must not trigger one.
+  if ((await readFile(path, 'utf8').catch(() => undefined)) === conf) return;
+  await writeFile(tmp, conf);
+  await rename(tmp, path);
   await reloadAnon(d);
 }
 

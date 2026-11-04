@@ -223,6 +223,8 @@ SSH in at an onion address. toon2 carries one (`CHARTER_MAX_HOMES=1`, counted in
 `CHARTER_MAX_LEASES=2`), so a home and one job can run at once. Design:
 `docs/superpowers/specs/2026-11-04-home-image-design.md`; variables: `docs/env.md`.
 
+A reload of Charter's anon (a new home's first publish, or a home's retire) resets every onion's circuits, so a tenant with an open SSH session on another home may have to reconnect, and a client whose Anyone circuit went stale needs a minute or two before the onion answers again.
+
 The `charter-host` unit's `PATH` must include `/usr/sbin`, where `mkfs.ext4` for home disks lives; without it every home open answers `boot_failed` (the first deploy's failure), and the host log now says why.
 
 **What it adds to toon2.** Two system units, both installed and enabled by `sudo bash

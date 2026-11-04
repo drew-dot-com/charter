@@ -42,11 +42,20 @@ test('publishHiddenService writes the conf, makes the service dir 0700 and HUPs 
   assert.equal(hiddenServiceConf(d.homesDir, 'h1', 2201) + '\n', conf);
 });
 
-test('publishHiddenService is idempotent', async () => {
-  const { d } = await setup();
+test('publishHiddenService is idempotent and HUPs once for an unchanged conf', async () => {
+  const { d, kills } = await setup();
   await publishHiddenService(d, 'h1', 2201);
   await publishHiddenService(d, 'h1', 2201);
   assert.match(await readFile(join(d.hsDir, 'h1.conf'), 'utf8'), /127\.0\.0\.1:2201/);
+  assert.equal(kills.length, 1);
+});
+
+test('publishHiddenService with a different port rewrites the conf and HUPs again', async () => {
+  const { d, kills } = await setup();
+  await publishHiddenService(d, 'h1', 2201);
+  await publishHiddenService(d, 'h1', 2202);
+  assert.match(await readFile(join(d.hsDir, 'h1.conf'), 'utf8'), /127\.0\.0\.1:2202/);
+  assert.equal(kills.length, 2);
 });
 
 test('retireHiddenService removes the conf, keeps the keys dir and HUPs', async () => {
