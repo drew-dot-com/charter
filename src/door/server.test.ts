@@ -10,7 +10,7 @@ import { HostError, hostApi, type HostApi, type OpenResult, type OutputPart, typ
 import { OFFER } from '../tenant/test-host.js';
 import type { Lease, Micro, Offer } from '../types.js';
 import { DoorLedger, offerOfSnapshot, snapshotOffer } from './ledger.js';
-import { doorApp, type DoorDeps } from './server.js';
+import { doorApp, readBudget, type DoorDeps } from './server.js';
 import * as payerMod from '../payer.js';
 import { facilitatorOffersBatch, isPayerFault, MIN_WINDOW_SECONDS, paymentIdOf } from './x402.js';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -1798,4 +1798,11 @@ test('GET /v1/offers carries the leases served per host, and GET /v1/recent list
   } finally {
     d.close();
   }
+});
+
+test('readBudget: 40 free reads, 8 more per tick, and one per paid minute', () => {
+  assert.equal(readBudget(0, 30), 40);
+  assert.equal(readBudget(1, 30), 48);
+  assert.equal(readBudget(2, 30), 57);
+  assert.equal(readBudget(1, 3600), 108);
 });

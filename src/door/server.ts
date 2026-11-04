@@ -57,9 +57,15 @@ export interface DoorDeps {
 
 const OFFERS_TTL_MS = 60_000;
 const STATUS_TTL_MS = 5_000;
-/** Paid host reads a lease's free GET routes may cause: this, plus READS_PER_TICK for each tick the renter paid. */
+/** Paid host reads a lease's free GET routes may cause: this, plus READS_PER_TICK for each tick the renter paid, plus READS_PER_PAID_MINUTE for each minute those ticks bought. */
 const READS_BASE = 40;
 const READS_PER_TICK = 8;
+export const READS_PER_PAID_MINUTE = 1;
+
+/** The free host reads a lease has earned: a short interval gets them by the tick, a long one gets a read a minute to watch the job finish. */
+export function readBudget(ticks: number, intervalSeconds: number): number {
+  return READS_BASE + READS_PER_TICK * ticks + Math.floor((ticks * intervalSeconds) / 60) * READS_PER_PAID_MINUTE;
+}
 /** A done lease with paid intervals and no landing yet is read from the host again after this long, at most. */
 const LANDING_REFRESH_MS = 10 * 60_000;
 const GETS_PER_MINUTE = 120;
@@ -219,7 +225,7 @@ export function doorApp(deps: DoorDeps): express.Express {
   const spendRead = (id: string): void => {
     if (overCap()) throw new CapacityError();
     const rec = ledger.get(id)!;
-    if (rec.hostReads >= READS_BASE + READS_PER_TICK * rec.ticksPaidByRenter) throw new BudgetError();
+    if (rec.hostReads >= readBudget(rec.ticksPaidByRenter, offerOfSnapshot(rec.offer).intervalSeconds)) throw new BudgetError();
     ledger.read(id);
   };
 
