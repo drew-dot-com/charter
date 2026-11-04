@@ -122,10 +122,14 @@ export async function freeBytes(dir: string): Promise<number> {
   return Number(s.bavail) * Number(s.bsize);
 }
 
-/** Closed homes past retention (or never paid), with no live lease. */
+/**
+ * Homes to remove: no live lease, and either never paid (a disk left by a failed create or an
+ * unpaid lapse) or paid and closed for HOME_RETENTION_MS.
+ */
 export function sweepDue(store: HomeStore, liveHomeIds: Set<string>, now: number): HomeRecord[] {
   return store.all().filter((r) => {
-    if (liveHomeIds.has(r.homeId) || r.lastClosedAt === undefined) return false;
-    return !r.paidOnce || r.lastClosedAt + HOME_RETENTION_MS <= now;
+    if (liveHomeIds.has(r.homeId)) return false;
+    if (!r.paidOnce) return true;
+    return r.lastClosedAt !== undefined && r.lastClosedAt + HOME_RETENTION_MS <= now;
   });
 }

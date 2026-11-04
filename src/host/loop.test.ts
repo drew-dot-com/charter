@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import type { Lease, Offer } from '../types.js';
 import { OFFER_KIND } from '../offer.js';
 import { RunnerError, type Runner } from './runner.js';
-import { BOOT_TIMEOUT_MS, landAll, offerTick, reconcile, windowTick } from './loop.js';
-import { onTick } from '../lease.js';
+import { BOOT_TIMEOUT_MS, homeSweep, landAll, offerTick, reconcile, windowTick } from './loop.js';
+import { GRACE_MS, onTick } from '../lease.js';
 import { LeaseStore } from './store.js';
+import { HOME_RETENTION_MS, HomeStore, type HomeRecord } from './homes.js';
+import { homeIdOf, homeJob, normalizeSshKeys } from '../jobs.js';
 
 const T0 = 1_000_000;
 const JOB = { image: 'charter-job-fetch', args: {} };
@@ -17,6 +19,21 @@ const OFFER: Offer = {
 
 function lease(over: Partial<Lease> & { id: string }): Lease {
   return { offerId: 'o1', job: JOB, state: 'running', createdAt: T0, paidIntervals: 1, startedAt: T0, ...over };
+}
+
+const KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGx1bWFueXJhbmRvbWJ5dGVzMTIzNDU2Nzg5MDEyMzQ1';
+const HOME_KEYS = normalizeSshKeys([KEY])!;
+const HOME_JOB = homeJob(HOME_KEYS);
+const HOME_ID = homeIdOf(HOME_KEYS);
+
+function homeLease(over: Partial<Lease> & { id: string }): Lease {
+  return lease({ job: HOME_JOB, homeId: HOME_ID, restarts: 0, paidThrough: T0 + 30_000, bootedAt: T0, ...over });
+}
+
+function homeStore(...recs: Array<Partial<HomeRecord> & { homeId: string }>): HomeStore {
+  const s = new HomeStore();
+  for (const r of recs) s.put({ port: 22000, createdAt: T0, paidOnce: false, ...r });
+  return s;
 }
 
 function fakeRunner(over: Partial<Runner> = {}) {
@@ -274,4 +291,231 @@ test('windowTick does not overwrite a landing written while it was stopping an e
   await windowTick({ store, runner: r, now: () => T0 + 30_000 + 10_001 });
   assert.equal(store.get('b')!.state, 'closed');
   assert.equal(store.get('b')!.landing?.tx, 't');
+});
+
+test('windowTick never watches a home\'s exit and fills its access once anon has the hostname', async () => {
+  const store = new LeaseStore();
+  store.put(homeLease({ id: 'h' }));
+  const homes = homeStore({ homeId: HOME_ID });
+  const asked: string[] = [];
+  let ready = false;
+  const { r } = fakeRunner({
+    exited: () => Promise.reject(new Error('a home exit is never watched')),
+    homeAccess: async (id) => {
+      asked.push(id);
+      return ready ? { ssh: { host: 'abc.anon', port: 22, user: 'tenant' } } : null;
+    },
+  });
+  const deps = { store, runner: r, homes, now: () => T0 + 1000 };
+  await windowTick(deps);
+  assert.equal(store.get('h')!.access ?? null, null, 'no hostname yet');
+  ready = true;
+  await windowTick(deps);
+  assert.equal(store.get('h')!.access?.ssh.host, 'abc.anon');
+  await windowTick(deps);
+  assert.deepEqual(asked, [HOME_ID, HOME_ID], 'filled access is not asked again');
+  assert.equal(store.get('h')!.state, 'running');
+});
+
+test('windowTick publishes a running home\'s onion once per process, and retries a failed publish', async () => {
+  const store = new LeaseStore();
+  store.put(homeLease({ id: 'h', access: { ssh: { host: 'abc.anon', port: 22, user: 'tenant' } } }));
+  const homes = homeStore({ homeId: HOME_ID });
+  const published: string[] = [];
+  let fail = true;
+  const logs: string[] = [];
+  const { r } = fakeRunner({
+    publishHome: async (id) => {
+      published.push(id);
+      if (fail) throw new Error('no_pid');
+    },
+  });
+  const deps = { store, runner: r, homes, now: () => T0 + 1000, log: (m: string) => void logs.push(m) };
+  await windowTick(deps);
+  fail = false;
+  await windowTick(deps);
+  await windowTick(deps);
+  assert.deepEqual(published, [HOME_ID, HOME_ID]);
+  assert.ok(logs.some((m) => /no_pid/.test(m)));
+});
+
+test('a home that misses its tick keeps its disk when it paid, loses it when it never paid', async () => {
+  const keysB = normalizeSshKeys([KEY.replace(/1$/, '2')])!;
+  const idB = homeIdOf(keysB);
+  const store = new LeaseStore();
+  store.put(homeLease({ id: 'paid', paidIntervals: 1 }));
+  store.put(homeLease({
+    id: 'unpaid', job: homeJob(keysB), homeId: idB, state: 'awaiting_first_tick', paidIntervals: 0,
+    paidThrough: undefined, startedAt: undefined,
+  }));
+  const homes = homeStore({ homeId: HOME_ID }, { homeId: idB });
+  const retired: string[] = [];
+  const removed: string[] = [];
+  const { r, stops } = fakeRunner({
+    retireHome: async (id) => void retired.push(id),
+    removeHome: async (id) => void removed.push(id),
+  });
+  const now = T0 + 90_001 + 30_000;
+  await windowTick({ store, runner: r, homes, now: () => now });
+  assert.deepEqual(stops.sort(), ['paid', 'unpaid']);
+  assert.equal(store.get('paid')!.closedReason, 'missed_tick');
+  assert.equal(store.get('unpaid')!.closedReason, 'missed_tick');
+  assert.ok(retired.includes(HOME_ID));
+  assert.deepEqual(removed, [idB]);
+  assert.deepEqual(homes.get(HOME_ID), { homeId: HOME_ID, port: 22000, createdAt: T0, paidOnce: true, lastClosedAt: now });
+  assert.equal(homes.get(idB), undefined);
+});
+
+test('closing a home leaves its disk and onion alone while another live lease holds the same home', async () => {
+  const store = new LeaseStore();
+  store.put(homeLease({ id: 'old', paidIntervals: 0, state: 'awaiting_first_tick', paidThrough: undefined, startedAt: undefined }));
+  store.put(homeLease({ id: 'live', paidThrough: T0 + 10 * 60_000 }));
+  const homes = homeStore({ homeId: HOME_ID, paidOnce: true });
+  const calls: string[] = [];
+  const { r } = fakeRunner({
+    retireHome: async (id) => void calls.push(`retire ${id}`),
+    removeHome: async (id) => void calls.push(`remove ${id}`),
+  });
+  await windowTick({ store, runner: r, homes, now: () => T0 + 90_001 });
+  assert.equal(store.get('old')!.closedReason, 'missed_tick');
+  assert.deepEqual(calls, []);
+  assert.equal(homes.get(HOME_ID)!.lastClosedAt, undefined);
+});
+
+test('an anon error on close is logged and the tick goes on to the next lease', async () => {
+  const store = new LeaseStore();
+  store.put(homeLease({ id: 'h' }));
+  store.put(lease({ id: 'job', paidThrough: T0 + 30_000, bootedAt: T0 }));
+  const homes = homeStore({ homeId: HOME_ID });
+  const logs: string[] = [];
+  const { r, stops } = fakeRunner({ retireHome: async () => { throw new Error('no_pid'); } });
+  await windowTick({ store, runner: r, homes, now: () => T0 + 30_000 + GRACE_MS + 1, log: (m: string) => void logs.push(m) });
+  assert.deepEqual(stops.sort(), ['h', 'job']);
+  assert.equal(store.get('job')!.closedReason, 'missed_tick');
+  assert.ok(logs.some((m) => /no_pid/.test(m)));
+  assert.equal(homes.get(HOME_ID)!.paidOnce, true, 'the record is kept even when anon failed');
+});
+
+test('reconcile re-creates a paid home whose container is gone and counts the restart', async () => {
+  const store = new LeaseStore();
+  store.put(homeLease({ id: 'h' }));
+  const homes = homeStore({ homeId: HOME_ID, paidOnce: true });
+  const calls: string[] = [];
+  const { r, stops } = fakeRunner({
+    alive: async () => false,
+    create: async (id, job) => void calls.push(`create ${id} ${job.image}`),
+    start: async (id) => void calls.push(`start ${id}`),
+    publishHome: async (id) => void calls.push(`publish ${id}`),
+  });
+  await reconcile({ store, runner: r, homes, now: () => T0 + 1000 });
+  assert.deepEqual(calls, ['create h charter-home', 'start h', `publish ${HOME_ID}`]);
+  assert.deepEqual(stops, []);
+  assert.equal(store.get('h')!.state, 'running');
+  assert.equal(store.get('h')!.restarts, 1);
+});
+
+test('reconcile closes a home it cannot re-create as host_restart, keeping a paid disk', async () => {
+  const store = new LeaseStore();
+  store.put(homeLease({ id: 'h' }));
+  const homes = homeStore({ homeId: HOME_ID, paidOnce: true });
+  const removed: string[] = [];
+  const { r, stops } = fakeRunner({
+    alive: async () => false,
+    start: async () => { throw new RunnerError('docker_failed', 'boom'); },
+    removeHome: async (id) => void removed.push(id),
+  });
+  await reconcile({ store, runner: r, homes, now: () => T0 + 1000, log: () => undefined });
+  assert.equal(store.get('h')!.closedReason, 'host_restart');
+  assert.deepEqual(stops, ['h']);
+  assert.deepEqual(removed, []);
+  assert.equal(homes.get(HOME_ID)!.lastClosedAt, T0 + 1000);
+});
+
+test('reconcile closes a home whose paid time ran out during the outage without re-creating it', async () => {
+  const store = new LeaseStore();
+  store.put(homeLease({ id: 'h' }));
+  const homes = homeStore({ homeId: HOME_ID, paidOnce: true });
+  let creates = 0;
+  const { r, stops } = fakeRunner({ alive: async () => false, create: async () => void creates++ });
+  const now = T0 + 30_000 + GRACE_MS + 1;
+  await reconcile({ store, runner: r, homes, now: () => now });
+  assert.equal(store.get('h')!.state, 'closed');
+  assert.equal(store.get('h')!.closedReason, 'missed_tick');
+  assert.equal(creates, 0);
+  assert.deepEqual(stops, ['h']);
+  assert.equal(homes.get(HOME_ID)!.lastClosedAt, now);
+});
+
+test('reconcile keeps a home docker already brought back', async () => {
+  const store = new LeaseStore();
+  const before = homeLease({ id: 'h' });
+  store.put(before);
+  const homes = homeStore({ homeId: HOME_ID, paidOnce: true });
+  const calls: string[] = [];
+  const note = (name: string) => async () => void calls.push(name);
+  const { r, stops } = fakeRunner({
+    alive: async () => true, create: note('create'), start: note('start'), publishHome: note('publish'),
+    retireHome: note('retire'), removeHome: note('remove'),
+  });
+  await reconcile({ store, runner: r, homes, now: () => T0 + 1000 });
+  assert.deepEqual(calls, []);
+  assert.deepEqual(stops, []);
+  assert.deepEqual(store.get('h'), before);
+});
+
+test('reconcile closes a home still waiting on its first tick as a job is', async () => {
+  const store = new LeaseStore();
+  store.put(homeLease({ id: 'h', state: 'awaiting_first_tick', paidIntervals: 0, paidThrough: undefined, startedAt: undefined }));
+  const homes = homeStore({ homeId: HOME_ID });
+  const removed: string[] = [];
+  let creates = 0;
+  const { r, stops } = fakeRunner({
+    alive: async () => false, create: async () => void creates++, removeHome: async (id) => void removed.push(id),
+  });
+  await reconcile({ store, runner: r, homes, now: () => T0 + 1000 });
+  assert.equal(store.get('h')!.closedReason, 'host_restart');
+  assert.equal(creates, 0);
+  assert.deepEqual(stops, ['h']);
+  assert.deepEqual(removed, [HOME_ID]);
+  assert.equal(homes.get(HOME_ID), undefined);
+});
+
+test('homeSweep removes what sweepDue names and nothing live', async () => {
+  const store = new LeaseStore();
+  store.put(homeLease({ id: 'live', homeId: 'live' }));
+  const now = T0 + HOME_RETENTION_MS + 1;
+  const homes = homeStore(
+    { homeId: 'due', paidOnce: true, lastClosedAt: T0 },
+    { homeId: 'live', paidOnce: false },
+    { homeId: 'fresh', paidOnce: true, lastClosedAt: now - 1000 },
+  );
+  const removed: string[] = [];
+  const { r } = fakeRunner({ removeHome: async (id) => void removed.push(id) });
+  const ids = await homeSweep({ store, runner: r, homes, now: () => now });
+  assert.deepEqual(ids, ['due']);
+  assert.deepEqual(removed, ['due']);
+  assert.deepEqual(homes.all().map((h) => h.homeId).sort(), ['fresh', 'live']);
+});
+
+test('homeSweep logs a failed removal, keeps the record, and returns only what it removed', async () => {
+  const store = new LeaseStore();
+  const homes = homeStore({ homeId: 'a' }, { homeId: 'b' });
+  const logs: string[] = [];
+  const { r } = fakeRunner({ removeHome: async (id) => { if (id === 'a') throw new Error('no_pid'); } });
+  const ids = await homeSweep({ store, runner: r, homes, now: () => T0, log: (m: string) => void logs.push(m) });
+  assert.deepEqual(ids, ['b']);
+  assert.ok(homes.get('a'));
+  assert.ok(logs.some((m) => /no_pid/.test(m)));
+});
+
+test('a returning home that paid before keeps its disk when its new lease never pays', async () => {
+  const store = new LeaseStore();
+  store.put(homeLease({ id: 'back', state: 'awaiting_first_tick', paidIntervals: 0, paidThrough: undefined, startedAt: undefined }));
+  const homes = homeStore({ homeId: HOME_ID, paidOnce: true, lastClosedAt: T0 - 1000 });
+  const removed: string[] = [];
+  const { r } = fakeRunner({ removeHome: async (id) => void removed.push(id) });
+  await windowTick({ store, runner: r, homes, now: () => T0 + 90_001 });
+  assert.equal(store.get('back')!.closedReason, 'missed_tick');
+  assert.deepEqual(removed, []);
+  assert.equal(homes.get(HOME_ID)!.lastClosedAt, T0 - 1000, 'the paid retention clock is not reset by an unpaid lease');
 });

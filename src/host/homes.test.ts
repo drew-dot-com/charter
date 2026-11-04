@@ -120,16 +120,20 @@ test('HomeStore round-trips through its file like LeaseStore', async () => {
   assert.equal(new HomeStore(file).get('h1'), undefined);
 });
 
-test('sweepDue: a never-paid home closed is due at once, a paid one exactly at 7 days, a live one never', () => {
+test('sweepDue: an unpaid home with no live lease is due at once, a paid one exactly 7 days after its close, a live one never', () => {
   const T = 1_000_000;
   const s = new HomeStore();
   s.put({ homeId: 'unpaid', port: 22000, createdAt: 0, paidOnce: false, lastClosedAt: T });
   s.put({ homeId: 'paid', port: 22001, createdAt: 0, paidOnce: true, lastClosedAt: T });
   s.put({ homeId: 'live', port: 22002, createdAt: 0, paidOnce: true, lastClosedAt: T });
-  s.put({ homeId: 'open', port: 22003, createdAt: 0, paidOnce: false });
+  // A disk made before a failed create, or for a lease that lapsed unpaid: never closed through the loop.
+  s.put({ homeId: 'orphan', port: 22003, createdAt: 0, paidOnce: false });
+  // Paid and never closed: still in use as far as the record knows.
+  s.put({ homeId: 'paidOpen', port: 22004, createdAt: 0, paidOnce: true });
   const ids = (now: number) => sweepDue(s, new Set(['live']), now).map((r) => r.homeId).sort();
-  assert.deepEqual(ids(T), ['unpaid']);
-  assert.deepEqual(ids(T + HOME_RETENTION_MS - 1), ['unpaid']);
-  assert.deepEqual(ids(T + HOME_RETENTION_MS), ['paid', 'unpaid']);
-  assert.deepEqual(sweepDue(s, new Set(['live', 'unpaid', 'paid']), T + 10 * HOME_RETENTION_MS), []);
+  assert.deepEqual(ids(T), ['orphan', 'unpaid']);
+  assert.deepEqual(ids(T + HOME_RETENTION_MS - 1), ['orphan', 'unpaid']);
+  assert.deepEqual(ids(T + HOME_RETENTION_MS), ['orphan', 'paid', 'unpaid']);
+  assert.deepEqual(ids(T + 10 * HOME_RETENTION_MS), ['orphan', 'paid', 'unpaid']);
+  assert.deepEqual(sweepDue(s, new Set(['live', 'unpaid', 'paid', 'orphan']), T + 10 * HOME_RETENTION_MS), []);
 });

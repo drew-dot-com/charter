@@ -1,7 +1,8 @@
-import { due, onBootFailed, onJobExit } from '../lease.js';
+import { due, isHome, onBootFailed, onHomeRestarted, onJobExit } from '../lease.js';
 import { offerToEvent } from '../offer.js';
 import type { ToonCli } from '../toon-cli.js';
 import type { Lease, Offer } from '../types.js';
+import { sweepDue, type HomeStore } from './homes.js';
 import type { Runner } from './runner.js';
 import { outputPartCount } from './server.js';
 import type { LeaseStore } from './store.js';
@@ -11,6 +12,8 @@ export const BOOT_TIMEOUT_MS = 120_000;
 /** An offer stays valid this long, and is republished every OFFER_REPUBLISH_MS. */
 export const OFFER_LIFETIME_MS = 45 * 60_000;
 export const OFFER_REPUBLISH_MS = 20 * 60_000;
+/** How often closed homes are checked against the retention rules. */
+export const HOME_SWEEP_MS = 3_600_000;
 
 export interface LoopDeps {
   store: LeaseStore;
@@ -18,7 +21,84 @@ export interface LoopDeps {
   now: () => number;
   /** Lease ids whose `runner.exited` is already being awaited. Created on first use. */
   watched?: Set<string>;
+  /** Required once any home lease exists. */
+  homes?: HomeStore;
+  /** Home ids whose onion conf this process has written. Created on first use. */
+  published?: Set<string>;
   log?: (msg: string) => void;
+}
+
+function isLive(l: Lease): boolean {
+  return l.state === 'booting' || l.state === 'awaiting_first_tick' || l.state === 'running';
+}
+
+function liveHomeIds(deps: LoopDeps): Set<string> {
+  const ids = new Set<string>();
+  for (const l of deps.store.all()) if (isLive(l) && l.homeId) ids.add(l.homeId);
+  return ids;
+}
+
+/** Anon or docker trouble with one home is logged, never thrown: it must not stall the loop. */
+async function tryHome(deps: LoopDeps, what: string, f: () => Promise<void>): Promise<boolean> {
+  try {
+    await f();
+    return true;
+  } catch (e) {
+    deps.log?.(`home ${what} failed: ${String(e)}`);
+    return false;
+  }
+}
+
+/**
+ * After a home lease closed and its container stopped: drop its onion, then remove a home that
+ * never paid or keep a paid one's disk for the retention time. A home another live lease holds is
+ * left alone.
+ */
+async function releaseHome(deps: LoopDeps, l: Lease, now: number): Promise<void> {
+  const homeId = l.homeId;
+  if (!homeId || liveHomeIds(deps).has(homeId)) return;
+  await tryHome(deps, `retire ${homeId}`, () => deps.runner.retireHome(homeId));
+  deps.published?.delete(homeId);
+  const rec = deps.homes?.get(homeId);
+  if (l.paidIntervals === 0) {
+    // A returning home that paid on an earlier lease keeps its disk; only a never-paid one goes.
+    if (rec?.paidOnce) return;
+    if (await tryHome(deps, `remove ${homeId}`, () => deps.runner.removeHome(homeId))) deps.homes?.delete(homeId);
+    return;
+  }
+  if (!rec) {
+    deps.log?.(`home ${homeId}: no record to mark closed`);
+    return;
+  }
+  deps.homes!.put({ ...rec, paidOnce: true, lastClosedAt: now });
+}
+
+/** Close, stop, and for a home release it. */
+async function closeAndStop(deps: LoopDeps, l: Lease, reason: NonNullable<Lease['closedReason']>, now: number): Promise<void> {
+  const closed = close(deps, l, reason);
+  await stop(deps, l.id);
+  if (isHome(closed)) await releaseHome(deps, closed, now);
+}
+
+/** A running home: write its onion conf once per process, and fill in its address once anon has one. */
+async function tendHome(deps: LoopDeps, l: Lease): Promise<void> {
+  const homeId = l.homeId;
+  if (!homeId) return;
+  const published = (deps.published ??= new Set());
+  if (!published.has(homeId) && deps.homes?.get(homeId)) {
+    if (await tryHome(deps, `publish ${homeId}`, () => deps.runner.publishHome(homeId))) published.add(homeId);
+  }
+  if (l.access == null) {
+    let access = null;
+    try {
+      access = await deps.runner.homeAccess(homeId);
+    } catch (e) {
+      deps.log?.(`home ${homeId}: access unreadable: ${String(e)}`);
+    }
+    // Re-read: a tick may have been paid while anon was asked.
+    const cur = deps.store.get(l.id);
+    if (access && cur?.state === 'running') deps.store.put({ ...cur, access });
+  }
 }
 
 function close(deps: LoopDeps, l: Lease, reason: NonNullable<Lease['closedReason']>): Lease {
@@ -76,16 +156,22 @@ export async function windowTick(deps: LoopDeps): Promise<void> {
     const now = deps.now();
     if (l.state === 'booting') {
       if (now > l.createdAt + BOOT_TIMEOUT_MS) {
-        deps.store.put(onBootFailed(l));
+        const failed = onBootFailed(l);
+        deps.store.put(failed);
         await stop(deps, id);
+        if (isHome(failed)) await releaseHome(deps, failed, now);
       }
       continue;
     }
     if (l.state !== 'awaiting_first_tick' && l.state !== 'running') continue;
     const reason = due(l, now);
     if (reason !== null) {
-      close(deps, l, reason);
-      await stop(deps, id);
+      await closeAndStop(deps, l, reason, now);
+      continue;
+    }
+    if (isHome(l)) {
+      // A home's exit is not the end of its lease: no exit watch, only its onion and address.
+      if (l.state === 'running' && l.startedAt !== undefined) await tendHome(deps, l);
       continue;
     }
     // Only a started container is watched: `docker wait` on one that is only created returns at once.
@@ -98,16 +184,50 @@ export async function windowTick(deps: LoopDeps): Promise<void> {
 
 /**
  * Once at boot: a lease whose container is not running after a restart is closed, and its container
- * (one that was only created, or never made) is removed.
+ * (one that was only created, or never made) is removed. A paid running home is brought back instead.
  */
 export async function reconcile(deps: LoopDeps): Promise<void> {
   for (const l of deps.store.all()) {
-    if (l.state !== 'booting' && l.state !== 'awaiting_first_tick' && l.state !== 'running') continue;
-    if (!(await deps.runner.alive(l.id))) {
-      close(deps, l, 'host_restart');
-      await stop(deps, l.id);
+    if (!isLive(l)) continue;
+    if (await deps.runner.alive(l.id)) continue;
+    const now = deps.now();
+    if (isHome(l) && l.state === 'running') {
+      await restartHome(deps, l, now);
+      continue;
+    }
+    await closeAndStop(deps, l, 'host_restart', now);
+  }
+}
+
+/** A running home whose container is gone: re-create it while it is paid, close it once it is not. */
+async function restartHome(deps: LoopDeps, l: Lease, now: number): Promise<void> {
+  const reason = due(l, now);
+  if (reason !== null) return closeAndStop(deps, l, reason, now);
+  try {
+    await deps.runner.create(l.id, l.job);
+    await deps.runner.start(l.id);
+  } catch (e) {
+    deps.log?.(`home lease ${l.id}: restart failed: ${String(e)}`);
+    return closeAndStop(deps, l, 'host_restart', now);
+  }
+  deps.store.put(onHomeRestarted(l));
+  const homeId = l.homeId;
+  if (homeId && (await tryHome(deps, `publish ${homeId}`, () => deps.runner.publishHome(homeId)))) {
+    (deps.published ??= new Set()).add(homeId);
+  }
+}
+
+/** Removes every home the retention rules say is done with. Returns the removed ids. */
+export async function homeSweep(deps: LoopDeps): Promise<string[]> {
+  if (!deps.homes) return [];
+  const removed: string[] = [];
+  for (const rec of sweepDue(deps.homes, liveHomeIds(deps), deps.now())) {
+    if (await tryHome(deps, `remove ${rec.homeId}`, () => deps.runner.removeHome(rec.homeId))) {
+      deps.homes.delete(rec.homeId);
+      removed.push(rec.homeId);
     }
   }
+  return removed;
 }
 
 export interface OfferDeps {
