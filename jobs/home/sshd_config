@@ -14,4 +14,6 @@ AllowTcpForwarding yes
 GatewayPorts no
 X11Forwarding no
 ClientAliveInterval 60
+# Sessions get the box env from ~/.ssh/environment. sshd already runs as the tenant, so this grants nothing new.
+PermitUserEnvironment yes
 StrictModes yes

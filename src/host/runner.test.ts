@@ -411,7 +411,7 @@ test('ensureHome makes the disk and volume once and refuses a new disk under the
   const rec = await t.r.ensureHome(HOME_ID);
   assert.deepEqual(rec, { homeId: HOME_ID, port: 22000, createdAt: 1_700_000_000_000, paidOnce: false });
   assert.deepEqual(t.homes.get(HOME_ID), rec);
-  assert.deepEqual(t.tools, [`truncate -s 2G ${disk}`, `mkfs -F -q -m 0 ${disk}`]);
+  assert.deepEqual(t.tools, [`truncate -s 2G ${disk}`, `mkfs -F -q -m 0 -E root_owner=10001:10001 ${disk}`]);
   const vol = `charter-home-${HOME_ID}`;
   assert.deepEqual(
     t.calls.map((c) => c.args.slice(0, 2).join(' ')),
@@ -455,7 +455,7 @@ test('ensureHome cleans up after a failed mkfs, so the next call formats a fresh
   await assert.rejects(access(join(t.homesDir, HOME_ID)));
   t.tools.length = 0;
   await t.r.ensureHome(HOME_ID);
-  assert.deepEqual(t.tools, [`truncate -s 2G ${disk}`, `mkfs -F -q -m 0 ${disk}`]);
+  assert.deepEqual(t.tools, [`truncate -s 2G ${disk}`, `mkfs -F -q -m 0 -E root_owner=10001:10001 ${disk}`]);
   assert.ok(t.homes.get(HOME_ID));
 });
 

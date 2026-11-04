@@ -1,13 +1,16 @@
 # A tenant's home: sshd as the unprivileged tenant on the tenant's own disk, with Node, Python, uv and git.
-# Image size: 708 MB on arm64 (docker image ls, 2026-11-04).
+# Image size: 709 MB on arm64 (docker image ls, 2026-11-04).
 FROM debian:bookworm-slim
 ARG TARGETARCH
 ARG NODE_VERSION=22.23.4
 ARG UV_VERSION=0.13.7
+# No setuid path out of tenant, and no package host keys: the real one is generated on the disk.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     openssh-server openssh-client python3 python3-venv python3-pip git curl jq rsync tmux ca-certificates procps xz-utils \
-  && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/* \
+  && find / -xdev -perm /6000 -type f -exec chmod a-s {} + \
+  && rm -f /etc/ssh/ssh_host_*
 # The legacy builder leaves TARGETARCH empty: fall back to the build machine's own arch.
 RUN set -eu; arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
   case "$arch" in \
@@ -25,7 +28,8 @@ RUN set -eu; arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
   tar -xzf /tmp/uv.tar.gz -C /usr/local/bin --strip-components=1 --no-same-owner; \
   rm -f /tmp/node.tar.xz /tmp/uv.tar.gz; \
   node --version; uv --version
-RUN useradd --uid 10001 --create-home --shell /bin/bash tenant
+# A '*' password is not locked: pubkey login must not hinge on a shadow file sshd cannot read.
+RUN useradd -p '*' --uid 10001 --create-home --shell /bin/bash tenant
 COPY home.sh sshd_config /app/
 ENV HOME=/home/tenant
 USER tenant

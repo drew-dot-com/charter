@@ -9,7 +9,10 @@ import { fileURLToPath } from 'node:url';
 const DIR = dirname(fileURLToPath(import.meta.url));
 // The build takes minutes and CI has no docker daemon this test may use: opt in on a docker host.
 const ready = process.env.CHARTER_IMAGE_TESTS === '1' && spawnSync('docker', ['info'], { stdio: 'ignore' }).status === 0;
-const opts = { skip: ready ? false : 'set CHARTER_IMAGE_TESTS=1 on a docker host', timeout: 15 * 60_000 };
+// The disk is built the way the host builds it, which needs mkfs.ext4 here.
+const mkfs = ready && spawnSync('mkfs.ext4', ['-V'], { stdio: 'ignore' }).status === 0;
+const skip = !ready ? 'set CHARTER_IMAGE_TESTS=1 on a docker host' : !mkfs ? 'mkfs.ext4 not installed' : false;
+const opts = { skip, timeout: 15 * 60_000 };
 
 function sh(cmd, args, input) {
   const r = spawnSync(cmd, args, { encoding: 'utf8', input, timeout: 15 * 60_000 });
@@ -43,7 +46,12 @@ test('a home keeps its files, boot script and host key across a restart, and its
     assert.equal(sh('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', join(tmp, k)]).code, 0);
   }
   const pub = (k) => readFileSync(join(tmp, `${k}.pub`), 'utf8').trim().split(' ').slice(0, 2).join(' ');
-  docker('volume', 'create', vol);
+  // A production disk: a fresh ext4 loop image whose root the tenant uid owns, so docker copies nothing in.
+  const disk = join(tmp, 'disk.img');
+  assert.equal(sh('truncate', ['-s', '1G', disk]).code, 0);
+  const fs = sh('mkfs.ext4', ['-F', '-q', '-m', '0', '-E', 'root_owner=10001:10001', disk]);
+  assert.equal(fs.code, 0, fs.err);
+  docker('volume', 'create', '--driver', 'local', '--opt', 'type=ext4', '--opt', `device=${disk}`, '--opt', 'o=loop', vol);
   // The host's jobs run under gVisor: so does this one, when the daemon has it.
   const runtime = docker('info', '--format', '{{json .Runtimes}}').includes('"runsc"') ? ['--runtime', 'runsc'] : [];
 
@@ -54,7 +62,7 @@ test('a home keeps its files, boot script and host key across a restart, and its
       '--read-only', '--tmpfs', '/tmp:size=256m', '--tmpfs', '/run',
       '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '512',
       '-p', '127.0.0.1:0:2222', '--mount', `type=volume,src=${vol},dst=/home/tenant`,
-      '-e', `SSH_KEYS=${keys}`, tag);
+      '-e', `SSH_KEYS=${keys}`, '-e', 'HTTPS_PROXY=http://10.0.0.1:9080', '-e', 'CHARTER_LEASE_ID=abc', tag);
     return n;
   }
   const port = (n) => docker('port', n, '2222/tcp').split('\n')[0].split(':').pop();
@@ -81,7 +89,9 @@ test('a home keeps its files, boot script and host key across a restart, and its
   let p = port(first);
   waitSsh('a', p);
   assert.equal(ssh('a', p, 'id -un').out, 'tenant');
-  const set = ssh('a', p, 'echo hi > ~/kept; printf "#!/bin/sh\\ntouch ~/booted\\n" > ~/.charter/boot.sh; chmod +x ~/.charter/boot.sh');
+  // A session sees the box env through ~/.ssh/environment.
+  assert.equal(ssh('a', p, 'printf %s "$HTTPS_PROXY:$CHARTER_LEASE_ID"').out, 'http://10.0.0.1:9080:abc');
+  const set = ssh('a', p, 'echo hi > ~/kept; printf "#!/bin/sh\\ntouch ~/booted\\nexec sleep 3600\\n" > ~/.charter/boot.sh; chmod +x ~/.charter/boot.sh');
   assert.equal(set.code, 0, set.err);
   const before = fingerprint(p);
 
@@ -89,7 +99,7 @@ test('a home keeps its files, boot script and host key across a restart, and its
   p = port(first);
   waitSsh('a', p);
   assert.equal(ssh('a', p, 'cat ~/kept').out, 'hi');
-  // boot.sh runs in the background: give it a moment to land.
+  // boot.sh runs in the background and never exits: sshd answered anyway, now give the marker a moment.
   let booted;
   for (const end = Date.now() + 10_000; Date.now() < end; pause(250)) {
     booted = ssh('a', p, 'ls ~/booted');
@@ -104,6 +114,8 @@ test('a home keeps its files, boot script and host key across a restart, and its
   p = port(second);
   waitSsh('b', p);
   assert.equal(ssh('b', p, 'cat ~/kept').out, 'hi');
-  assert.equal(ssh('a', p, 'true').code, 255, 'the old key must be refused');
+  const old = ssh('a', p, 'true');
+  assert.equal(old.code, 255, 'the old key must be refused');
+  assert.match(old.err, /Permission denied/);
   assert.equal(fingerprint(p), before, 'the host key lives on the disk, not in the container');
 });

@@ -99,7 +99,8 @@ export async function createDisk(
   if (exists) throw new HomeError('disk_exists', file);
   const t = await tools.truncate(['-s', `${gib}G`, file], {});
   if (t.code !== 0) throw new HomeError('mkfs_failed', `truncate: ${t.stderr}`);
-  const m = await tools.mkfs(['-F', '-q', '-m', '0', file], {});
+  // Nothing in the box can chown, so the tenant uid must own the disk's root from format time.
+  const m = await tools.mkfs(['-F', '-q', '-m', '0', '-E', 'root_owner=10001:10001', file], {});
   if (m.code !== 0) throw new HomeError('mkfs_failed', m.stderr);
 }
 

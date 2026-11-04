@@ -51,7 +51,7 @@ test('createDisk runs truncate then mkfs with the pinned flags', async () => {
   await createDisk({ truncate, mkfs }, '/h/disk.img', 2);
   assert.deepEqual(order, ['truncate', 'mkfs']);
   assert.deepEqual(t.calls[0]!.args.slice(-3), ['-s', '2G', '/h/disk.img']);
-  assert.deepEqual(m.calls[0]!.args, ['-F', '-q', '-m', '0', '/h/disk.img']);
+  assert.deepEqual(m.calls[0]!.args, ['-F', '-q', '-m', '0', '-E', 'root_owner=10001:10001', '/h/disk.img']);
   const bad = fake(() => ({ code: 1, stderr: 'no space' }));
   await assert.rejects(
     createDisk({ truncate: t.exec, mkfs: bad.exec }, '/h/disk.img', 2),
