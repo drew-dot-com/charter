@@ -14,6 +14,8 @@ export const OFFER: Offer = {
   sealUrl: 'http://x.anyone/ilp', cpu: 1, memoryMiB: 1024, intervalSeconds: 30, firstTickGraceSeconds: 90, tickPrice: 5000n, openPrice: 1000n, statusPrice: 100n, images: ['charter-job-fetch'],
   hiddenHost: true, hiddenEgress: false, expiresAt: 9_999_999_999_000,
 };
+/** The live host's schedule since 2026-11-04: one hour at 0.007 USDC. */
+export const HOURLY: Offer = { ...OFFER, id: 'o-hourly', intervalSeconds: 3600, tickPrice: 7000n };
 
 export interface TestHost {
   store: LeaseStore;
@@ -34,6 +36,8 @@ export interface TestHostOpts {
   afterTick?: (h: TestHost, paidIntervals: number) => void;
   /** The host's clock runs this far ahead (or behind, when negative) of the tenant's. */
   skewMs?: number;
+  /** The offer the host serves; OFFER (30 s intervals) unless given. */
+  offer?: Offer;
 }
 
 export async function testHost(opts: TestHostOpts = {}): Promise<TestHost> {
@@ -48,7 +52,7 @@ export async function testHost(opts: TestHostOpts = {}): Promise<TestHost> {
     alive: async () => true,
     ...opts.runner,
   };
-  const apps = hostApps({ store, runner, offer: OFFER, now: () => clock.t + (opts.skewMs ?? 0) });
+  const apps = hostApps({ store, runner, offer: opts.offer ?? OFFER, now: () => clock.t + (opts.skewMs ?? 0) });
   const servers: Array<import('node:http').Server> = [];
   const listen = async (app: Express) => {
     const s = app.listen(0, '127.0.0.1');

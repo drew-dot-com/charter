@@ -47,7 +47,7 @@ From a `toon` node:
 
 ```sh
 charter offers --relay wss://relay.mainnet.toonprotocol.dev
-charter rent --offer <pubkey>:<id> --urls https://example.com --max-intervals 6 --relay wss://relay.mainnet.toonprotocol.dev --json
+charter rent --offer <pubkey>:<id> --urls https://example.com --max-intervals 1 --relay wss://relay.mainnet.toonprotocol.dev --json
 ```
 
 `TOON_PASSPHRASE_FILE` names the file with the node wallet's passphrase.

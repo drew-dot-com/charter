@@ -1,6 +1,6 @@
 {
   "name": "charter",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Rent Charter compute from an agent node: read the kind 31390 offers, open a lease, pay each interval and fetch the output with toon_cli.",
   "author": {
     "name": "Drew Pierson",

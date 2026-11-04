@@ -194,16 +194,20 @@ ran while the packet travelled.
 
 Then, for as long as you want the job to run and have ticks left under `maxIntervals`:
 
-1. Wait until halfway through the paid interval (30 minutes before `paidUntil` on a one hour
-   interval). To pay ahead instead, send the next indexes now, in order: each adds an interval. The
-   host gives only 10 s of grace past `paidUntil`, and one packet to a hidden host can take 15 s,
-   so a read and a tick started 10 s before the end arrive too late. A tick paid early extends
-   the paid time from its current end, so nothing is lost by being early.
-2. Read the lease (step 6). `done`: fetch the output and stop. `closed`: stop. `running` with
-   `paidIntervals` below the ticks you sent: the host did not count a tick, so stop paying.
+1. Read the lease (step 6) 10 s after the tick, then at doubling gaps (20 s, 40 s, 80 s and so
+   on), and last at halfway through the paid interval (30 minutes before `paidUntil` on a one
+   hour interval). A job that exits in seconds is then seen in seconds, and an hour of watching
+   costs at most nine reads. On every read: `done`: fetch the output and stop. `closed`: stop.
+   To pay ahead instead, send the next indexes now, in order: each adds an interval. The host
+   gives only 10 s of grace past `paidUntil`, and one packet to a hidden host can take 15 s, so a
+   read and a tick started 10 s before the end arrive too late. A tick paid early extends the
+   paid time from its current end, so nothing is lost by being early.
+2. At the halfway read, `running` with `paidIntervals` below the ticks you sent means the host
+   did not count a tick: stop paying.
 3. Otherwise pay the next tick, `index` one higher.
 
-After the last tick you will pay, wait out the paid time, read the lease once more and stop. A
+After the last tick you will pay, watch the paid time out the same way, with a last read at its
+end, and stop. A
 tick answered `409` with `lease_done` or `not_running` is a lease that has ended: read it, and
 never retry the tick. `409 missed_tick` is a lease the host closed for a late tick. A tick
 answer with no `paidThrough` is a host you do not pay again: read the lease once and stop.

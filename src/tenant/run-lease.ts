@@ -1,5 +1,5 @@
 import type { JobSpec, Lease, Micro, Offer } from '../types.js';
-import { tickLeadMs } from '../lease.js';
+import { GRACE_MS, tickLeadMs } from '../lease.js';
 import { HostError, type HostApi } from './host-api.js';
 
 export type LeaseEvent =
@@ -104,6 +104,22 @@ export async function runLease(api: HostApi, o: Offer, job: JobSpec, opts: RunLe
     }
   };
 
+  /**
+   * Read the lease until `until` (tenant clock): first GRACE_MS after the tick, then at doubling
+   * gaps, then once at `until`. A job that exits in seconds is seen in seconds whatever the
+   * interval, and an hour of waiting costs at most nine status reads. Returns the last read.
+   */
+  const watchUntil = async (until: number) => {
+    let gap = GRACE_MS;
+    for (;;) {
+      const at = Math.min(now() + gap, until);
+      await sleep(Math.max(0, at - now()));
+      const s = await settle();
+      if (s.finished || now() >= until) return s;
+      gap *= 2;
+    }
+  };
+
   let p = await pay();
   for (;;) {
     if ('ended' in p) return p.ended;
@@ -113,13 +129,11 @@ export async function runLease(api: HostApi, o: Offer, job: JobSpec, opts: RunLe
       if (!s.finished) emit({ kind: 'stopped', reason: 'no_paid_through' });
       return result(s.lease, s.output ? { output: s.output } : {});
     }
-    await sleep(Math.max(0, paidUntil! - leadMs - now()));
-    const s = await settle();
+    const s = await watchUntil(paidUntil! - leadMs);
     if (s.finished) return result(s.lease, s.output ? { output: s.output } : {});
     if (ticksSent >= opts.maxIntervals) {
-      // No more ticks, but the last interval is paid for: wait it out, then look once more.
-      await sleep(Math.max(0, paidUntil! - now()));
-      const last = await settle();
+      // No more ticks, but the last interval is paid for: watch it out, to its end.
+      const last = await watchUntil(paidUntil!);
       if (!last.finished) emit({ kind: 'stopped', reason: 'max_intervals' });
       return result(last.lease, last.output ? { output: last.output } : {});
     }

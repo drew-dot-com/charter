@@ -304,3 +304,16 @@ page calls only its own origin: wallet RPC and signing go through the injected w
 - [ ] After the record resolves: republish `site/index.html` to Arweave (it links the new name),
   then drop the sslip name from the Caddy block if nothing still links it.
 - Back out: `cat Caddyfile.bak-20261027-preheaders > Caddyfile`, `docker cp`, `caddy reload`.
+
+## 12. Early status reads (2026-11-04)
+
+With the hourly offer, the tenant loop's one status read at half the interval meant a five second
+fetch through `charter rent` was not seen for 30 minutes (found by Edison's charter-tool 0.3.0
+upgrade: the bridge kills `charter` at 540 s). Fix: after each tick the loop reads 10 s in, then
+at doubling gaps, then at the half-way point where it pays again; the wait-out after the last
+tick is watched the same way. At most nine reads a watched hour (0.0009 USDC). The skill's
+`references/lease-loop.sh` and SKILL.md step 1 got the same change (plugin 0.2.1).
+
+- [ ] `toon` VM (Edison's `charter` CLI): source backup `~/src/charter.bak-20261104-*-prewatch`,
+  fresh source from `git archive`, `npm ci && npm run build`, `chmod +x dist/cli.js`.
+- Host and door unchanged: the host's lease machinery and the storefront's own poll were already right.

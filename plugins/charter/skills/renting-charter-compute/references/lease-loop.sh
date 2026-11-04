@@ -33,9 +33,9 @@ tick_price=$(jq -er .tickPrice "$offer")
 status_price=$(jq -er .statusPrice "$offer")
 interval_ms=$(( $(jq -er .intervalSeconds "$offer") * 1000 ))
 grace_ms=10000
-# How long before the paid time ends the next status read and tick go out. A packet to a hidden
-# host can take 15 s, and the host gives only 10 s of grace, so half an interval, never less than
-# the grace.
+# How long before the paid time ends the next tick goes out (with the status read before it). A
+# packet to a hidden host can take 15 s, and the host gives only 10 s of grace, so half an
+# interval, never less than the grace. Status is read earlier than that too: see watch_until.
 lead_ms=$(( interval_ms / 2 > grace_ms ? interval_ms / 2 : grace_ms ))
 # Every packet's cost, one a line; summed at the end (a subshell cannot add to a variable).
 spent_file=$(mktemp)
@@ -157,6 +157,20 @@ tick() {
 
 sleep_until() { local wait=$(( $1 - $(now_ms) )); if (( wait > 0 )); then sleep "$(( (wait + 999) / 1000 ))"; fi; }
 
+# Read the lease until a time (ms): 10 s after the tick, then at doubling gaps, then once at that
+# time; a lease that has ended settles and exits. A job that exits in seconds is seen in seconds
+# whatever the interval, and an hour of watching costs at most nine status reads.
+watch_until() {
+  local until=$1 gap=$grace_ms at
+  while :; do
+    at=$(( $(now_ms) + gap )); (( at > until )) && at=$until
+    sleep_until "$at"
+    read_lease; lease_ended && settle
+    (( $(now_ms) >= until )) && return 0
+    gap=$(( gap * 2 ))
+  done
+}
+
 tick
 while :; do
   case $tick_result in
@@ -165,11 +179,9 @@ while :; do
       read_lease; lease_ended && settle
       finish "$lease" "$(lease_state)" "$(lease_paid)" "" "host named no paidThrough"; exit 1 ;;
   esac
-  sleep_until $(( paid_until - lead_ms ))
-  read_lease; lease_ended && settle
+  watch_until $(( paid_until - lead_ms ))
   if (( ticks_sent >= max )); then
-    sleep_until "$paid_until"
-    read_lease; lease_ended && settle
+    watch_until "$paid_until"
     finish "$lease" "$(lease_state)" "$(lease_paid)" "" "max_intervals"; exit 0
   fi
   if (( $(lease_paid) < ticks_sent )); then
