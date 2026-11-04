@@ -206,6 +206,8 @@ export interface PublicOffer {
   leases?: number;
   /** Epoch ms the newest of those opened. */
   lastLeaseAt?: number;
+  /** Set when the host runs homes. */
+  home?: { diskGiB: number; retentionDays: number; slots: number };
 }
 
 export function parseOffer(o: unknown): PublicOffer | undefined {
@@ -227,11 +229,15 @@ export function parseOffer(o: unknown): PublicOffer | undefined {
     const expiresAt = num(x.expiresAt);
     const leases = num(x.leases);
     const lastLeaseAt = num(x.lastLeaseAt);
+    const h = x.home as Partial<NonNullable<PublicOffer['home']>> | undefined;
+    const pos = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
+    const home = h && pos(h.diskGiB) && pos(h.retentionDays) && pos(h.slots) ? { diskGiB: h.diskGiB, retentionDays: h.retentionDays, slots: h.slots } : undefined;
     return {
       offerId, cpu, memoryMiB, intervalSeconds, tickPrice, hiddenHost, hiddenEgress: x.hiddenEgress === true, images,
       ...(expiresAt !== undefined ? { expiresAt } : {}),
       ...(leases !== undefined ? { leases } : {}),
       ...(lastLeaseAt !== undefined ? { lastLeaseAt } : {}),
+      ...(home ? { home } : {}),
     };
   }
   return undefined;

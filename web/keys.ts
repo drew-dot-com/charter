@@ -25,5 +25,6 @@ export function sshLine(access: unknown): string | undefined {
   const ssh = (access as { ssh?: unknown } | null | undefined)?.ssh as { host?: unknown; port?: unknown; user?: unknown } | null | undefined;
   if (!ssh || typeof ssh.host !== 'string' || !/^[a-z2-7]{56}\.anyone$/.test(ssh.host)) return undefined;
   if (ssh.user !== 'tenant' || ssh.port !== 22) return undefined;
-  return `ssh -o ProxyCommand="nc -x 127.0.0.1:9050 %h %p" tenant@${ssh.host}`;
+  // The SOCKS port is the renter's own Anyone client's; the page says to put it in, as the CLI and docs do.
+  return `ssh -o ProxyCommand="nc -x 127.0.0.1:<your Anyone SOCKS port> %h %p" tenant@${ssh.host}`;
 }

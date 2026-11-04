@@ -862,7 +862,8 @@ function render(p: LeasePage): void {
   const home = lease?.job.image === HOME_IMAGE;
   const ssh = home && lease?.state === 'running' ? sshLine(lease.access) : undefined;
   const restarts = home ? lease?.restarts ?? 0 : 0;
-  setRegion(ui.access, `${home}|${lease?.state}|${ssh}|${restarts}`, () => {
+  const keptDays = p.offer?.home?.retentionDays ?? 7;
+  setRegion(ui.access, `${home}|${lease?.state}|${ssh}|${restarts}|${lease?.paidIntervals}|${keptDays}`, () => {
     if (!home || !lease) return [];
     const out: Child[] = [];
     // Only while running: the address goes with the container, so a stopped home shows no SSH line.
@@ -870,13 +871,14 @@ function render(p: LeasePage): void {
       out.push(el('h2', undefined, 'Your home'));
       if (ssh) {
         out.push(el('pre', 'mono', ssh));
-        out.push(el('p', 'note', 'needs an Anyone client; see the ', link('agents page', '/agents', false)));
+        out.push(el('p', 'note', 'needs an Anyone client: replace <your Anyone SOCKS port> with your Anyone client\'s SOCKS port; see the ', link('agents page', '/agents', false)));
       } else {
         out.push(el('p', 'muted', 'address pending'));
       }
-    } else if (lease.state === 'done') {
-      // The host never marks a home done; if one arrives, say what is true rather than wait for output.
-      out.push(el('p', 'muted', 'This home is closed. Its disk is kept for 7 days; open again with the same keys to get it back.'));
+    } else if (lease.state === 'done' || (lease.state === 'closed' && lease.paidIntervals > 0)) {
+      // A home that paid keeps its disk for the host's retention time (the host never marks a home done;
+      // if one arrives, say what is true rather than wait for output). One that never paid keeps nothing.
+      out.push(el('p', 'muted', `This home is closed. Its disk is kept for ${keptDays} ${keptDays === 1 ? 'day' : 'days'}; open again with the same keys to get it back.`));
     }
     if (restarts > 0) out.push(el('p', 'muted', `The host restarted this home ${restarts} ${restarts === 1 ? 'time' : 'times'}.`));
     return out;

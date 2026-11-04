@@ -172,3 +172,10 @@ test('perHourNote is dropped when the interval is an hour (it would repeat the p
   assert.equal(perHourNote('5000', 30), '$0.60 an hour');
   assert.equal(perHourNote('7000', 3600), undefined);
 });
+
+test('parseOffer keeps a well-formed home and drops a malformed one', () => {
+  const base = { offerId: 'a:b', cpu: 1, memoryMiB: 1024, intervalSeconds: 3600, tickPrice: '7000', hiddenHost: true, images: ['charter-home'] };
+  assert.deepEqual(parseOffer({ ...base, home: { diskGiB: 2, retentionDays: 7, slots: 1 } })?.home, { diskGiB: 2, retentionDays: 7, slots: 1 });
+  assert.equal(parseOffer({ ...base, home: { diskGiB: 2, retentionDays: 0, slots: 1 } })?.home, undefined);
+  assert.equal('home' in parseOffer(base)!, false);
+});

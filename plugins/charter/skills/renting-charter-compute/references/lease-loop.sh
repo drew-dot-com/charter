@@ -5,7 +5,8 @@
 #
 #   offer.json     the parsed `content` of the offer's kind 31390 event (ilpBase, sealUrl, prices,
 #                  intervalSeconds)
-#   job.json       {"job":{"image":"charter-job-python","args":{"SCRIPT":"..."}}} or the fetch job
+#   job.json       {"job":{"image":"charter-job-python","args":{"SCRIPT":"..."}}}, the fetch job, or a
+#                  home: {"job":{"image":"charter-home","args":{"SSH_KEYS":"<one key per line>"}}}
 #   max-intervals  the most ticks to pay (1 or more); the spend cap of this run
 #
 # Needs `toon` (0.3.x), `jq`, GNU `date`, and TOON_PASSPHRASE_FILE in the environment. Every packet
@@ -13,6 +14,8 @@
 # output part. It prints progress on stderr and, last, one line of JSON on stdout:
 #   {"leaseId","state","paidIntervals","spent","output"?,"error"?}
 # Exit 0 when the lease ended done or ran its ticks, 1 when it closed or a packet was rejected.
+# A home never reaches done: it runs until <max-intervals> ticks are paid and watched out, then exits 0
+# and nothing pays for it. It never prints the home's ssh address: read the lease for `access`.
 set -euo pipefail
 
 if [[ $# -ne 3 ]]; then

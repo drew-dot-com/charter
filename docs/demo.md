@@ -331,7 +331,7 @@ Every id below is filled in when the step runs; none is known yet.
 - [ ] toon2: `docker build -t charter-home jobs/home`, then `CHARTER_IMAGE_TESTS=1 node --test
   jobs/home/home.test.mjs` passes. Lima disk grown first or not: `<Drew's call>`.
 - [ ] No live lease (the `jq` line in `docs/ops.md`), then `sudo bash deploy/host/install-home.sh`;
-  anon on `172.19.0.1:9050`, `9080` and `53`, the `DOCKER-USER` drop and the `INPUT` rules in place.
+  anon on `172.19.0.1:9050`, `9080` and `53`, the `DOCKER-USER` drop and the seven `INPUT` rules in place.
 - [ ] The fence, from a container on `charter-home`: `https://example.com` direct fails; through
   `-x http://172.19.0.1:9080` prints the page; `http://172.19.0.1:22` and `http://172.17.0.1:9150` fail.
 - [ ] Host env: backup `<path>`; `CHARTER_MAX_HOMES=1`, `CHARTER_ANON_HS_DIR`, `CHARTER_ANON_PIDFILE`,
@@ -344,13 +344,17 @@ Every id below is filled in when the step runs; none is known yet.
   --max-intervals 2 --relay wss://relay.mainnet.toonprotocol.dev`. Lease `<leaseId>`, homeId `<homeId>`,
   onion `<host>.anyone`, `access` set after `<seconds>` s.
 - [ ] `ssh` in over the node's SOCKS port; `curl https://example.com` works, `curl --noproxy '*' -m 10
-  https://example.com` fails; `echo kept > ~/kept`.
-- [ ] `systemctl --user restart charter-host` on toon2: the box is back with `~/kept`, `restarts: <n>`.
+  https://example.com` fails; `getent hosts example.com` resolves (proves DNS over anon through docker's
+  resolver); `curl -4 --noproxy '*' -m 10 http://172.19.0.1:9050` is refused, not hung; `echo kept > ~/kept`.
+- [ ] `systemctl --user restart charter-host` on toon2: the box is untouched (`restarts: 0`, the ssh
+  session still up). Then `docker rm -f charter-<leaseId>` and restart `charter-host` again: the box is
+  back with `~/kept`, `restarts: 1`.
 - [ ] Let the lease lapse, open again with the same key: lease `<leaseId>`, `~/kept` there, same onion
   address. Spend for the proof: `<units>` (expected about 0.02 USDC).
 - [ ] From inside the box: one `charter status` with `CHARTER_PAYER=toon-client` against a channel Drew
   funds (channel `<id>`, Base ETH for the open included): `<result>`. If Node's env proxy does not carry
-  the payer, the fix is recorded here and in `docs/ops.md`.
+  the payer, the fix is recorded here and in `docs/ops.md`, and the docs' sentence about Node fetch
+  (`NODE_USE_ENV_PROXY=1`) changes before the door republish.
 
 ### Edison moves in (plan Task 15)
 

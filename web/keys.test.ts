@@ -23,7 +23,7 @@ test('parseSshKeys accepts one key per line and names the bad line', () => {
 test('sshLine gives the exact line for a plain access and nothing for anything else', () => {
   const host = `${'a2'.repeat(28)}.anyone`;
   const ok = { ssh: { host, port: 22, user: 'tenant' } };
-  assert.equal(sshLine(ok), `ssh -o ProxyCommand="nc -x 127.0.0.1:9050 %h %p" tenant@${host}`);
+  assert.equal(sshLine(ok), `ssh -o ProxyCommand="nc -x 127.0.0.1:<your Anyone SOCKS port> %h %p" tenant@${host}`);
   for (const bad of [
     { ssh: { ...ok.ssh, host: 'a'.repeat(56) } },
     { ssh: { ...ok.ssh, host: `${'a'.repeat(55)}.anyone` } },
