@@ -63,3 +63,54 @@ test('loadConfig names what is missing or malformed', () => {
   assert.throws(() => loadConfig({ ...ENV, CHARTER_TICK_PRICE: '-5' }), /CHARTER_TICK_PRICE/);
   assert.throws(() => loadConfig({ ...ENV, CHARTER_INTERVAL_SECONDS: '0' }), /CHARTER_INTERVAL_SECONDS/);
 });
+
+const HOME_ENV = {
+  ...ENV,
+  CHARTER_ALLOW_IMAGES: 'charter-job-fetch,charter-home',
+  CHARTER_MAX_LEASES: '2',
+  CHARTER_MAX_HOMES: '1',
+  CHARTER_ANON_HS_DIR: '/etc/anon/hs.d',
+  CHARTER_ANON_PIDFILE: '/run/anon/anon.pid',
+  CHARTER_TENANT_CONNECTOR_URL: 'https://connector.mainnet.toonprotocol.dev',
+};
+
+test('a host with homes needs the anon paths and a tenant connector URL and advertises its terms', () => {
+  const c = loadConfig(HOME_ENV);
+  assert.equal(c.maxHomes, 1);
+  assert.deepEqual(c.offer.home, { diskGiB: 2, retentionDays: 7, slots: 1 });
+  assert.deepEqual(c.home, {
+    dir: '/var/charter/homes',
+    network: 'charter-home',
+    gateway: '172.19.0.1',
+    socksPort: 9050,
+    httpPort: 9080,
+    anonHsDir: '/etc/anon/hs.d',
+    anonPidFile: '/run/anon/anon.pid',
+    tenantConnectorUrl: 'https://connector.mainnet.toonprotocol.dev',
+  });
+  for (const k of ['CHARTER_ANON_HS_DIR', 'CHARTER_ANON_PIDFILE', 'CHARTER_TENANT_CONNECTOR_URL']) {
+    assert.throws(() => loadConfig({ ...HOME_ENV, [k]: '' }), new RegExp(k));
+  }
+  assert.throws(() => loadConfig({ ...HOME_ENV, CHARTER_TENANT_CONNECTOR_URL: 'ftp://x' }), /CHARTER_TENANT_CONNECTOR_URL/);
+  assert.throws(() => loadConfig({ ...HOME_ENV, CHARTER_HOME_GATEWAY: 'gw.local' }), /CHARTER_HOME_GATEWAY/);
+  assert.throws(() => loadConfig({ ...HOME_ENV, CHARTER_HOME_SOCKS_PORT: '0' }), /CHARTER_HOME_SOCKS_PORT/);
+  assert.equal(loadConfig({ ...HOME_ENV, CHARTER_HOME_DIR: '/mnt/h' }).home?.dir, '/mnt/h');
+});
+
+test('a host without home slots has no home and no home terms', () => {
+  const c = loadConfig(ENV);
+  assert.equal(c.maxHomes, 0);
+  assert.equal(c.home, undefined);
+  assert.equal(c.offer.home, undefined);
+});
+
+test('the home image without a home slot is a configuration error', () => {
+  assert.throws(
+    () => loadConfig({ ...ENV, CHARTER_ALLOW_IMAGES: 'charter-job-fetch,charter-home' }),
+    /CHARTER_MAX_HOMES/,
+  );
+});
+
+test('more home slots than lease slots is an error', () => {
+  assert.throws(() => loadConfig({ ...HOME_ENV, CHARTER_MAX_LEASES: '1', CHARTER_MAX_HOMES: '2' }), /CHARTER_MAX_HOMES/);
+});

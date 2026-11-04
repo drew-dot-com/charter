@@ -2,10 +2,11 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileExec } from '../exec.js';
-import { offerToEvent } from '../offer.js';
+import { offerToEvent, offerToJson } from '../offer.js';
 import { ToonCli } from '../toon-cli.js';
 import { loadConfig } from './config.js';
-import { OFFER_LIFETIME_MS, OFFER_REPUBLISH_MS, landAll, offerTick, reconcile, windowTick } from './loop.js';
+import { HOME_SWEEP_MS, OFFER_LIFETIME_MS, OFFER_REPUBLISH_MS, homeSweep, landAll, offerTick, reconcile, windowTick } from './loop.js';
+import { HomeStore } from './homes.js';
 import { dockerRunner } from './runner.js';
 import { hostApps } from './server.js';
 import { LeaseStore } from './store.js';
@@ -59,17 +60,36 @@ async function main(argv: string[]): Promise<number> {
     return r.errors.length ? 1 : 0;
   }
 
+  const log = (m: string) => console.error(m);
+  const homes = cfg.home ? new HomeStore(join(cfg.dataDir, 'homes.json')) : undefined;
+  const h = cfg.home;
   const runner = dockerRunner({
     exec: execFileExec('docker'),
     outRoot: join(cfg.dataDir, 'out'),
     allow: cfg.allowImages,
     proxy: cfg.proxy,
     runtime: cfg.runtime,
+    home:
+      h && homes
+        ? {
+            homesDir: h.dir,
+            network: h.network,
+            gateway: h.gateway,
+            socksPort: h.socksPort,
+            httpPort: h.httpPort,
+            homes,
+            anon: { hsDir: h.anonHsDir, homesDir: h.dir, pidFile: h.anonPidFile },
+            tools: { truncate: execFileExec('truncate'), mkfs: execFileExec('mkfs.ext4') },
+            offerJson: offerToJson({ ...cfg.offer, expiresAt: 0 }),
+            connectorUrl: h.tenantConnectorUrl,
+          }
+        : undefined,
   });
-  const deps = { store, runner, now, log: (m: string) => console.error(m) };
+  // One object for reconcile, windowTick and homeSweep, so watched and published persist across ticks.
+  const deps = { store, runner, now, homes, log };
   await reconcile(deps);
 
-  const apps = hostApps({ store, runner, offer: cfg.offer, now, maxLeases: cfg.maxLeases });
+  const apps = hostApps({ store, runner, offer: cfg.offer, now, maxLeases: cfg.maxLeases, maxHomes: cfg.maxHomes, log });
   const servers = [
     apps.open.listen(cfg.ports.open, '127.0.0.1'),
     apps.tick.listen(cfg.ports.tick, '127.0.0.1'),
@@ -80,6 +100,7 @@ async function main(argv: string[]): Promise<number> {
     console.log(`offer published ${id}`);
   };
   const timers = [every(1000, () => windowTick(deps), 'window tick'), every(OFFER_REPUBLISH_MS, publish, 'offer publish')];
+  if (homes) timers.push(every(HOME_SWEEP_MS, () => homeSweep(deps), 'home sweep'));
   publish().catch((e) => console.error(`offer publish failed: ${String(e)}`));
   console.log(`charter-host listening on 127.0.0.1 ${cfg.ports.open},${cfg.ports.tick},${cfg.ports.status}`);
 

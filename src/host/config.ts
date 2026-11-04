@@ -1,6 +1,9 @@
+import { join } from 'node:path';
 import { FIRST_TICK_GRACE_MS } from '../lease.js';
+import { HOME_IMAGE } from '../jobs.js';
 import { isSealKey, isSealUrl } from '../offer.js';
 import type { Micro, Offer } from '../types.js';
+import { HOME_DISK_GIB, HOME_RETENTION_MS } from './homes.js';
 
 export interface HostConfig {
   ports: { open: number; tick: number; status: number };
@@ -13,6 +16,21 @@ export interface HostConfig {
   passphraseFile: string;
   /** Leases this host runs at once (booting, awaiting the first tick, or running). An open past it answers closed `busy`. */
   maxLeases: number;
+  /** Home leases this host runs at once, inside maxLeases. 0: no homes. */
+  maxHomes: number;
+  /** Set when maxHomes > 0. */
+  home?: {
+    dir: string;
+    network: string;
+    gateway: string;
+    socksPort: number;
+    httpPort: number;
+    /** Directory the anon daemon reads onion confs from. */
+    anonHsDir: string;
+    anonPidFile: string;
+    /** The connector a box pays through, as the box sees it. */
+    tenantConnectorUrl: string;
+  };
   /** The base offer. `expiresAt` is 0 here; the offer loop sets it on each publish. */
   offer: Offer;
 }
@@ -29,6 +47,14 @@ function num(env: Record<string, string | undefined>, name: string, dflt: number
   if (!/^\d+$/.test(v) || !Number.isSafeInteger(Number(v)) || Number(v) <= 0) {
     throw new Error(`${name} must be a positive integer`);
   }
+  return Number(v);
+}
+
+/** Like num, but 0 is a valid answer. */
+function count(env: Record<string, string | undefined>, name: string, dflt: number): number {
+  const v = env[name]?.trim();
+  if (v === undefined || v === '') return dflt;
+  if (!/^\d+$/.test(v) || !Number.isSafeInteger(Number(v))) throw new Error(`${name} must be a non-negative integer`);
   return Number(v);
 }
 
@@ -65,15 +91,45 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
   const sealUrl = need(env, 'CHARTER_SEAL_URL');
   if (!isSealUrl(sealUrl)) throw new Error('CHARTER_SEAL_URL must be the connector /ilp URL (toon describe --json .description.httpEndpoint)');
 
+  const maxLeases = num(env, 'CHARTER_MAX_LEASES', 1);
+  const maxHomes = count(env, 'CHARTER_MAX_HOMES', 0);
+  if (allowImages.includes(HOME_IMAGE) && maxHomes === 0) {
+    throw new Error(`${HOME_IMAGE} is allowed but CHARTER_MAX_HOMES is 0: set it to at least 1`);
+  }
+  if (maxHomes > maxLeases) throw new Error('CHARTER_MAX_HOMES cannot exceed CHARTER_MAX_LEASES');
+  const dataDir = need(env, 'CHARTER_DATA_DIR');
+  let home: HostConfig['home'];
+  if (maxHomes > 0) {
+    const tenantConnectorUrl = need(env, 'CHARTER_TENANT_CONNECTOR_URL');
+    if (!/^https?:\/\/[^\s/]+/.test(tenantConnectorUrl)) throw new Error('CHARTER_TENANT_CONNECTOR_URL must be an http(s) URL');
+    const gateway = env.CHARTER_HOME_GATEWAY?.trim() || '172.19.0.1';
+    const octets = gateway.split('.');
+    if (octets.length !== 4 || octets.some((o) => !/^\d{1,3}$/.test(o) || Number(o) > 255)) {
+      throw new Error('CHARTER_HOME_GATEWAY must be a dotted IPv4 address');
+    }
+    home = {
+      dir: env.CHARTER_HOME_DIR?.trim() || join(dataDir, 'homes'),
+      network: env.CHARTER_HOME_NETWORK?.trim() || 'charter-home',
+      gateway,
+      socksPort: num(env, 'CHARTER_HOME_SOCKS_PORT', 9050),
+      httpPort: num(env, 'CHARTER_HOME_HTTP_PORT', 9080),
+      anonHsDir: need(env, 'CHARTER_ANON_HS_DIR'),
+      anonPidFile: need(env, 'CHARTER_ANON_PIDFILE'),
+      tenantConnectorUrl,
+    };
+  }
+
   return {
     ports: { open: nums[0]!, tick: nums[1]!, status: nums[2]! },
-    dataDir: need(env, 'CHARTER_DATA_DIR'),
+    dataDir,
     allowImages,
     proxy,
     runtime,
     relayUrl: need(env, 'CHARTER_RELAY_URL'),
     passphraseFile: need(env, 'TOON_PASSPHRASE_FILE'),
-    maxLeases: num(env, 'CHARTER_MAX_LEASES', 1),
+    maxLeases,
+    maxHomes,
+    home,
     offer: {
       id: need(env, 'CHARTER_OFFER_ID'),
       // The signer's pubkey is stamped on the event when toon signs it.
@@ -93,6 +149,9 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
       hiddenHost: flag(env, 'CHARTER_HIDDEN_HOST'),
       hiddenEgress: proxy !== undefined,
       expiresAt: 0,
+      ...(maxHomes > 0
+        ? { home: { diskGiB: HOME_DISK_GIB, retentionDays: HOME_RETENTION_MS / 86_400_000, slots: maxHomes } }
+        : {}),
     },
   };
 }
