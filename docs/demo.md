@@ -393,12 +393,34 @@ earlier); the lapse and re-open step follows after 21:57:49Z, the paid hour's en
 
 ### Edison moves in (plan Task 15)
 
-- [ ] Edison's home opened from the `toon` VM with Edison's own key pair: lease `<leaseId>`, homeId
-  `<homeId>`.
-- [ ] Hermes installed with `uv`; config and `.env` copied in by Drew over `scp`; the charter CLI
-  installed; `~/.charter/boot.sh` starts the gateway and runs `charter renew` with
-  `CHARTER_PAYER=toon-client` on a Base channel Drew funds (2 USDC plus gas): channel `<id>`.
-- [ ] The box answers a Telegram message and pays one tick on its own (`<fulfil>`); then the Air's
-  gateway is stopped.
-- [ ] The milestone: one paid packet from the box to Jonathan's node through the edge: `<fulfil>`, event
-  `<event id>`.
+Run 2026-11-04 23:00Z to 2026-11-05 09:55Z, Drew present for the funding and the first message.
+
+- [x] Edison's home opened from the `toon` VM with its own key pair (`~/.ssh/charter-edison-home`, kept on
+  the node): first lease `65dc49d22ce5ff7f0bc751a142f89492` (23:01Z, two ticks from the node, lapsed 01:01Z
+  overnight), re-opened on the same key 09:37Z as lease `5ec56ea899aeee5c98407afd99ec8f2c`, homeId
+  `ac83e7d58faf521d`, onion `6g4pbj3gmvvfynu3ex65bva5ziwb5chekdif7nhebspphu4rrnid2tid.anyone`, same disk.
+- [x] In the box: the charter CLI (dist plus node_modules copied in, 150 MB), a Base payer key made inside
+  the box (`~/.charter/payer.key`, never left it; address `0xB8C6DB6059A23327A983eE075E4d35c02CFcec7b`),
+  Hermes 0.22.7. The official installer does not fit the 2 GiB disk (567 MB of tool bundles, a Node that
+  needs `libatomic.so.1`, a 512 MB clone and a venv on top), so Hermes was installed lean: the installer's
+  clone kept, `UV_PROJECT_ENVIRONMENT=~/.hermes/venv uv sync --locked --no-default-groups --extra telegram
+  --extra discord --extra google --extra mcp --extra web` (a plain `uv pip install -e .` installs none of
+  the 46 base pins). Venv 297 MB. Hermes's package manager re-downloads its bundles at gateway start
+  ("install out of sync"); removed twice, 722 MB free after.
+- [x] Drew's `.env`, `config.yaml` and `SOUL.md` piped from the Air into the box over ssh (checksums equal;
+  contents never shown). Gateway started 09:39Z (`~/.hermes/venv/bin/hermes gateway run`), Telegram
+  connected in polling mode, 329 MB RSS; the Air's gateway stopped 09:40Z. Drew asked "where are you
+  running right now?" and Edison answered from the box: "a sandboxed Linux container (gVisor environment)".
+  Parked in the box: the WhatsApp platform (wants the Node bundle), the drewtrade MCP servers (Air paths),
+  and the toon, l402 and charter tool plugins (they bridge through `limactl` on the Air).
+- [x] Drew funded the box's address with 2.1 USDC and 0.001 ETH on Base (09:50Z).
+- [x] **The milestone, 09:51:46Z: one paid packet from the box to Jonathan's node through Drew's edge.**
+  `node ~/charter/two-hop-post.mjs` in the box opened the box's own channel to the edge (2 USDC deposit,
+  one Base transaction; `rpcUrl` had to be named, the client could not read the ETH balance through its
+  default RPC from inside the box) and sent a kind 1 Nostr write to `g.toon.relay` sealed to Jonathan's
+  connector: `fulfilled=true status=200 paid=2`, event `2e5e5913c45eb3e7a71c2be6734b4f8228208840c0237b6b2da983949c921ddf`,
+  read back from `wss://relay.toonprotocol.xyz` (kind 1, created 1793872287). Box, Drew's edge,
+  Jonathan's node: two hops, one channel.
+- [ ] The box pays its own rent: `charter renew` in the box with `CHARTER_PAYER=toon-client` on that
+  channel, started 09:55Z, first self-paid tick due about 10:07Z: `<result>`.
+
