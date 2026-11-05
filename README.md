@@ -8,12 +8,14 @@ no account on either side, and the host can be a home machine with no domain and
 hidden host, reached over Anyone).
 
 **Status: v1, first-party.** Every lease so far has Drew Pierson on both sides: he runs the one host,
-the door and the edge node, and both renters. There are no outside users yet. Three job images:
+the door and the edge node, and both renters. There are no outside users yet. Four job images:
 `charter-job-python` runs the renter's own Python script (up to 8 KiB, NumPy included) with no
 network at all and returns its stdout, stderr and exit code; `charter-job-fetch` fetches up to five
 pages in a headless browser and returns a screenshot and the text of each; `charter-home` is a box
 the renter lives in: a 2 GiB disk kept between leases, SSH in at an onion address on the Anyone
-network, and network out only through the Anyone network. Why the python job is safe enough for a
+network, and network out only through the Anyone network; `charter-hermes` is the same home with
+Hermes Agent and the `charter` CLI preinstalled and a default boot that runs them (the boot pays
+the box's own rent). Why the python job is safe enough for a
 home host: `docs/superpowers/specs/2026-10-17-python-job-design.md`. The home's design:
 `docs/superpowers/specs/2026-11-04-home-image-design.md`.
 
@@ -142,6 +144,7 @@ npm ci && npm run build && npm install -g --prefix ~/.local .
 docker build -t charter-job-fetch jobs/fetch
 docker build -t charter-job-python jobs/python
 docker build -t charter-home jobs/home        # only if the host offers homes
+docker build -f jobs/hermes/Dockerfile -t charter-hermes .   # only for Hermes homes; from the repo root, after npm run build, and after charter-home
 toon add charter-open   --to relay --url http://127.0.0.1:7401/ --price 1000 --yes
 toon add charter-tick   --to relay --url http://127.0.0.1:7402/ --price 7000 --yes
 toon add charter-status --to relay --url http://127.0.0.1:7403/ --price 100  --yes
@@ -157,7 +160,7 @@ A job container gets 1 CPU, 1 GiB, 256 pids, a read-only root, no capabilities a
 
 To offer homes, run `sudo bash deploy/host/install-home.sh` once in the VM (Charter's own Anyone
 client, the `charter-home` bridge and its firewall, and a sudo rule for `losetup` only), add
-`charter-home` to `CHARTER_ALLOW_IMAGES` and set `CHARTER_MAX_HOMES` and the other home variables
+`charter-home` (and `charter-hermes`, if built) to `CHARTER_ALLOW_IMAGES` and set `CHARTER_MAX_HOMES` and the other home variables
 in `docs/env.md`. A home gets 512 pids and the same limits otherwise. Operating them:
 `docs/ops.md`, "Homes".
 

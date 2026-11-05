@@ -223,6 +223,8 @@ SSH in at an onion address. toon2 carries one (`CHARTER_MAX_HOMES=1`, counted in
 `CHARTER_MAX_LEASES=2`), so a home and one job can run at once. Design:
 `docs/superpowers/specs/2026-11-04-home-image-design.md`; variables: `docs/env.md`.
 
+**The Hermes image.** `charter-hermes` is `charter-home` plus Hermes Agent 0.22.7, the `charter` CLI and a default boot (design: `docs/superpowers/specs/2026-11-05-hermes-in-a-box-design.md`). Build order, in the VM: `docker build -t charter-home jobs/home` first, then from the repo root after `npm run build`: `docker build -f jobs/hermes/Dockerfile -t charter-hermes .`. Add `charter-hermes` to `CHARTER_ALLOW_IMAGES`. It is one moving tag, and the Hermes version is pinned in the Dockerfile (`HERMES_VERSION`, with the tarball's SHA-256). A rebuild reaches a running box only at its next re-create, never in place. Size: 1.73 GB on toon2, of which 709 MB is the shared `charter-home` base (Hermes app 186 MB, venv 360 MB, Python 92 MB, charter 136 MB). Memory in a live box: gateway 348 MB, payer 153 MB, renew 140 MB of the 1 GiB. The one home slot is Edison's while Edison lives there; a second home needs a grown VM or a second host.
+
 A reload of Charter's anon (a new home's first publish, or a home's retire) resets every onion's circuits, so a tenant with an open SSH session on another home may have to reconnect, and a client whose Anyone circuit went stale needs a minute or two before the onion answers again.
 
 The `charter-host` unit's `PATH` must include `/usr/sbin`, where `mkfs.ext4` for home disks lives; without it every home open answers `boot_failed` (the first deploy's failure), and the host log now says why.
