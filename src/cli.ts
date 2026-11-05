@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { MAX_SCRIPT_BYTES, fetchJob, homeJob, isScript, normalizeSshKeys, pythonJob } from './jobs.js';
+import { MAX_SCRIPT_BYTES, fetchJob, homeJob, HOME_IMAGES, isHomeImage, isScript, normalizeSshKeys, pythonJob } from './jobs.js';
 import { offerFromJson } from './offer.js';
 import { ToonClientPayer, serialized, type Payer, type ToonClientPayerConfig } from './payer.js';
 import { payerAddress, toonClientConfigFromEnv } from './payer-env.js';
@@ -18,11 +18,11 @@ import { FromMismatchError, continueLease, runLease, type LeaseEvent, type RunLe
 
 const USAGE = `usage:
   charter offers --relay <url>
-  charter rent --offer <pubkey>:<id> (--urls <a,b> | --python <file.py> | --home <keys file>) --max-intervals <n> --relay <url> [--json]
+  charter rent --offer <pubkey>:<id> (--urls <a,b> | --python <file.py> | --home <keys file> [--image <home image>]) --max-intervals <n> --relay <url> [--json]
   charter renew --offer <pubkey>:<id> --lease <id> [--from <index>] --max-intervals <n> [--relay <url>] [--json]
   charter status <pubkey>:<offerId> <leaseId> --relay <url> [--json]
   charter payer [--listen <host:port>]
---home takes one SSH public key per line; renew pays an open lease from the host's paid count on
+--home takes one SSH public key per line, --image picks the home image (charter-home by default, or charter-hermes); renew pays an open lease from the host's paid count on
   (--from, when given, must equal that count, or nothing is paid)
 paying commands read the wallet passphrase file named by TOON_PASSPHRASE_FILE
 CHARTER_PAYER=toon-client pays with the TOON library instead (CHARTER_TOON_KEY_FILE, CHARTER_TOON_CHANNEL_STORE,
@@ -163,6 +163,7 @@ async function payerCommand(rest: string[], env: Record<string, string | undefin
     payer: serialized(client),
     describe: () => client.describe(),
     connectorUrl: cfg.connectorUrl,
+    payerAddress: address ?? null,
     channel: async () => {
       const left = await client.headroom();
       const live = client.channels().filter((c) => c.closedAt === undefined);
@@ -313,6 +314,7 @@ async function rentCommand(rest: string[], env: Record<string, string | undefine
       urls: { type: 'string' },
       python: { type: 'string' },
       home: { type: 'string' },
+      image: { type: 'string' },
       'max-intervals': { type: 'string' },
       relay: { type: 'string' },
       json: { type: 'boolean' },
@@ -323,12 +325,14 @@ async function rentCommand(rest: string[], env: Record<string, string | undefine
   if ([values.urls, values.python, values.home].filter((v) => v !== undefined).length !== 1) {
     throw new UsageError('rent takes exactly one of --urls, --python and --home');
   }
+  if (values.image !== undefined && values.home === undefined) throw new UsageError('--image goes with --home');
+  if (values.image !== undefined && !isHomeImage(values.image)) throw new UsageError(`--image must be a home image: ${HOME_IMAGES.join(', ')}`);
   let job;
   if (values.home !== undefined) {
     const lines = readFileSync(values.home, 'utf8').split('\n').filter((l) => l.trim() !== '' && !l.trim().startsWith('#'));
     const keys = normalizeSshKeys(lines);
     if (!keys) throw new UsageError('--home must name a file of 1 to 8 SSH public keys, one per line');
-    job = homeJob(keys);
+    job = homeJob(keys, values.image);
   } else if (values.python !== undefined) {
     const script = readFileSync(values.python, 'utf8');
     if (!isScript(script)) throw new UsageError(`--python must name a non-empty script of at most ${MAX_SCRIPT_BYTES} bytes`);

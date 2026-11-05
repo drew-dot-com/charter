@@ -1,4 +1,4 @@
-import { HOME_IMAGE } from './images.js';
+import { HOME_IMAGES } from './images.js';
 import type { CloseReason, JobSpec, Lease, Offer } from './types.js';
 
 /** How long past the paid time a later tick may be late. */
@@ -40,7 +40,7 @@ export function newLease(id: string, offer: Offer, job: JobSpec, now: number, ho
 }
 
 export function isHome(l: Pick<Lease, 'job'>): boolean {
-  return l.job.image === HOME_IMAGE;
+  return HOME_IMAGES.includes(l.job.image);
 }
 
 /** The container is created (not started). Only a booting lease can finish booting; anything else is returned unchanged. */

@@ -363,7 +363,7 @@ export function doorApp(deps: DoorDeps): express.Express {
 
   app.post('/v1/leases', async (req, res) => {
     if (!allowOpen(req.ip ?? 'unknown')) return void res.status(429).json({ error: 'rate_limited' });
-    const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { offerId?: unknown; urls?: unknown; python?: unknown; home?: unknown };
+    const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as { offerId?: unknown; urls?: unknown; python?: unknown; home?: unknown }; // home: { sshKeys, image? }
     const { offerId } = body;
     const job = jobFromBody(body);
     if (typeof offerId !== 'string' || !job) return void res.status(400).json({ error: 'bad_request' });

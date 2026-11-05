@@ -10,7 +10,7 @@ Secrets never go in these variables: a variable names the file that holds one.
 | variable | required | default | what it is |
 | --- | --- | --- | --- |
 | `CHARTER_DATA_DIR` | yes | | Lease store (`leases.json`) and job output (`out/<lease>/`). Created mode 700. |
-| `CHARTER_ALLOW_IMAGES` | yes | | Comma list of the job images this host runs: `charter-job-fetch` (fetch pages through the proxy), `charter-job-python` (the renter's Python script, no network) and `charter-home` (a home: the renter's own box with a kept disk, reached over ssh at an onion address). Also the offer's `images`. `charter-home` needs `CHARTER_MAX_HOMES` of at least 1. |
+| `CHARTER_ALLOW_IMAGES` | yes | | Comma list of the job images this host runs: `charter-job-fetch` (fetch pages through the proxy), `charter-job-python` (the renter's Python script, no network) and `charter-home` (a home: the renter's own box with a kept disk, reached over ssh at an onion address) and `charter-hermes` (a home with Hermes Agent and the charter CLI preinstalled; build `charter-home` first). Also the offer's `images`. `charter-home` and `charter-hermes` need `CHARTER_MAX_HOMES` of at least 1. |
 | `CHARTER_RELAY_URL` | yes | | `wss://` relay the offer is published to (a paid write). |
 | `TOON_PASSPHRASE_FILE` | yes | | File holding the node wallet passphrase. Passed to `toon` in its env only. |
 | `CHARTER_OFFER_ID` | yes | | The offer's `d` tag. |

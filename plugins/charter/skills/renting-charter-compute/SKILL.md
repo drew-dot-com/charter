@@ -1,6 +1,6 @@
 ---
 name: renting-charter-compute
-description: "Rent compute on Charter from an agent node with toon_cli's `toon` binary: read the kind 31390 offers on a relay, open a lease on a host, pay it one interval at a time, read its state and collect the job's output. Covers the fetch job (page texts and screenshots through a hidden exit), the python job (your script, no network) and the home (a box with a kept 2 GiB disk, SSH in over an Anyone onion address, renewed from inside with the charter CLI). Use when asked to run a script or fetch pages on a Charter machine, to rent a home or a box to live in, to rent compute over TOON, or to read what Charter offers. Every step after the offer read is paid. Run toon --version first."
+description: "Rent compute on Charter from an agent node with toon_cli's `toon` binary: read the kind 31390 offers on a relay, open a lease on a host, pay it one interval at a time, read its state and collect the job's output. Covers the fetch job (page texts and screenshots through a hidden exit), the python job (your script, no network) and the home (a box with a kept 2 GiB disk, SSH in over an Anyone onion address, renewed from inside with the charter CLI; or the same home with Hermes Agent preinstalled). Use when asked to run a script or fetch pages on a Charter machine, to rent a home or a box to live in, to rent compute over TOON, or to read what Charter offers. Every step after the offer read is paid. Run toon --version first."
 toon_cli: ">=0.3, <0.4"
 ---
 
@@ -380,6 +380,68 @@ charter renew --offer <pubkey>:<d> --lease "$CHARTER_LEASE_ID" --max-intervals <
 `--relay` are needed. `renew` pays each tick when it is due, so restarting `boot.sh` costs nothing extra. After `<n>` ticks it exits and nothing pays, so a box that should stay up runs `renew` again or picks `<n>` for the time wanted. Put the `renew` line in `boot.sh`. The wallet needs USDC in a channel to
 that connector plus a little Base ETH for the one on-chain channel open. 2 USDC runs the box
 about 10 days: 12 days of rent, less the status reads `renew` makes (about 8 an hour).
+
+### A Hermes home
+
+Add `--image charter-hermes` to the `charter rent` line above (over TOON the open's job is
+`{"image": "charter-hermes", "args": {"SSH_KEYS": "..."}}`) and the box has Hermes Agent 0.22.7
+(`hermes --version`, `hermes doctor`) on its own Python 3.14 with the extras `telegram`, `discord`,
+`google`, `mcp` and `web`, the `charter` CLI at `/usr/local/bin/charter`, ripgrep and Node 22,
+read-only, and a default boot that runs them. Keys, address, disk, price and network are the
+same. A tenant whose keys already name a `charter-home` opens the same disk under
+`charter-hermes`. If that disk already has its own `~/.charter/boot.sh`, the box runs that one and
+never the default boot; copy `/app/boot-default.sh` over it (or edit your own) to get the image's
+boot. The Hermes version is the host's: a new build reaches a running box only at its
+next re-create.
+
+You bring, by `scp`: `~/.hermes/.env` (model provider key, `TELEGRAM_BOT_TOKEN`, allowed user
+ids), optionally `~/.hermes/config.yaml` and `SOUL.md`. The first start copies
+`/app/boot-default.sh` to `~/.charter/boot.sh` if absent; it is yours to edit and the image never
+overwrites it. It logs `boot:` lines to `~/.charter/boot.log`, takes the lock
+`/tmp/charter-boot.lock` (a second run exits), and in order:
+
+1. Reads `~/.charter/payer.env` if present, which overrides `CHARTER_TOON_KEY_FILE`,
+   `CHARTER_TOON_CHANNEL_STORE`, `CHARTER_TOON_CHAIN`, `CHARTER_TOON_RPC_URL_FILE` and
+   `CHARTER_PAYER_URL`.
+2. Makes `~/.charter/payer.key` if absent: the box's own wallet, on its own disk. The boot runs
+   before you can SSH in, so on a new disk this is the normal path: fund `payer.address`.
+3. Starts `charter payer` (log `payer.log`) and writes its address to `~/.charter/payer.address`.
+4. Starts `charter renew --max-intervals 720` (30 days) in a loop that restarts it after 5
+   minutes (log `renew.log`).
+5. Once `~/.hermes/.env` exists, runs `hermes gateway run`, restarted 30 seconds after it exits.
+
+To change the key or `payer.env` after the first boot, replace the file, then stop the boot
+(`kill "$(cat ~/.charter/boot.pid)"`; the lock releases and `renew` and the gateway stop with
+it), stop the payer too (`kill "$(cat ~/.charter/payer.pid)"`; the boot leaves it running on
+purpose and it holds the old key), and start the boot again detached, as the box does:
+`nohup ~/.charter/boot.sh >> ~/.charter/boot.log 2>&1 &`. Run in the foreground over SSH, it
+stops when the session closes. A key placed before the
+first boot works only on a disk carried over from a `charter-home` lease.
+
+Fund the address in `payer.address` with USDC and a little Base ETH for the channel's one
+on-chain open: about 5 USDC runs 30 days, 2 USDC about 10 days. Until it is funded each `renew`
+try fails and the box lives on ticks paid from outside, so it must hold funds before the
+`<n>` ticks the rent line paid run out (one hour with `--max-intervals 1`), or pay more first.
+
+Plugins live on your disk. From inside the box, with `<sha>` the commit you reviewed:
+
+```
+hermes plugins install --ref <sha> https://github.com/drew-dot-com/hermes-toon#src/web-toon
+hermes plugins install --ref <sha> https://github.com/drew-dot-com/hermes-toon#src/toon-node
+hermes plugins install --ref <sha> https://github.com/drew-dot-com/hermes-toon#src/charter-tool
+```
+
+The boot exports `TOON_PAYER_URL`, `CHARTER_PAYER_URL`, `CHARTER_BIN` and `CHARTER_OFFER_ID`, so
+an installed plugin pays through the box's payer. A plugin that needs Python dependencies outside
+the venv cannot be installed.
+
+Limits: 1 GiB of memory (measured: gateway 348 MB, payer 153 MB, renew 140 MB), so one gateway and
+nothing heavy. The image sets `HERMES_DISABLE_LAZY_INSTALLS=1` and `config.yaml` cannot undo it,
+so Hermes's tool bundles are never downloaded: no WhatsApp bridge, browser tool, voice or TUI.
+Traffic leaves through shared Anyone exits that Telegram and the provider may rate-limit. The
+image is 1.73 GB on the host, 709 MB of it the shared `charter-home` base. The one home slot on
+the live host is Edison's while Edison lives there; a second home needs a grown VM or a second
+host.
 
 ### What to tell your operator
 

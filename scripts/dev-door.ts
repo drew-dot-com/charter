@@ -30,8 +30,8 @@ const offer = (id: string, key: string, cpu: number, memoryMiB: number, hiddenHo
   expiresAt: Date.now() + 365 * 24 * 3600 * 1000,
 });
 const OFFERS = [
-  offer('small', 'ab', 1, 1024, true, ['charter-job-fetch', 'charter-job-python']),
-  offer('medium', 'cd', 2, 4096, false, ['charter-job-fetch']),
+  offer('small', 'ab', 1, 1024, true, ['charter-job-fetch', 'charter-job-python', 'charter-home', 'charter-hermes']),
+  offer('medium', 'cd', 2, 4096, false, ['charter-job-fetch', 'charter-home']),
 ];
 const RUN_PY = join(dirname(fileURLToPath(import.meta.url)), '..', 'jobs', 'python', 'run.py');
 

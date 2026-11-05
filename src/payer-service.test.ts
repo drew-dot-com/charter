@@ -295,6 +295,28 @@ test('/relay/read hands the filter to the reader with a bounded limit and return
   }
 });
 
+test('/health names the payer address at top level, even when the channel cannot be read', async () => {
+  const s = await start(() => ok(200, {}, 0n), {
+    payerAddress: '0xabc',
+    channel: async () => {
+      throw new Error('no rpc');
+    },
+  });
+  try {
+    const h = await get(`${s.url}/health`);
+    assert.equal(h.json.payer, '0xabc');
+    assert.equal(typeof (h.json.channel as { error: unknown }).error, 'string');
+    const bare = await start(() => ok(200, {}, 0n));
+    try {
+      assert.equal((await get(`${bare.url}/health`)).json.payer, null);
+    } finally {
+      bare.close();
+    }
+  } finally {
+    s.close();
+  }
+});
+
 test('/health says what the service is and 404 lists the surface', async () => {
   const s = await start(() => ok(200, {}, 0n));
   try {
