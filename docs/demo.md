@@ -519,4 +519,5 @@ ripgrep, and a default `~/.charter/boot.sh` that starts `charter payer`, pays re
   written; `/health` ok; `agent.log` 20:50:24Z `telegram connected` and `discord connected`, polling healthy.
   No `~/.hermes/tools`. Then `rm -rf ~/.hermes/venv ~/.hermes/hermes-agent ~/charter ~/.local/share/uv`: the
   disk went from 213 MiB free to 1419 MiB free (27 % used). Container memory 471 MiB of 1 GiB. The first
-  self-paid tick from the image's `renew` is due about 21:18Z: `<result>`.
+  self-paid tick from the image's `renew` landed at about 21:18Z: `renew.log` `paid tick 1`, `/charter/paid-through`
+  1793915305889 to 1793918905889 (one hour), paid through the box's `charter payer` on its own channel.
