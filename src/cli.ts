@@ -7,7 +7,7 @@ import { parseArgs } from 'node:util';
 import { MAX_SCRIPT_BYTES, fetchJob, homeJob, isScript, normalizeSshKeys, pythonJob } from './jobs.js';
 import { offerFromJson } from './offer.js';
 import { ToonClientPayer, serialized, type Payer, type ToonClientPayerConfig } from './payer.js';
-import { toonClientConfigFromEnv } from './payer-env.js';
+import { payerAddress, toonClientConfigFromEnv } from './payer-env.js';
 import { DEFAULT_DAILY_CAP, DEFAULT_LISTEN, DailyBudget, loadNostrKey, payerService } from './payer-service.js';
 import { UrlPayer } from './payer-url.js';
 import { ToonCli } from './toon-cli.js';
@@ -158,6 +158,7 @@ async function payerCommand(rest: string[], env: Record<string, string | undefin
   const storeDir = dirname(cfg.channelStore);
   const budget = new DailyBudget(join(storeDir, 'payer-budget.json'), capRaw ? BigInt(capRaw) : DEFAULT_DAILY_CAP, d.now);
   let nostrKey: Uint8Array | undefined;
+  const address = payerAddress(cfg);
   const handler = payerService({
     payer: serialized(client),
     describe: () => client.describe(),
@@ -167,6 +168,7 @@ async function payerCommand(rest: string[], env: Record<string, string | undefin
       const live = client.channels().filter((c) => c.closedAt === undefined);
       return {
         chain: cfg.chain,
+        payer: address ?? null,
         headroom: left === undefined ? null : left.toString(),
         channels: live.map((c) => ({ id: c.channel.channelId, depositTotal: c.depositTotal.toString(), signed: c.signed.toString() })),
       };

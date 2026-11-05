@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { privateKeyToAccount } from 'viem/accounts';
 import type { ToonClientPayerConfig } from './payer.js';
 
 /** The trimmed value of `name`, which must be set and not blank. */
@@ -28,4 +29,15 @@ export function toonClientConfigFromEnv(env: Record<string, string | undefined>)
     cfg.rpcUrl = rpcUrl;
   }
   return cfg;
+}
+
+/**
+ * The payer's own address, for `/health` and balance reads: derived from the key file for an EVM payer, undefined
+ * for Solana (the client derives that one itself and this module does not need to). Never returns the key.
+ */
+export function payerAddress(cfg: ToonClientPayerConfig): string | undefined {
+  if (cfg.chain !== 'evm') return undefined;
+  const raw = readFileSync(cfg.keyFile, 'utf8').trim();
+  if (!/^(0x)?[0-9a-fA-F]{64}$/.test(raw)) return undefined;
+  return privateKeyToAccount((raw.startsWith('0x') ? raw : '0x' + raw) as `0x${string}`).address;
 }
