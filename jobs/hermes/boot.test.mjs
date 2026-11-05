@@ -17,6 +17,7 @@ const { appendFileSync } = require('node:fs');
 const args = process.argv.slice(2);
 if (args[0] === 'payer') {
   appendFileSync(process.env.STUB_LOG, 'charter ' + args.join(' ') + '\\n');
+  require('node:fs').writeFileSync(process.env.STUB_LOG + '.payer-pid', String(process.pid));
   const [host, port] = process.env.CHARTER_PAYER_LISTEN.split(':');
   require('node:http').createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
@@ -147,6 +148,18 @@ describe('boot-default', { concurrency: true }, () => {
     assert.ok(out().match(/boot: gateway started/g).length > 1);
   });
 
+  test('boot-default: boot.pid holds the running boot and goes with it; payer.pid is the payer it started', async (t) => {
+    const { home, stubLog, boot } = await setup(t, { id: 'o1', hostPubkey: HOST });
+    const child = boot();
+    await sleep(2500);
+    const pidFile = join(home, '.charter', 'boot.pid');
+    assert.equal(readFileSync(pidFile, 'utf8').trim(), String(child.pid));
+    assert.equal(readFileSync(join(home, '.charter', 'payer.pid'), 'utf8').trim(), readFileSync(`${stubLog}.payer-pid`, 'utf8').trim());
+    process.kill(child.pid, 'SIGTERM');
+    await child.exited;
+    assert.equal(statSync(pidFile, { throwIfNoEntry: false }), undefined, 'boot.pid is removed when the boot stops');
+  });
+
   test('boot-default: a payer already answering /health is reused, not started again', async (t) => {
     const { home, port, boot, log } = await setup(t, { id: 'o1', hostPubkey: HOST });
     const server = createServer((req, res) => res.end(JSON.stringify({ ok: true, payer: '0xdef' })));
@@ -156,6 +169,7 @@ describe('boot-default', { concurrency: true }, () => {
     await sleep(2500);
     assert.equal(readFileSync(join(home, '.charter', 'payer.address'), 'utf8').trim(), '0xdef');
     assert.doesNotMatch(log(), /charter payer/);
+    assert.equal(statSync(join(home, '.charter', 'payer.pid'), { throwIfNoEntry: false }), undefined, 'a reused payer gets no payer.pid');
     assert.match(log(), /charter renew/);
   });
 

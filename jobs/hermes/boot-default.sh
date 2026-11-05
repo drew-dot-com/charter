@@ -19,6 +19,7 @@ gateway_pid=''
 stop() {
   if [ -n "$gateway_pid" ]; then kill "$gateway_pid" 2>/dev/null; fi
   if [ -n "$renew_pid" ]; then pkill -P "$renew_pid" 2>/dev/null; kill "$renew_pid" 2>/dev/null; fi
+  rm -f "$HOME/.charter/boot.pid"
   rmdir "$lock" 2>/dev/null
 }
 trap stop EXIT
@@ -27,6 +28,8 @@ echo "boot: took the lock $lock"
 c="$HOME/.charter"
 : "${HERMES_HOME:=$HOME/.hermes}"
 mkdir -p "$c" "$HERMES_HOME"
+# A pidfile, not pgrep: the renew subshell shares this command line, and killing it first orphans renew.
+echo $$ > "$c/boot.pid"
 # The tenant's overrides come first, so every default below yields to them.
 if [ -f "$c/payer.env" ]; then . "$c/payer.env"; fi
 : "${CHARTER_TOON_KEY_FILE:=$c/payer.key}"
@@ -61,6 +64,8 @@ if health > /dev/null; then
   echo "boot: payer already answering at $CHARTER_PAYER_URL"
 else
   charter payer >> "$c/payer.log" 2>&1 &
+  # Only a payer this boot started: a reused one keeps the file its own boot wrote.
+  echo $! > "$c/payer.pid"
   echo "boot: payer started on $CHARTER_PAYER_LISTEN"
 fi
 # Twice a second, so a short wait in a test does not race the payer.
