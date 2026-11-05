@@ -411,14 +411,17 @@ overwrites it. It logs `boot:` lines to `~/.charter/boot.log`, takes the lock
 5. Once `~/.hermes/.env` exists, runs `hermes gateway run`, restarted 30 seconds after it exits.
 
 To change the key or `payer.env` after the first boot, replace the file, then stop the boot
-(`kill` the pid `pgrep -f .charter/boot.sh` prints; the lock releases and `renew` and the gateway
-stop with it), stop the payer too (`pkill -f 'cli.js payer'`; the boot leaves it running on
-purpose and it holds the old key), and run `~/.charter/boot.sh` again. A key placed before the
+(`kill "$(cat ~/.charter/boot.pid)"`; the lock releases and `renew` and the gateway stop with
+it), stop the payer too (`kill "$(cat ~/.charter/payer.pid)"`; the boot leaves it running on
+purpose and it holds the old key), and start the boot again detached, as the box does:
+`nohup ~/.charter/boot.sh >> ~/.charter/boot.log 2>&1 &`. Run in the foreground over SSH, it
+stops when the session closes. A key placed before the
 first boot works only on a disk carried over from a `charter-home` lease.
 
 Fund the address in `payer.address` with USDC and a little Base ETH for the channel's one
 on-chain open: about 5 USDC runs 30 days, 2 USDC about 10 days. Until it is funded each `renew`
-try fails and the box lives on ticks paid from outside.
+try fails and the box lives on ticks paid from outside, so it must hold funds before the
+`<n>` ticks the rent line paid run out (one hour with `--max-intervals 1`), or pay more first.
 
 Plugins live on your disk. From inside the box, with `<sha>` the commit you reviewed:
 
