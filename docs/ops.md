@@ -227,6 +227,8 @@ A reload of Charter's anon (a new home's first publish, or a home's retire) rese
 
 The `charter-host` unit's `PATH` must include `/usr/sbin`, where `mkfs.ext4` for home disks lives; without it every home open answers `boot_failed` (the first deploy's failure), and the host log now says why.
 
+**One payer per box.** A tenant's channel store has exactly one writer: a voucher names a running total, so two processes signing on `~/.charter/channels.json` race it and the connector refuses the lower one. A box that pays for more than its rent (an agent's paid fetches, relay posts, its own Charter jobs) runs one `charter payer` (the service, `docs/env.md`) and every other payer in it uses `CHARTER_PAYER=url`. Edison's home does this since 2026-11-05: `~/.charter/boot.sh` starts the payer, then `renew` through it, then the Hermes gateway, whose plugins point at the same `http://127.0.0.1:3510`. To move a running `renew` onto the service without a missed tick: check `/charter/paid-through` (the next tick goes out 30 minutes before it), stop the old `renew`, start `charter payer`, start `renew` with `CHARTER_PAYER=url`, all inside a minute. Restart the payer only in that same window, and never `pkill -f` it from a command line that itself contains the pattern.
+
 **What it adds to toon2.** Two system units, both installed and enabled by `sudo bash
 deploy/host/install-home.sh` from the repo in the VM, run as the host user with the toon node up:
 
