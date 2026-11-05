@@ -185,6 +185,7 @@ test('a bare --offer id still works when exactly one offer matches', async () =>
 const KEY_A = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGx1bWFueXJhbmRvbWJ5dGVzMTIzNDU2Nzg5MDEyMzQ1';
 const KEY_B = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGx1bWFueXJhbmRvbWJ5dGVzMTIzNDU2Nzg5MDEyMzQ2';
 const HOME: Offer = { ...OFFER, images: ['charter-job-fetch', 'charter-home'] };
+const HOME_HERMES: Offer = { ...OFFER, images: ['charter-job-fetch', 'charter-home', 'charter-hermes'] };
 const ONION = 'a'.repeat(56) + '.anyone';
 
 /** A host for a home: it never finishes, its status shows how to reach the box, and it orders ticks like onTick. */
@@ -254,6 +255,21 @@ test('rent --home reads keys from a file and opens a home job', async () => {
   assert.equal(refused.code, 2);
   assert.match(refused.err, /--home/);
   assert.equal(refused.h.opens.length, 0);
+});
+
+test('rent --home --image charter-hermes opens the hermes image; --image needs --home and a home image', async () => {
+  const f = join(mkdtempSync(join(tmpdir(), 'charter-cli-')), 'keys');
+  writeFileSync(f, `${KEY_A}\n`);
+  const env = { ...ENV, CHARTER_OFFER_JSON: offerToJson(HOME_HERMES) };
+  const r = await homeCli(['rent', '--offer', 'o1', '--home', f, '--image', 'charter-hermes', '--max-intervals', '1'], env);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(r.h.opens, [{ job: { image: 'charter-hermes', args: { SSH_KEYS: KEY_A } } }]);
+  const noHome = await homeCli(['rent', '--offer', 'o1', '--urls', 'https://e.com', '--image', 'charter-hermes', '--max-intervals', '1'], env);
+  assert.equal(noHome.code, 2);
+  assert.match(noHome.err, /--image goes with --home/);
+  const wrong = await homeCli(['rent', '--offer', 'o1', '--home', f, '--image', 'charter-job-python', '--max-intervals', '1'], env);
+  assert.equal(wrong.code, 2);
+  assert.equal(wrong.h.opens.length, 0);
 });
 
 test('renew attaches to a lease and pays from --from', async () => {

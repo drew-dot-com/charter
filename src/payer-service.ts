@@ -180,6 +180,8 @@ export interface PayerServiceDeps {
   describe: () => Promise<NodeSelfDescription>;
   /** The `/ilp` URL the payer sends through; also the seal URL for routes this connector terminates. */
   connectorUrl: string;
+  /** The address the channel is funded from, so a tenant can fund it; `/health` shows it even when `channel` fails. */
+  payerAddress?: string | null;
   /** Headroom and channel facts for `/health`, when the payer can say. */
   channel?: () => Promise<Json>;
   /** The service's Nostr signing key, for `/relay/post`. */
@@ -438,6 +440,7 @@ export function payerService(d: PayerServiceDeps): (req: IncomingMessage, res: S
         connector: d.connectorUrl,
         routes: { extract: extractRoute, relay: relayRoute },
         relay: relayUrl,
+        payer: d.payerAddress ?? null,
         nostr_pubkey: getPublicKey(d.nostrKey()),
         budget: d.budget.view(),
         uptime_s: Math.floor((now() - started) / 1000),
