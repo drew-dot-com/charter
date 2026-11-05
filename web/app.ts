@@ -515,7 +515,10 @@ function rentForm(o: PublicOffer, close: () => void): HTMLElement {
           status.textContent = sshKeys;
           return;
         }
-        const image = imageSelect && imageSelect.value !== HOME_IMAGE ? imageSelect.value : undefined;
+        // A hermes-only offer has no select, and the door refuses a home with no image as charter-home.
+        const image = imageSelect
+          ? (imageSelect.value !== HOME_IMAGE ? imageSelect.value : undefined)
+          : (o.images.includes(HOME_IMAGE) ? undefined : HERMES_IMAGE);
         job = { home: image ? { sshKeys, image } : { sshKeys } };
       } else if (mode === 'python') {
         const bad = checkScript(area.value);
