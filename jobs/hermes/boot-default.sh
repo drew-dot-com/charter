@@ -4,6 +4,26 @@
 # The tenant owns this copy and may edit or replace it; the image never overwrites it.
 set -eu
 umask 077
+# One boot at a time: a second run (a tenant re-running this over ssh) would double the renew loop and
+# the gateway, and two gateways on one bot token fight over Telegram's single poller. mkdir is atomic,
+# and /tmp is tmpfs in the box, so a lock left by a crash clears at the next start.
+lock="${TMPDIR:-/tmp}/charter-boot.lock"
+if ! mkdir "$lock" 2>/dev/null; then
+  echo "boot: already running (lock $lock; remove it if no boot is running)"
+  exit 0
+fi
+renew_pid=''
+gateway_pid=''
+# Stopping this script stops what it started, so the next run starts clean. The payer is left: a
+# payer still answering is reused.
+stop() {
+  if [ -n "$gateway_pid" ]; then kill "$gateway_pid" 2>/dev/null; fi
+  if [ -n "$renew_pid" ]; then pkill -P "$renew_pid" 2>/dev/null; kill "$renew_pid" 2>/dev/null; fi
+  rmdir "$lock" 2>/dev/null
+}
+trap stop EXIT
+trap 'exit 143' TERM INT HUP
+echo "boot: took the lock $lock"
 c="$HOME/.charter"
 : "${HERMES_HOME:=$HOME/.hermes}"
 mkdir -p "$c" "$HERMES_HOME"
@@ -71,6 +91,7 @@ if [ -n "$id" ] && [ -n "${CHARTER_LEASE_ID:-}" ]; then
       sleep "$renew_sleep"
     done
   ) &
+  renew_pid=$!
   echo "boot: renew started"
 else
   echo "boot: no offer id in CHARTER_OFFER_JSON or no CHARTER_LEASE_ID, renew not started"
@@ -89,7 +110,12 @@ fi
 export TOON_PAYER_URL="$CHARTER_PAYER_URL" CHARTER_BIN=/usr/local/bin/charter CHARTER_OFFER_ID="$offer"
 while :; do
   echo "boot: gateway started"
-  hermes gateway run
-  echo "boot: gateway exited ($?), restarting in $gateway_sleep s"
+  # In the background and waited on, so a TERM to this script is handled now, not when the gateway exits.
+  hermes gateway run &
+  gateway_pid=$!
+  wait "$gateway_pid"
+  code=$?
+  gateway_pid=''
+  echo "boot: gateway exited ($code), restarting in $gateway_sleep s"
   sleep "$gateway_sleep"
 done

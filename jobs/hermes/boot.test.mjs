@@ -28,8 +28,10 @@ if (args[0] === 'payer') {
 }
 `;
 const HERMES_STUB = `#!/bin/sh
+mkdir "$STUB_LOG.gateway" 2>/dev/null || echo "OVERLAP two gateways at once" >> "$STUB_LOG"
 echo "hermes $* TOON_PAYER_URL=$TOON_PAYER_URL CHARTER_PAYER_URL=$CHARTER_PAYER_URL CHARTER_BIN=$CHARTER_BIN CHARTER_OFFER_ID=$CHARTER_OFFER_ID" >> "$STUB_LOG"
 sleep 1
+rmdir "$STUB_LOG.gateway" 2>/dev/null
 exit 3
 `;
 
@@ -57,6 +59,8 @@ async function setup(t, offer) {
   const port = await freePort();
   const env = {
     PATH: `${bin}:${process.env.PATH}`,
+    // The lock lives in TMPDIR: one per test, so the tests can run side by side.
+    TMPDIR: tmp,
     HOME: home,
     HERMES_HOME: join(home, '.hermes'),
     STUB_LOG: stubLog,
@@ -69,19 +73,22 @@ async function setup(t, offer) {
     CHARTER_PAYER_LISTEN: `127.0.0.1:${port}`,
     CHARTER_PAYER_URL: `http://127.0.0.1:${port}`,
   };
-  let child;
+  const children = [];
   let out = '';
   const boot = () => {
-    child = spawn('sh', [BOOT], { env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('sh', [BOOT], { env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     child.stdout.on('data', (b) => { out += b; });
     child.stderr.on('data', (b) => { out += b; });
+    child.exited = new Promise((r) => child.on('exit', (code) => r(code)));
+    children.push(child);
+    return child;
   };
   t.after(() => {
-    // The whole group: the payer stub and the renew loop run in the background of the script.
-    if (child) try { process.kill(-child.pid, 'SIGKILL'); } catch {}
+    // Each whole group: the payer stub and the renew loop run in the background of the script.
+    for (const child of children) try { process.kill(-child.pid, 'SIGKILL'); } catch {}
     rmSync(tmp, { recursive: true, force: true });
   });
-  return { home, stubLog, port, boot, log: () => readFileSync(stubLog, 'utf8'), out: () => out };
+  return { home, stubLog, port, boot, lock: join(tmp, 'charter-boot.lock'), log: () => readFileSync(stubLog, 'utf8'), out: () => out };
 }
 
 // Each test has its own home, port and stubs, so they run side by side.
@@ -110,6 +117,34 @@ describe('boot-default', { concurrency: true }, () => {
     assert.match(log(), new RegExp(`TOON_PAYER_URL=http://127.0.0.1:${port} CHARTER_PAYER_URL=http://127.0.0.1:${port} CHARTER_BIN=/usr/local/bin/charter CHARTER_OFFER_ID=${HOST}:o1`));
     assert.match(out(), /boot: gateway started/);
     assert.match(out(), /boot: gateway exited \(3\), restarting in 1 s/);
+    assert.doesNotMatch(log(), /OVERLAP/);
+  });
+
+  test('boot-default: a second run while the first is alive exits, and a stopped boot can start again', async (t) => {
+    const { home, boot, lock, log, out } = await setup(t, { id: 'o1', hostPubkey: HOST });
+    mkdirSync(join(home, '.hermes'), { recursive: true });
+    writeFileSync(join(home, '.hermes', '.env'), 'X=1\n');
+    const first = boot();
+    await sleep(1500);
+    const second = boot();
+    const ran = await Promise.race([second.exited, sleep(2000).then(() => 'still running')]);
+    assert.equal(ran, 0, 'the second run must exit at once');
+    assert.match(out(), new RegExp(`boot: already running \\(lock ${lock};`));
+    await sleep(2500);
+    assert.equal(log().match(/charter payer/g).length, 1, 'one payer');
+    assert.doesNotMatch(log(), /OVERLAP/, 'one gateway at a time');
+    // A stopped boot takes its gateway and renew loop with it and frees the lock.
+    process.kill(first.pid, 'SIGTERM');
+    await first.exited;
+    await sleep(1500);
+    const quiet = log();
+    await sleep(1500);
+    assert.equal(log(), quiet, 'nothing the stopped boot started is still running');
+    assert.equal(statSync(lock, { throwIfNoEntry: false }), undefined, 'the lock is released');
+    boot();
+    await sleep(1500);
+    assert.equal(log().match(/charter payer/g).length, 1, 'the payer still answering is reused');
+    assert.ok(out().match(/boot: gateway started/g).length > 1);
   });
 
   test('boot-default: a payer already answering /health is reused, not started again', async (t) => {
