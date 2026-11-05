@@ -421,6 +421,13 @@ Run 2026-11-04 23:00Z to 2026-11-05 09:55Z, Drew present for the funding and the
   connector: `fulfilled=true status=200 paid=2`, event `2e5e5913c45eb3e7a71c2be6734b4f8228208840c0237b6b2da983949c921ddf`,
   read back from `wss://relay.toonprotocol.xyz` (kind 1, created 1793872287). Box, Drew's edge,
   Jonathan's node: two hops, one channel.
-- [ ] The box pays its own rent: `charter renew` in the box with `CHARTER_PAYER=toon-client` on that
-  channel, started 09:55Z, first self-paid tick due about 10:07Z: `<result>`.
+- [x] The box pays its own rent: `charter renew` in the box with `CHARTER_PAYER=toon-client` on that
+  channel (started 09:53Z, 720 ticks, pays when due) paid tick 1 at 10:08Z: the host shows `paidIntervals`
+  2, paid through 11:37Z, and the box's channel total went from 1102 to 8102 units. Plan step 6's gate is
+  met: the toon-client payer works from inside the proxied box with an explicit `rpcUrl`.
+  Still open in the box: Hermes's package manager re-downloads about 570 MB of tool bundles at every
+  gateway start and fills the 2 GiB disk (removed three times); the toon, l402 and charter tool plugins and
+  the crons bridge through the Air and do not work from the box. Both are being fixed in their own
+  sessions (the hermes-toon plugins pay through one local payer; the Hermes-in-a-box image bakes the lean
+  install into the image).
 
