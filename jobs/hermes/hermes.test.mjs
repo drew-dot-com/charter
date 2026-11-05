@@ -113,6 +113,24 @@ test('a hermes home runs Hermes 0.22.7 and the charter CLI read-only, boots by d
   assert.ok(free > 1800, `only ${free} MiB free on the home disk`);
   assert.equal(ok(p, 'printf %s "$HERMES_DISABLE_LAZY_INSTALLS"').out, '1');
 
+  // A gateway that has really run, on the read-only image: a dummy key is enough for Hermes to start
+  // and write its home. With no platform set it may exit at once; the boot's loop logs that, and the
+  // checks are about the files it left, not about it staying up.
+  ok(p, "mkdir -p ~/.hermes && printf 'OPENAI_API_KEY=sk-test-not-real\\n' > ~/.hermes/.env");
+  let started;
+  for (const end = Date.now() + 90_000; Date.now() < end; pause(1000)) {
+    started = ssh(p, 'grep -q "^boot: gateway started" ~/.charter/boot.log');
+    if (started.code === 0) break;
+  }
+  assert.equal(started.code, 0, 'no "boot: gateway started" in ~/.charter/boot.log within 90 s');
+  // Time for the gateway to write its home before the files are read.
+  pause(10_000);
+  ok(p, 'test ! -e ~/.hermes/tools');
+  // Hermes made its own home, so the log grep below reads a directory that exists (grep exits 1, not 2).
+  assert.match(ok(p, 'ls ~/.hermes').out, /^logs$/m);
+  const logs = ssh(p, "grep -rlE 'Read-only file system|out of sync' ~/.charter/boot.log ~/.hermes/logs 2>/dev/null");
+  assert.equal(logs.code, 1, `a log names a read-only write or a venv out of sync: ${logs.out}`);
+
   // The tenant's edits survive a restart: the default is copied only when boot.sh is absent.
   ok(p, 'echo "# tenant marker" >> ~/.charter/boot.sh');
   docker('restart', n);
