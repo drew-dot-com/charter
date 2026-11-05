@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { ToonClient, type SendRequest, type SendOptions, type SendResult, type ToonClientConfig } from '@toon-protocol/client';
+import { ToonClient, type NodeSelfDescription, type SendRequest, type SendOptions, type SendResult, type ToonClientConfig } from '@toon-protocol/client';
 import type { Micro } from './types.js';
 
 export interface PacketRequest {
@@ -297,6 +297,12 @@ export class ToonClientPayer implements Payer {
     if (!this.client.describe || !this.client.channel) throw new Error('this TOON client cannot open a channel ahead of a send');
     await this.client.describe();
     await this.client.channel.open();
+  }
+
+  /** The connector's `GET /ilp`, as the client reads and caches it: routes, prices, the sealing key. */
+  async describe(): Promise<NodeSelfDescription> {
+    if (!this.client.describe) throw new Error('this TOON client cannot describe its connector');
+    return (await this.client.describe()) as NodeSelfDescription;
   }
 
   /** Every channel the client holds with the connector, live or archived. */

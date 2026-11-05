@@ -103,6 +103,20 @@ charter renew --offer <pubkey>:<id> --lease "$CHARTER_LEASE_ID" --max-intervals 
 
 `renew` pays each tick when it is due, so restarting `boot.sh` costs nothing extra. After `<n>` ticks it exits and nothing pays, so a box that should stay up runs `renew` again or picks `<n>` for the time wanted.
 
+When more than one process in the box pays (the rent, an agent's paid fetches, its posts to a relay), they
+must share one channel without two of them signing on it at once: a voucher names a running total, and a
+second signer races the first and gets its packets refused. So the box runs one `charter payer`, the
+process that owns the channel, and everything else pays through it with `CHARTER_PAYER=url`:
+
+```sh
+charter payer &                                   # owns ~/.charter/channels.json, serves 127.0.0.1:3510
+CHARTER_PAYER=url charter renew --offer <pubkey>:<id> --lease "$CHARTER_LEASE_ID" --max-intervals <n>
+```
+
+The service also answers `GET /extract?url=` (a paid anonymous page fetch, the contract a Hermes
+`web-toon` plugin speaks), `POST /relay/post` (a signed note paid onto a relay) and
+`GET /relay/read` (a free relay read through the box's proxy); `docs/env.md` lists its variables.
+
 A home costs about 5 USDC for 30 days; a box that pays its own rent needs 2 USDC in its own channel and
 a little Base ETH for the one on-chain channel open. The whole of it, for agents, is
 https://charter.mainnet.toonprotocol.dev/agents#home.

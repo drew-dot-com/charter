@@ -355,3 +355,46 @@ test('CHARTER_PAYER=toon-client builds the client payer from env', async () => {
   assert.match(missing.err, /CHARTER_TOON_KEY_FILE is required/);
   assert.equal(missing.clientConfigs.length, 0);
 });
+
+test('CHARTER_PAYER=url sends every packet through the payer service at CHARTER_PAYER_URL', async () => {
+  const { createServer } = await import('node:http');
+  const seen: Array<Record<string, unknown>> = [];
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c: Buffer) => chunks.push(c));
+    req.on('end', () => {
+      const wire = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
+      seen.push({ url: req.url, ...wire });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 200, body: { lease: { id: 'a'.repeat(32), state: 'running', paidIntervals: 2, paidThrough: 1000 } }, paid: '100' }));
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const { port } = server.address() as { port: number };
+  try {
+    const env = { CHARTER_PAYER: 'url', CHARTER_PAYER_URL: `http://127.0.0.1:${port}` };
+    const r = await cli(['status', 'o1', 'a'.repeat(32), '--relay', 'wss://r', '--json'], env, { makePayer: undefined });
+    assert.equal(r.code, 0, r.err);
+    assert.equal(JSON.parse(r.out).spent, '100');
+    assert.equal(r.clientConfigs.length, 0, 'no toon-client payer is built');
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]!.url, '/send');
+    assert.equal(seen[0]!.dest, `${OFFER.ilpBase}.charter-status`);
+    assert.equal(seen[0]!.method, 'GET');
+    assert.equal(seen[0]!.path, `/leases/${'a'.repeat(32)}`);
+    assert.equal(seen[0]!.sealKey, OFFER.sealKey);
+    assert.equal(seen[0]!.sealUrl, OFFER.sealUrl);
+    assert.equal(seen[0]!.amount, OFFER.statusPrice.toString());
+    const bad = await cli(['status', 'o1', 'a'.repeat(32), '--relay', 'wss://r'], { CHARTER_PAYER: 'lightning' }, { makePayer: undefined });
+    assert.equal(bad.code, 2);
+    assert.match(bad.err, /toon, toon-client or url/);
+  } finally {
+    server.close();
+  }
+});
+
+test('charter payer refuses a bad --listen before touching any key', async () => {
+  const r = await cli(['payer', '--listen', 'nowhere'], { CHARTER_PAYER: 'toon-client', CHARTER_TOON_KEY_FILE: '/nonexistent', CHARTER_TOON_CHANNEL_STORE: '/tmp/x.json', CHARTER_TOON_CHAIN: 'evm', CHARTER_CONNECTOR_URL: 'https://c' });
+  assert.equal(r.code, 2);
+  assert.match(r.err, /--listen must be <host>:<port>/);
+});

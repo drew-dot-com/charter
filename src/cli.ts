@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 import { readFileSync, realpathSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { MAX_SCRIPT_BYTES, fetchJob, homeJob, isScript, normalizeSshKeys, pythonJob } from './jobs.js';
 import { offerFromJson } from './offer.js';
-import { ToonClientPayer, type Payer, type ToonClientPayerConfig } from './payer.js';
+import { ToonClientPayer, serialized, type Payer, type ToonClientPayerConfig } from './payer.js';
 import { toonClientConfigFromEnv } from './payer-env.js';
+import { DEFAULT_DAILY_CAP, DEFAULT_LISTEN, DailyBudget, loadNostrKey, payerService } from './payer-service.js';
+import { UrlPayer } from './payer-url.js';
 import { ToonCli } from './toon-cli.js';
 import type { HomeAccess, Lease, Micro, Offer } from './types.js';
 import { hostApi } from './tenant/host-api.js';
@@ -17,12 +21,16 @@ const USAGE = `usage:
   charter rent --offer <pubkey>:<id> (--urls <a,b> | --python <file.py> | --home <keys file>) --max-intervals <n> --relay <url> [--json]
   charter renew --offer <pubkey>:<id> --lease <id> [--from <index>] --max-intervals <n> [--relay <url>] [--json]
   charter status <pubkey>:<offerId> <leaseId> --relay <url> [--json]
+  charter payer [--listen <host:port>]
 --home takes one SSH public key per line; renew pays an open lease from the host's paid count on
   (--from, when given, must equal that count, or nothing is paid)
 paying commands read the wallet passphrase file named by TOON_PASSPHRASE_FILE
 CHARTER_PAYER=toon-client pays with the TOON library instead (CHARTER_TOON_KEY_FILE, CHARTER_TOON_CHANNEL_STORE,
   CHARTER_TOON_CHAIN, CHARTER_TOON_CONNECTOR_URL or CHARTER_CONNECTOR_URL); CHARTER_OFFER_JSON, set inside a rented
-  box, is the offer to use, and --relay is then not needed`;
+  box, is the offer to use, and --relay is then not needed
+CHARTER_PAYER=url pays through a charter payer service at CHARTER_PAYER_URL (http://127.0.0.1:3510 by default):
+  \`charter payer\` is that service, one process that owns the toon-client channel (same CHARTER_TOON_* variables)
+  and answers POST /send, GET /extract?url=, POST /relay/post, GET /relay/read and GET /health on loopback`;
 
 export interface CliDeps {
   out: (line: string) => void;
@@ -30,7 +38,7 @@ export interface CliDeps {
   now: () => number;
   sleep: (ms: number) => Promise<void>;
   fetchOffers: (relayUrl: string, now: number) => Promise<Offer[]>;
-  /** The payer CHARTER_PAYER names: `toon` (the default) or `toon-client`. */
+  /** The payer CHARTER_PAYER names: `toon` (the default), `toon-client` or `url`. */
   makePayer: (env: Record<string, string | undefined>) => Promise<Payer>;
   /** Builds the `toon-client` payer; a seam for tests. */
   makeClientPayer: (cfg: ToonClientPayerConfig) => Promise<Payer>;
@@ -46,6 +54,15 @@ const defaultDeps: Omit<CliDeps, 'makePayer'> = {
 };
 
 class UsageError extends Error {}
+
+/** The package version, for `charter payer`'s health and log lines. */
+const VERSION: string = (() => {
+  try {
+    return (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string }).version ?? '0';
+  } catch {
+    return '0';
+  }
+})();
 
 /** 1000000n -> "1", 5000n -> "0.005". */
 export function formatUsdc(n: Micro): string {
@@ -98,11 +115,86 @@ export function resolveOffer(offers: Offer[], ref: string): Offer {
 async function payerFromEnv(env: Record<string, string | undefined>, makeClientPayer: CliDeps['makeClientPayer']): Promise<Payer> {
   const kind = env.CHARTER_PAYER?.trim() || 'toon';
   if (kind === 'toon') return new ToonCli({ passphraseFile: passphraseFile(env) });
-  if (kind !== 'toon-client') throw new UsageError('CHARTER_PAYER must be toon or toon-client');
-  // Inside a rented box the connector to send through is the one the box names.
+  if (kind === 'url') return new UrlPayer(env.CHARTER_PAYER_URL?.trim() || `http://${DEFAULT_LISTEN}`);
+  if (kind !== 'toon-client') throw new UsageError('CHARTER_PAYER must be toon, toon-client or url');
+  return makeClientPayer(clientPayerConfig(env));
+}
+
+/** The toon-client payer's config. Inside a rented box the connector to send through is the one the box names. */
+function clientPayerConfig(env: Record<string, string | undefined>): ToonClientPayerConfig {
   const connector = env.CHARTER_TOON_CONNECTOR_URL?.trim() || env.CHARTER_CONNECTOR_URL?.trim();
   if (!connector) throw new Error('CHARTER_TOON_CONNECTOR_URL or CHARTER_CONNECTOR_URL is required');
-  return makeClientPayer(toonClientConfigFromEnv({ ...env, CHARTER_TOON_CONNECTOR_URL: connector }));
+  return toonClientConfigFromEnv({ ...env, CHARTER_TOON_CONNECTOR_URL: connector });
+}
+
+function listenAddress(v: string): { host: string; port: number } {
+  const m = /^(.+):(\d{1,5})$/.exec(v);
+  const port = m ? Number(m[2]) : NaN;
+  if (!m || !Number.isInteger(port) || port < 1 || port > 65535) throw new UsageError('--listen must be <host>:<port>');
+  return { host: m[1]!, port };
+}
+
+/**
+ * `charter payer`: the one process in a box that owns the channel. Pays with the toon-client payer, one send at a
+ * time, and serves the HTTP surface in payer-service.ts on loopback. Everything else in the box uses
+ * CHARTER_PAYER=url. Runs until killed.
+ */
+async function payerCommand(rest: string[], env: Record<string, string | undefined>, d: CliDeps): Promise<number> {
+  const { values } = parseArgs({ args: rest, options: { listen: { type: 'string' } }, strict: true });
+  const { host, port } = listenAddress(values.listen ?? env.CHARTER_PAYER_LISTEN?.trim() ?? DEFAULT_LISTEN);
+  if (!['127.0.0.1', 'localhost', '::1'].includes(host)) d.err(`charter payer: listening on ${host}, not loopback; anyone who reaches it can spend from the channel`);
+  const cfg = clientPayerConfig(env);
+  const client = await ToonClientPayer.create(cfg);
+  // The channel is opened (or found) now, not inside the first caller's deadline.
+  try {
+    await client.warm();
+    const left = await client.headroom();
+    d.err(`charter payer: channel ready, headroom ${left === undefined ? 'unknown' : formatUsdc(left)} USDC`);
+  } catch (e) {
+    d.err(`charter payer: could not open the channel at start (the first send retries it): ${String(e instanceof Error ? e.message : e).slice(0, 200)}`);
+  }
+  const capRaw = env.CHARTER_PAYER_DAILY_CAP?.trim();
+  if (capRaw !== undefined && capRaw !== '' && !/^\d{1,18}$/.test(capRaw)) throw new UsageError('CHARTER_PAYER_DAILY_CAP must be micro-USDC');
+  const storeDir = dirname(cfg.channelStore);
+  const budget = new DailyBudget(join(storeDir, 'payer-budget.json'), capRaw ? BigInt(capRaw) : DEFAULT_DAILY_CAP, d.now);
+  let nostrKey: Uint8Array | undefined;
+  const handler = payerService({
+    payer: serialized(client),
+    describe: () => client.describe(),
+    connectorUrl: cfg.connectorUrl,
+    channel: async () => {
+      const left = await client.headroom();
+      const live = client.channels().filter((c) => c.closedAt === undefined);
+      return {
+        chain: cfg.chain,
+        headroom: left === undefined ? null : left.toString(),
+        channels: live.map((c) => ({ id: c.channel.channelId, depositTotal: c.depositTotal.toString(), signed: c.signed.toString() })),
+      };
+    },
+    nostrKey: () => (nostrKey ??= loadNostrKey(env.CHARTER_PAYER_NOSTR_KEY_FILE?.trim() || join(storeDir, 'nostr.key'))),
+    budget,
+    ...(env.CHARTER_PAYER_EXTRACT_ROUTE?.trim() ? { extractRoute: env.CHARTER_PAYER_EXTRACT_ROUTE.trim() } : {}),
+    ...(env.CHARTER_PAYER_RELAY_ROUTE?.trim() ? { relayRoute: env.CHARTER_PAYER_RELAY_ROUTE.trim() } : {}),
+    ...(env.CHARTER_PAYER_RELAY_URL?.trim() ? { relayUrl: env.CHARTER_PAYER_RELAY_URL.trim() } : {}),
+    now: d.now,
+    log: (line) => d.err(`${new Date(d.now()).toISOString()} ${line}`),
+    version: VERSION,
+  });
+  const server = createServer(handler);
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, host, () => resolve());
+  });
+  d.err(`charter payer v${VERSION} listening on http://${host}:${port}, paying through ${cfg.connectorUrl}; daily cap ${formatUsdc(budget.cap)} USDC on the app endpoints`);
+  const stop = () => {
+    d.err('charter payer: stopping');
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 3_000).unref();
+  };
+  process.once('SIGTERM', stop);
+  process.once('SIGINT', stop);
+  await new Promise<void>(() => undefined);
+  return 0;
 }
 
 /**
@@ -337,6 +429,7 @@ export async function runCli(argv: string[], env: Record<string, string | undefi
     if (cmd === 'rent') return await rentCommand(rest, env, d);
     if (cmd === 'renew') return await renewCommand(rest, env, d);
     if (cmd === 'status') return await statusCommand(rest, env, d);
+    if (cmd === 'payer') return await payerCommand(rest, env, d);
     d.err(USAGE);
     return 2;
   } catch (e) {

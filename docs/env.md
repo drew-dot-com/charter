@@ -87,10 +87,31 @@ opens a home; `renew --lease <id>` keeps paying an open lease from the host's ow
 | variable | required | default | what it is |
 | --- | --- | --- | --- |
 | `TOON_PASSPHRASE_FILE` | for paying commands with the `toon` payer | | File holding the tenant node's wallet passphrase. Passed to `toon` in its env only. |
-| `CHARTER_PAYER` | no | `toon` | `toon` pays through the `toon` binary; `toon-client` pays with `@toon-protocol/client` and the variables below (how a home pays its own rent). |
+| `CHARTER_PAYER` | no | `toon` | `toon` pays through the `toon` binary; `toon-client` pays with `@toon-protocol/client` and the variables below; `url` pays through a `charter payer` service (below), which is how every process in a home shares the box's one channel. |
+| `CHARTER_PAYER_URL` | with `url` | `http://127.0.0.1:3510` | The `charter payer` service to send through. Loopback: its `/send` is unauthenticated and spends from the channel. |
 | `CHARTER_TOON_KEY_FILE`, `CHARTER_TOON_CHANNEL_STORE`, `CHARTER_TOON_CHAIN`, `CHARTER_TOON_RPC_URL_FILE` | with `toon-client` (the RPC file optional) | | As for the door, above: the payer's key file, its channel store, `evm` or `solana`, and an RPC URL file. |
 | `CHARTER_TOON_CONNECTOR_URL` | with `toon-client`, unless `CHARTER_CONNECTOR_URL` is set | | The connector the payer sends through. Inside a home `CHARTER_CONNECTOR_URL` is set by the host. |
 | `CHARTER_OFFER_JSON` | no | | The offer to use instead of a relay read, so `--relay` is not needed. Set by the host inside a home. |
+
+## charter payer
+
+`charter payer [--listen <host:port>]` is the one process in a box that owns the box's channel. It pays with the
+`toon-client` payer (the `CHARTER_TOON_*` variables above, the connector from `CHARTER_TOON_CONNECTOR_URL` or
+`CHARTER_CONNECTOR_URL`), one send at a time, and serves on loopback: `POST /send` (the charter CLI with
+`CHARTER_PAYER=url`), `GET /extract?url=` and `GET /fetch?url=` (a paid anonymous page fetch, the anonfetch payer
+sidecar's contract, for a Hermes `web-toon` plugin), `POST /relay/post` (a Nostr event signed with the service's
+own key, paid onto a relay route), `GET /relay/read?filter=` (a free relay read over a WebSocket, through the
+box's proxy) and `GET /health`. A channel voucher names a running total, so two processes signing on one channel
+store race it and get packets refused: run one `charter payer` per channel store and nothing else on that store.
+
+| variable | required | default | what it is |
+| --- | --- | --- | --- |
+| `CHARTER_PAYER_LISTEN` | no | `127.0.0.1:3510` | Where to listen; `--listen` overrides. Anything but loopback is warned about. |
+| `CHARTER_PAYER_DAILY_CAP` | no | `100000` | Micro-USDC a UTC day across `/extract`, `/fetch` and `/relay/post` together, kept in `payer-budget.json` beside the channel store. `/send` is not capped: the charter CLI bounds its own leases. |
+| `CHARTER_PAYER_EXTRACT_ROUTE` | no | `g.drew.anon` | The route `/extract` and `/fetch` pay (a kind 5301 job). Priced from the connector's `GET /ilp`. |
+| `CHARTER_PAYER_RELAY_ROUTE` | no | `g.drew.relay` | The route `/relay/post` pays. Priced from the connector's `GET /ilp`. |
+| `CHARTER_PAYER_RELAY_URL` | no | `wss://relay.mainnet.toonprotocol.dev` | The relay `/relay/read` reads when the query names none. |
+| `CHARTER_PAYER_NOSTR_KEY_FILE` | no | `nostr.key` beside the channel store | 32 hex bytes, the key `/relay/post` signs with; made (mode 600) when missing. An identity for notes, not a money key. |
 
 ## Development only
 
