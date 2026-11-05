@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { FIRST_TICK_GRACE_MS } from '../lease.js';
-import { HOME_IMAGE } from '../jobs.js';
+import { HOME_IMAGES } from '../jobs.js';
 import { isSealKey, isSealUrl } from '../offer.js';
 import type { Micro, Offer } from '../types.js';
 import { HOME_DISK_GIB, HOME_RETENTION_MS } from './homes.js';
@@ -98,8 +98,8 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
 
   const maxLeases = num(env, 'CHARTER_MAX_LEASES', 1);
   const maxHomes = count(env, 'CHARTER_MAX_HOMES', 0);
-  if (allowImages.includes(HOME_IMAGE) && maxHomes === 0) {
-    throw new Error(`${HOME_IMAGE} is allowed but CHARTER_MAX_HOMES is 0: set it to at least 1`);
+  if (allowImages.some((i) => HOME_IMAGES.includes(i)) && maxHomes === 0) {
+    throw new Error('a home image (charter-home or charter-hermes) is allowed but CHARTER_MAX_HOMES is 0: set it to at least 1');
   }
   if (maxHomes > maxLeases) throw new Error('CHARTER_MAX_HOMES cannot exceed CHARTER_MAX_LEASES');
   const dataDir = need(env, 'CHARTER_DATA_DIR');

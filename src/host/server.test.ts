@@ -447,6 +447,21 @@ test('open for a home refuses bad keys, a full house and a home already in use',
   }
 });
 
+test('the same keys under the two home images are one home: the second open is home_in_use', async () => {
+  const created: string[] = [];
+  const t = await setup(homeRunner([], { create: async (id) => void created.push(id) }), 5, 2);
+  try {
+    const keys = normalizeSshKeys([KEY])!;
+    const first = await t.post(t.urls.open, '/open', { job: homeJob(keys, 'charter-home') });
+    assert.equal(first.body.state, 'awaiting_first_tick');
+    const second = await t.post(t.urls.open, '/open', { job: homeJob(keys, 'charter-hermes') });
+    assert.equal(second.body.closedReason, 'home_in_use');
+    assert.equal(created.length, 1);
+  } finally {
+    t.done();
+  }
+});
+
 test('open for a home makes the disk before the container, and a no-disk refusal is a boot failure', async () => {
   const calls: string[] = [];
   const t = await setup(homeRunner(calls, { create: async (id) => void calls.push(`create ${id}`) }), 5, 1);

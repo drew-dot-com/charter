@@ -111,6 +111,12 @@ test('the home image without a home slot is a configuration error', () => {
   );
 });
 
+test('charter-hermes alone also needs CHARTER_MAX_HOMES', () => {
+  assert.throws(() => loadConfig({ ...ENV, CHARTER_ALLOW_IMAGES: 'charter-job-fetch,charter-hermes' }), /CHARTER_MAX_HOMES/);
+  const c = loadConfig({ ...HOME_ENV, CHARTER_ALLOW_IMAGES: 'charter-home,charter-hermes' });
+  assert.deepEqual(c.offer.images, ['charter-home', 'charter-hermes']);
+});
+
 test('more home slots than lease slots is an error', () => {
   assert.throws(() => loadConfig({ ...HOME_ENV, CHARTER_MAX_LEASES: '1', CHARTER_MAX_HOMES: '2' }), /CHARTER_MAX_HOMES/);
 });

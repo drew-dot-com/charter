@@ -329,7 +329,7 @@ const HOME_ID = homeIdOf(KEYS);
 const HOME = homeJob(KEYS);
 const GIB = 1024 ** 3;
 
-async function homeSetup(free = 10 * GIB, mkfsCode: () => number = () => 0, rmGate?: Promise<void>) {
+async function homeSetup(free = 10 * GIB, mkfsCode: () => number = () => 0, rmGate?: Promise<void>, allow: string[] = ['charter-home']) {
   const root = await mkdtemp(join(tmpdir(), 'charter-home-'));
   const homesDir = join(root, 'homes');
   const kills: Array<[number, string]> = [];
@@ -402,7 +402,7 @@ async function homeSetup(free = 10 * GIB, mkfsCode: () => number = () => 0, rmGa
     freeBytes: async () => free,
     now: () => 1_700_000_000_000,
   };
-  const r = dockerRunner({ exec, outRoot: join(root, 'out'), allow: ['charter-home'], runtime: 'runsc', home });
+  const r = dockerRunner({ exec, outRoot: join(root, 'out'), allow, runtime: 'runsc', home });
   return { r, calls, tools, kills, homes, home, homesDir, root, volumes, loops, loopLog };
 }
 
@@ -445,6 +445,30 @@ test('create for a home puts the box on its network with its disk, its port and 
   assert.ok(!a.some((x) => x.startsWith('CHARTER_PROXY')));
   assert.equal(a.filter((x) => x === '--pids-limit').length, 1);
   assert.equal(a.indexOf('--network'), a.indexOf('--dns') - 2);
+});
+
+test('a hermes home is created with the home args and the hermes image last', async () => {
+  const t = await homeSetup(undefined, undefined, undefined, ['charter-hermes']);
+  await t.r.ensureHome(HOME_ID);
+  t.calls.length = 0;
+  await t.r.create('l1', homeJob(normalizeSshKeys([KEY])!, 'charter-hermes'));
+  const a = t.calls[0]!.args;
+  const has = (...seq: string[]) =>
+    assert.ok(a.some((_, i) => seq.every((s, j) => a[i + j] === s)), `argv missing ${seq.join(' ')}: ${a.join(' ')}`);
+  has('--network', 'charter-home');
+  has('--pids-limit', '512');
+  has('--restart', 'unless-stopped');
+  has('-e', `SSH_KEYS=${KEYS.join('\n')}`);
+  assert.equal(a[a.length - 1], 'charter-hermes');
+});
+
+test('a hermes home on a host that allows only charter-home is image_not_allowed', async () => {
+  const t = await homeSetup();
+  await t.r.ensureHome(HOME_ID);
+  await assert.rejects(
+    t.r.create('l2', homeJob(normalizeSshKeys([KEY])!, 'charter-hermes')),
+    (e: unknown) => e instanceof RunnerError && e.code === 'image_not_allowed',
+  );
 });
 
 test('create for a home refuses with no home record, bad keys, or a host without homes', async () => {

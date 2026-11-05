@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { access, chmod, lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Exec } from '../exec.js';
-import { FETCH_IMAGE, HOME_IMAGE, homeIdOf, MAX_SCRIPT_BYTES, normalizeSshKeys, PYTHON_IMAGE } from '../jobs.js';
+import { FETCH_IMAGE, HERMES_IMAGE, HOME_IMAGE, homeIdOf, MAX_SCRIPT_BYTES, normalizeSshKeys, PYTHON_IMAGE } from '../jobs.js';
 import type { HomeAccess, JobSpec } from '../types.js';
 import { onionHostname, publishHiddenService, retireHiddenService, type AnonDeps } from './anon.js';
 import {
@@ -125,6 +125,15 @@ export interface HomeRunnerOpts {
  */
 export const PYTHON_WALL_SECONDS = 2_592_000;
 
+const HOME_PROFILE: JobProfile = {
+  args: ['SSH_KEYS'],
+  maxArgBytes: 9 * 1024,
+  network: 'home',
+  pidsLimit: 512,
+  // A home outlives its process: docker brings the box back after a crash or a host reboot.
+  flags: ['--tmpfs', '/tmp:size=256m', '--tmpfs', '/run', '--restart', 'unless-stopped'],
+};
+
 export const JOB_PROFILES: Record<string, JobProfile> = {
   [FETCH_IMAGE]: { args: ['URLS'], maxArgBytes: 16 * 1024, network: 'proxy', flags: ['--tmpfs', '/tmp'] },
   [PYTHON_IMAGE]: {
@@ -134,14 +143,9 @@ export const JOB_PROFILES: Record<string, JobProfile> = {
     network: 'none',
     flags: ['--tmpfs', '/tmp:size=64m', '--memory-swap', '1g', '--ulimit', 'fsize=8388608', '-e', `CHARTER_WALL_SECONDS=${PYTHON_WALL_SECONDS}`],
   },
-  [HOME_IMAGE]: {
-    args: ['SSH_KEYS'],
-    maxArgBytes: 9 * 1024,
-    network: 'home',
-    pidsLimit: 512,
-    // A home outlives its process: docker brings the box back after a crash or a host reboot.
-    flags: ['--tmpfs', '/tmp:size=256m', '--tmpfs', '/run', '--restart', 'unless-stopped'],
-  },
+  [HOME_IMAGE]: HOME_PROFILE,
+  // The same box under a second name: one profile keeps the two images from drifting.
+  [HERMES_IMAGE]: HOME_PROFILE,
 };
 
 function profileFor(image: string, allowArgs?: string[]): JobProfile {
@@ -215,7 +219,7 @@ export function dockerRunner(opts: {
   const { exec, outRoot, allow, proxy, runtime } = opts;
   const docker = (args: string[]) => exec(args, {});
   const needHome = (): HomeRunnerOpts => {
-    if (!opts.home) throw new RunnerError('image_not_allowed', HOME_IMAGE);
+    if (!opts.home) throw new RunnerError('image_not_allowed', 'a home image');
     return opts.home;
   };
   const record = (h: HomeRunnerOpts, homeId: string): HomeRecord => {
