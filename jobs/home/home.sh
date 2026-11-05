@@ -9,7 +9,7 @@ printf '%s\n' "${SSH_KEYS:-}" > ~/.ssh/authorized_keys
 # of each line as the value, so no quoting; none of these ever holds a newline.
 : > ~/.ssh/environment
 for name in HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY NODE_USE_ENV_PROXY CHARTER_LEASE_ID CHARTER_HOME_ID \
-  CHARTER_OFFER_JSON CHARTER_CONNECTOR_URL CHARTER_PAID_THROUGH_FILE; do
+  CHARTER_OFFER_JSON CHARTER_CONNECTOR_URL CHARTER_PAID_THROUGH_FILE HERMES_DISABLE_LAZY_INSTALLS HERMES_HOME; do
   # printenv fails when the name is unset, so only set names get a line.
   if value=$(printenv "$name"); then printf '%s=%s\n' "$name" "$value" >> ~/.ssh/environment; fi
 done

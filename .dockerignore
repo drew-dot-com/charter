@@ -1,0 +1,13 @@
+# Both images build from the repo root: deploy/door copies package*.json, tsconfig.json, src, web, scripts;
+# jobs/hermes copies package*.json, dist, jobs/hermes. Everything else stays out of the context.
+node_modules
+.git
+.worktrees
+test-results
+playwright-report
+docs
+site
+e2e
+plugins
+*.bak*
+dist.bak*
