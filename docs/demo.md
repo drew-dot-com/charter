@@ -499,7 +499,24 @@ ripgrep, and a default `~/.charter/boot.sh` that starts `charter payer`, pays re
 - [x] Bare open through the door at 12:06Z with a throwaway key and `image: "charter-hermes"`: lease
   `3bae2e403f515e287c0c91ead40d96e0`, `closed busy` (the one home slot is Edison's), nothing created.
   `image: "charter-job-python"` in a home body: 400 `bad_request`. Both as documented.
-- [ ] Edison's move (plan Task 9, Drew's go): stop the box's `renew`, let lease `5ec56ea8…` lapse at
-  its paid-through, open again from Edison's node with the same key and `--image charter-hermes`
-  (0.008 USDC), fix up or replace `~/.charter/boot.sh`, confirm Telegram answers from the image's
-  Hermes, then delete the hand-installed venv, clone and `~/charter` (about 1 GB back): `<result>`.
+- [x] Edison's move (plan Task 9), with one failure on the way. 13:32Z: the box's `renew` stopped (last tick 5,
+  paid through 15:37Z); a waiter on the Air was to open the same key on `charter-hermes` at the lapse. The lease
+  closed 15:37Z and the open FAILED: the waiter ran `charter rent` in the toon VM's login shell, which has no
+  `TOON_PASSPHRASE_FILE`, so the CLI refused before paying and printed its usage. Edison was offline 15:37Z to
+  19:49Z (the Air's gateway is off too), until the parent session re-opened the home on `charter-home` (lease
+  `85069b50…`, tick 0 at 19:49Z). Lesson, now in the ops notes: source `~/.config/charter/bridge.env`
+  (`set -a; . …; set +a`) before any paying `charter` command in the toon VM, and dry-check with a bogus offer
+  id first (it fails at "no live offer" after the free relay read).
+- [x] Redo, inside one lapse window: 19:50Z `renew` stopped in the box (paid through 20:48Z); 20:48:19Z lease
+  `85069b50…` closed; 20:48:29Z the waiter's open from Edison's node landed: lease
+  `09fb199ac8ba540344c3c4ec73b53e41` on `charter-hermes`, homeId `ac83e7d58faf521d`, the same onion
+  `6g4pbj3g…tid.anyone`, tick 0 paid (0.008 USDC from the node). Edison's own `boot.sh` on the retained disk
+  started its old payer, `renew` and gateway at once, so the outage was about a minute.
+- [x] 20:50Z the switch to the image, over `docker exec` (the operator path; Drew's go): `~/.local/bin/charter`
+  moved aside, Edison's `boot.sh` kept as `boot.sh.bak-20261105-prehermesimage`, `/app/boot-default.sh` copied
+  over it, old processes stopped, the new boot started with `nohup`. Result: `charter payer` (pid 209) and
+  `renew` from `/opt/charter`, `hermes gateway run` from `/opt/hermes/venv`; `boot.pid` and `payer.pid`
+  written; `/health` ok; `agent.log` 20:50:24Z `telegram connected` and `discord connected`, polling healthy.
+  No `~/.hermes/tools`. Then `rm -rf ~/.hermes/venv ~/.hermes/hermes-agent ~/charter ~/.local/share/uv`: the
+  disk went from 213 MiB free to 1419 MiB free (27 % used). Container memory 471 MiB of 1 GiB. The first
+  self-paid tick from the image's `renew` is due about 21:18Z: `<result>`.
