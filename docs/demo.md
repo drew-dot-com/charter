@@ -464,3 +464,42 @@ through it (`CHARTER_PAYER=url`, `TOON_PAYER_URL`, `CHARTER_PAYER_URL`, all `htt
   sessions (the hermes-toon plugins pay through one local payer; the Hermes-in-a-box image bakes the lean
   install into the image).
 
+
+## 14. Hermes in a box (2026-11-05)
+
+`charter-hermes`, the second home image: `charter-home` plus Hermes Agent 0.22.7 on its own CPython
+3.14.9 under `/opt/hermes` (read-only, five extras), the charter CLI at `/usr/local/bin/charter`,
+ripgrep, and a default `~/.charter/boot.sh` that starts `charter payer`, pays rent through it with
+`renew`, and runs the gateway once `~/.hermes/.env` arrives. Design:
+`docs/superpowers/specs/2026-11-05-hermes-in-a-box-design.md`; plan beside it; the image's facts in
+`docs/ops.md`, "Homes". Built with Drew away ("defer to your recs"), reviewed task by task.
+
+- [x] Code: charter main 48d51de (merge of `hermes-image`, 14 commits over c6a057a): `HOME_IMAGES`,
+  `home.image` in the open body, `charter rent --image`, the storefront select, `/health` with a
+  top-level `payer`, `jobs/hermes/` with its boot test (runs anywhere) and image test. 520 tests,
+  typecheck and build green on main. Not pushed.
+- [x] toon2: `docker build -t charter-home jobs/home` (home.sh now hands `HERMES_HOME` and
+  `HERMES_DISABLE_LAZY_INSTALLS` to sessions), then `docker build -f jobs/hermes/Dockerfile -t charter-hermes .`
+  from the staged tree `~/src/charter-hermes-build`: image `853b76c250ae`, 1.73 GB (709 MB shared base;
+  `/opt/hermes/app` 186 MB, venv 360, python 92, charter 136). Build takes about two minutes on the VM.
+  `CHARTER_IMAGE_TESTS=1 node --test jobs/hermes/hermes.test.mjs` under runsc on a real loop disk: pass,
+  including the gateway smoke (a dummy `.env`, `boot: gateway started`, no `~/.hermes/tools`, no
+  `Read-only file system`, no `out of sync`). Found on the way: with an empty `git init` and no stamp
+  `hermes --version` said `vunknown`, so the tree carries an `install-stamp.json` with
+  `updateMechanism: external` and the tag's commit (Hermes's two launch checks still skip it); and
+  `charter --help` exits 2 by design. Untagged image layers pruned (342 MB; every charter tag kept);
+  3.0 GB free after.
+- [x] Host, 12:04Z, no lease awaiting its first tick: dist installed over `~/src/charter` (backup
+  `dist.bak-20261105-prehermes`), `charter-hermes` added to `CHARTER_ALLOW_IMAGES` (env backup
+  `env.bak-20261105-prehermes`), `systemctl --user restart charter-host`; offer `a5fbc512…f4ff` lists
+  four images; Edison's container `StartedAt` unchanged, lease `5ec56ea8…` running, `restarts` 0.
+- [x] Door, 12:05Z: backup `/opt/charter.bak-20261105-prehermes`, rsync, `compose up -d --build`, healthy;
+  `GET /v1/offers` lists the four images; `/agents#hermes` and the `## Hermes in a box` section of
+  `/llms.txt` are served; storefront 200.
+- [x] Bare open through the door at 12:06Z with a throwaway key and `image: "charter-hermes"`: lease
+  `3bae2e403f515e287c0c91ead40d96e0`, `closed busy` (the one home slot is Edison's), nothing created.
+  `image: "charter-job-python"` in a home body: 400 `bad_request`. Both as documented.
+- [ ] Edison's move (plan Task 9, Drew's go): stop the box's `renew`, let lease `5ec56ea8…` lapse at
+  its paid-through, open again from Edison's node with the same key and `--image charter-hermes`
+  (0.008 USDC), fix up or replace `~/.charter/boot.sh`, confirm Telegram answers from the image's
+  Hermes, then delete the hand-installed venv, clone and `~/charter` (about 1 GB back): `<result>`.
