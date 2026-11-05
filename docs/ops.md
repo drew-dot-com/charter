@@ -229,6 +229,13 @@ A reload of Charter's anon (a new home's first publish, or a home's retire) rese
 
 The `charter-host` unit's `PATH` must include `/usr/sbin`, where `mkfs.ext4` for home disks lives; without it every home open answers `boot_failed` (the first deploy's failure), and the host log now says why.
 
+**Opening or renewing from Edison's node (the `toon` VM).** A paying `charter` command there needs the bridge env
+first: `set -a; . ~/.config/charter/bridge.env; set +a` (`TOON_PASSPHRASE_FILE`, `CHARTER_OFFER_ID`,
+`CHARTER_RELAY_URL`); a login shell has none of it and the CLI refuses with its usage text before paying, which
+on 2026-11-05 left Edison's home closed for four hours. Dry-check a scripted open with a bogus offer id first
+(it fails at "no live offer" after the free relay read). To move a home between images, do it inside one lapse
+window: stop the box's `renew` right after a tick lands, and have the replacement open ready to run at the close.
+
 **One payer per box.** A tenant's channel store has exactly one writer: a voucher names a running total, so two processes signing on `~/.charter/channels.json` race it and the connector refuses the lower one. A box that pays for more than its rent (an agent's paid fetches, relay posts, its own Charter jobs) runs one `charter payer` (the service, `docs/env.md`) and every other payer in it uses `CHARTER_PAYER=url`. Edison's home does this since 2026-11-05: `~/.charter/boot.sh` starts the payer, then `renew` through it, then the Hermes gateway, whose plugins point at the same `http://127.0.0.1:3510`. To move a running `renew` onto the service without a missed tick: check `/charter/paid-through` (the next tick goes out 30 minutes before it), stop the old `renew`, start `charter payer`, start `renew` with `CHARTER_PAYER=url`, all inside a minute. Restart the payer only in that same window, and never `pkill -f` it from a command line that itself contains the pattern.
 
 **What it adds to toon2.** Two system units, both installed and enabled by `sudo bash
