@@ -450,10 +450,14 @@ through it (`CHARTER_PAYER=url`, `TOON_PAYER_URL`, `CHARTER_PAYER_URL`, all `htt
 - [x] Crons: `ai-signal-digest`, `news-roundup-dm`, `ai-psychosis-starters` copied into
   `~/.hermes/cron/jobs.json` with `timezone: America/New_York` (same expressions as on the Air, whose
   gateway stays off), their pre-scripts and prompts in `~/.hermes/scripts`; the pre-scripts reach GitHub
-  through the box proxy.
+  through the box proxy. First runs from the box: `news-roundup-dm` 11:30:52Z and `ai-signal-digest` 11:30:52Z
+  (both completed and delivered by 11:31:38Z), `ai-psychosis-starters` 11:40:52Z (delivered 11:41:15Z).
   Found: Hermes's package manager refilled `~/.hermes/tools` (568 MB, then 206 MB of Python and uv during
   a plugin install) on the 2 GiB disk; `HERMES_DISABLE_LAZY_INSTALLS=1` in `payer.env` stops the per-start
-  refill. Found: the onion ssh session drops during a long command; run long work detached in the box.
+  refill. Found: a plugin install built a package-manager environment without the Telegram and Discord extras
+  and the next gateway start ran in it (`requirements not met`, 11:11Z to 11:17Z); moving that environment and
+  the `venv` entry of its facts file aside (`~/.hermes/backups/pm-20261105T1135Z/`) and restarting brought both
+  back. Found: the onion ssh session drops during a long command; run long work detached in the box.
   Still open in the box: Hermes's package manager re-downloads about 570 MB of tool bundles at every
   gateway start and fills the 2 GiB disk (removed three times); the toon, l402 and charter tool plugins and
   the crons bridge through the Air and do not work from the box. Both are being fixed in their own
