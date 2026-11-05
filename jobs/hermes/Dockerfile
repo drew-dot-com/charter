@@ -1,9 +1,11 @@
 # A home with Hermes Agent and the charter CLI preinstalled read-only, and a default boot that runs them.
 # Built from the repo root after `npm run build`: docker build -f jobs/hermes/Dockerfile -t charter-hermes .
-# Image size:
+# Image size: 1.73 GB on arm64 with charter-home at 709 MB (toon2, 2026-11-05): /opt/hermes/app 186 MB,
+# /opt/hermes/venv 360 MB, /opt/hermes/python 92 MB, /opt/charter 136 MB.
 ARG BASE=charter-home
 FROM ${BASE}
 ARG HERMES_VERSION=0.22.7
+ARG HERMES_COMMIT=b200f5bc60e31588ba2cb60e288029c4a54ba5fa
 ARG HERMES_SHA256=91bf15f50ce61e7da8a7890c11b202b904c3d7c0e2688a6dc6bcb42a2fe8b91d
 ARG PYTHON_VERSION=3.14.9
 USER root
@@ -11,17 +13,20 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ripgrep \
   && rm -rf /var/lib/apt/lists/*
 # The tests, the docs site, the evals and the desktop app's sources are never read by the gateway.
-# A .git entry and no install-stamp.json is a developer's checkout to Hermes: check_runtime and
-# prepare_launch in hermes_cli/venv_sync.py skip it, so its package manager never re-syncs the tree
-# or downloads 570 MB of tool bundles at launch.
+# A .git entry plus a stamp that is not self-managed (updateMechanism external): check_runtime and
+# prepare_launch in hermes_cli/venv_sync.py skip that tree, so its package manager never re-syncs it
+# or downloads 570 MB of tool bundles at launch. The stamp is also what gives Hermes its version: the
+# empty repo has no tag, and version_info.py ignores a stamp with no commit, so it names the tag's own.
 RUN set -eu; mkdir -p /opt/hermes/app; \
   curl -fsSLo /tmp/hermes.tar.gz "https://github.com/NousResearch/hermes-agent/archive/refs/tags/v${HERMES_VERSION}.tar.gz"; \
   echo "${HERMES_SHA256}  /tmp/hermes.tar.gz" | sha256sum -c -; \
   tar -xzf /tmp/hermes.tar.gz -C /opt/hermes/app --strip-components=1 --no-same-owner; \
   rm -f /tmp/hermes.tar.gz; \
   cd /opt/hermes/app; \
-  rm -rf tests tests-js website evals apps install-stamp.json; \
-  git init -q
+  rm -rf tests tests-js website evals apps; \
+  git init -q; \
+  printf '{"schemaVersion":2,"commit":"%s","commitDate":1793735355,"branch":null,"builtAt":"2026-11-05T00:00:00+00:00","dirty":false,"source":"tarball","distribution":null,"updateMechanism":"external","baseVersion":"%s","displayVersion":"%s","distance":0,"payload":"bootstrap","tag":"v%s"}\n' \
+    "$HERMES_COMMIT" "$HERMES_VERSION" "$HERMES_VERSION" "$HERMES_VERSION" > install-stamp.json
 # Hermes's own CPython, under /opt so the venv never points into a home. Downloads are off for the sync,
 # so it uses this interpreter and fetches no second one. Compiled now: the root is read-only at runtime.
 RUN set -eu; \
