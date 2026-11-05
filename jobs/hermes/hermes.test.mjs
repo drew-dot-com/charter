@@ -94,7 +94,10 @@ test('a hermes home runs Hermes 0.22.7 and the charter CLI read-only, boots by d
   const version = ok(p, 'hermes --version');
   assert.match(version.out, /0\.22\.7/);
   assert.doesNotMatch(version.err, /out of sync/);
-  ok(p, 'charter --help');
+  // The CLI answers --help with its usage text and exit 2, as it does any invocation it does not run.
+  const usage = ssh(p, 'charter --help');
+  assert.equal(usage.code, 2, usage.err);
+  assert.match(`${usage.out}\n${usage.err}`, /charter rent --offer/);
   ok(p, 'rg --version');
   assert.match(ok(p, 'readlink -f /opt/hermes/venv/bin/python').out, /^\/opt\/hermes\/python\//);
   ok(p, "/opt/hermes/venv/bin/python -c 'import telegram, discord, mcp, fastapi'");
