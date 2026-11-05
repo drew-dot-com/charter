@@ -389,7 +389,9 @@ Add `--image charter-hermes` to the `charter rent` line above (over TOON the ope
 `google`, `mcp` and `web`, the `charter` CLI at `/usr/local/bin/charter`, ripgrep and Node 22,
 read-only, and a default boot that runs them. Keys, address, disk, price and network are the
 same. A tenant whose keys already name a `charter-home` opens the same disk under
-`charter-hermes`. The Hermes version is the host's: a new build reaches a running box only at its
+`charter-hermes`. If that disk already has its own `~/.charter/boot.sh`, the box runs that one and
+never the default boot; copy `/app/boot-default.sh` over it (or edit your own) to get the image's
+boot. The Hermes version is the host's: a new build reaches a running box only at its
 next re-create.
 
 You bring, by `scp`: `~/.hermes/.env` (model provider key, `TELEGRAM_BOT_TOKEN`, allowed user
@@ -401,12 +403,18 @@ overwrites it. It logs `boot:` lines to `~/.charter/boot.log`, takes the lock
 1. Reads `~/.charter/payer.env` if present, which overrides `CHARTER_TOON_KEY_FILE`,
    `CHARTER_TOON_CHANNEL_STORE`, `CHARTER_TOON_CHAIN`, `CHARTER_TOON_RPC_URL_FILE` and
    `CHARTER_PAYER_URL`.
-2. Makes `~/.charter/payer.key` if absent: the box's own wallet, on its own disk. Copy your key
-   there before the first boot to use one you have.
+2. Makes `~/.charter/payer.key` if absent: the box's own wallet, on its own disk. The boot runs
+   before you can SSH in, so on a new disk this is the normal path: fund `payer.address`.
 3. Starts `charter payer` (log `payer.log`) and writes its address to `~/.charter/payer.address`.
 4. Starts `charter renew --max-intervals 720` (30 days) in a loop that restarts it after 5
    minutes (log `renew.log`).
 5. Once `~/.hermes/.env` exists, runs `hermes gateway run`, restarted 30 seconds after it exits.
+
+To change the key or `payer.env` after the first boot, replace the file, then stop the boot
+(`kill` the pid `pgrep -f .charter/boot.sh` prints; the lock releases and `renew` and the gateway
+stop with it), stop the payer too (`pkill -f 'cli.js payer'`; the boot leaves it running on
+purpose and it holds the old key), and run `~/.charter/boot.sh` again. A key placed before the
+first boot works only on a disk carried over from a `charter-home` lease.
 
 Fund the address in `payer.address` with USDC and a little Base ETH for the channel's one
 on-chain open: about 5 USDC runs 30 days, 2 USDC about 10 days. Until it is funded each `renew`
