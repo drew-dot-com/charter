@@ -256,6 +256,25 @@ test('a home body reaches the host and its access comes back through the door', 
   }
 });
 
+test('a home body naming charter-hermes reaches the host as that image; an offer without it is image_not_offered', async () => {
+  const key = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl you@host';
+  const terms = { diskGiB: 10, retentionDays: 30, slots: 2 };
+  const withHermes: Offer = { ...OFFER, images: ['charter-home', 'charter-hermes'], home: terms };
+  const bare: Offer = { ...OFFER, id: 'bare', images: ['charter-home'], home: terms };
+  const host = fakeHost();
+  const d = await start(host, { offers: async () => [withHermes, bare] });
+  try {
+    const a = await d.post('/v1/leases', { offerId: OFFER_ID, home: { sshKeys: [key], image: 'charter-hermes' } });
+    assert.equal(a.status, 200);
+    assert.equal(host.opened.at(-1)!.image, 'charter-hermes');
+    const b = await d.post('/v1/leases', { offerId: `${OFFER.hostPubkey}:bare`, home: { sshKeys: [key], image: 'charter-hermes' } });
+    assert.equal(b.status, 400);
+    assert.deepEqual(await b.json(), { error: 'image_not_offered' });
+  } finally {
+    d.close();
+  }
+});
+
 test('GET /v1/offers lists an offer that carries only the python image', async () => {
   const py: Offer = { ...OFFER, images: ['charter-job-python'] };
   const d = await start(fakeHost(), { offers: async () => [py] });

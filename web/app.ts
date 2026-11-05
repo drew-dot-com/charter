@@ -19,6 +19,9 @@ const MAX_SCRIPT_BYTES = 8 * 1024;
 const FETCH_IMAGE = 'charter-job-fetch';
 const PYTHON_IMAGE = 'charter-job-python';
 const HOME_IMAGE = 'charter-home';
+const HERMES_IMAGE = 'charter-hermes';
+/** Both home images are a home: SSH in, no output to fetch. */
+const isHomeImage = (image: string | undefined): boolean => image === HOME_IMAGE || image === HERMES_IMAGE;
 /** An empty machine list is read again this often. */
 const EMPTY_RETRY_MS = 30_000;
 
@@ -307,7 +310,7 @@ async function loadOffers(list: HTMLUListElement, token: number): Promise<void> 
   list.replaceChildren(...offers.map((o) => offerRow(o, Date.now())));
 }
 
-const JOB_NAME: Record<string, string> = { [PYTHON_IMAGE]: 'Python · NumPy', [FETCH_IMAGE]: 'Fetch pages', [HOME_IMAGE]: 'Home · SSH' };
+const JOB_NAME: Record<string, string> = { [PYTHON_IMAGE]: 'Python · NumPy', [FETCH_IMAGE]: 'Fetch pages', [HOME_IMAGE]: 'Home · SSH', [HERMES_IMAGE]: 'Hermes home · SSH' };
 
 function offerRow(o: PublicOffer, now: number): HTMLElement {
   const row = el('li', 'card');
@@ -418,7 +421,7 @@ function rentForm(o: PublicOffer, close: () => void): HTMLElement {
   const modes: JobMode[] = [];
   if (o.images.includes(PYTHON_IMAGE)) modes.push('python');
   if (o.images.includes(FETCH_IMAGE) || o.images.length === 0) modes.push('fetch');
-  if (o.images.includes(HOME_IMAGE)) modes.push('home');
+  if (o.images.includes(HOME_IMAGE) || o.images.includes(HERMES_IMAGE)) modes.push('home');
   let mode: JobMode = modes[0] ?? 'fetch';
   const drafts: Record<JobMode, string> = { python: EXAMPLE_SCRIPT, fetch: '', home: '' };
 
@@ -453,6 +456,24 @@ function rentForm(o: PublicOffer, close: () => void): HTMLElement {
   area.value = drafts[mode];
   show(mode);
 
+  // Two home images on offer: the choice rides in the open body; one: nothing to choose.
+  let imageSelect: HTMLSelectElement | null = null;
+  if (o.images.includes(HOME_IMAGE) && o.images.includes(HERMES_IMAGE)) {
+    imageSelect = el('select');
+    imageSelect.id = `home-image-${key}`;
+    for (const [value, text] of [[HOME_IMAGE, 'charter-home: a bare box'], [HERMES_IMAGE, 'charter-hermes: Hermes Agent preinstalled']] as const) {
+      const opt = el('option', undefined, text);
+      opt.value = value;
+      imageSelect.append(opt);
+    }
+    imageSelect.value = HOME_IMAGE;
+  }
+  const imagePick = imageSelect ? el('label', undefined, 'Image ', imageSelect) : null;
+  const showImage = () => {
+    if (imagePick) imagePick.hidden = mode !== 'home';
+  };
+  showImage();
+
   let choose: HTMLElement | null = null;
   if (modes.length > 1) {
     choose = el('div', 'job-pick');
@@ -464,7 +485,11 @@ function rentForm(o: PublicOffer, close: () => void): HTMLElement {
       r.name = `mode-${key}`;
       r.value = m;
       r.checked = m === mode;
-      r.addEventListener('change', () => r.checked && show(m));
+      r.addEventListener('change', () => {
+        if (!r.checked) return;
+        show(m);
+        showImage();
+      });
       choose.append(el('label', undefined, r, m === 'python' ? 'Run Python' : m === 'home' ? 'A home (SSH keys)' : 'Fetch pages'));
     }
   }
@@ -479,18 +504,19 @@ function rentForm(o: PublicOffer, close: () => void): HTMLElement {
     close();
   }, true);
   let picker = dev ? null : walletPicker();
-  form.append(...(choose ? [choose] : []), label, area, homeNotes, ...(picker ? [picker] : []), status, el('div', 'actions', start, cancel));
+  form.append(...(choose ? [choose] : []), label, area, ...(imagePick ? [imagePick] : []), homeNotes, ...(picker ? [picker] : []), status, el('div', 'actions', start, cancel));
   form.addEventListener('submit', (ev) => {
     ev.preventDefault();
     void (async () => {
-      let job: { urls: string[] } | { python: { script: string } } | { home: { sshKeys: string[] } };
+      let job: { urls: string[] } | { python: { script: string } } | { home: { sshKeys: string[]; image?: string } };
       if (mode === 'home') {
         const sshKeys = parseSshKeys(area.value);
         if (typeof sshKeys === 'string') {
           status.textContent = sshKeys;
           return;
         }
-        job = { home: { sshKeys } };
+        const image = imageSelect && imageSelect.value !== HOME_IMAGE ? imageSelect.value : undefined;
+        job = { home: image ? { sshKeys, image } : { sshKeys } };
       } else if (mode === 'python') {
         const bad = checkScript(area.value);
         if (bad) {
@@ -678,7 +704,7 @@ async function readStatus(p: LeasePage): Promise<void> {
       }
       observe(p.story, p.t.lease!, Date.now(), p.offer?.tickPrice);
       // A home has no output to fetch; the access region says what a finished home means.
-      if (lease.state === 'done' && p.output.state === 'idle' && lease.job.image !== HOME_IMAGE) void loadOutput(p);
+      if (lease.state === 'done' && p.output.state === 'idle' && !isHomeImage(lease.job.image)) void loadOutput(p);
     } else if (a.status === 404) {
       p.t.halt = { message: 'The door does not know this lease.', retry: false };
     } else if (a.status === 429) {
@@ -859,7 +885,7 @@ function render(p: LeasePage): void {
   });
 
   // A running home: how to reach it. The host publishes the onion address a little after the first tick.
-  const home = lease?.job.image === HOME_IMAGE;
+  const home = isHomeImage(lease?.job.image);
   const ssh = home && lease?.state === 'running' ? sshLine(lease.access) : undefined;
   const restarts = home ? lease?.restarts ?? 0 : 0;
   const keptDays = p.offer?.home?.retentionDays ?? 7;
