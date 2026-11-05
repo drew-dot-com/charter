@@ -425,6 +425,35 @@ Run 2026-11-04 23:00Z to 2026-11-05 09:55Z, Drew present for the funding and the
   channel (started 09:53Z, 720 ticks, pays when due) paid tick 1 at 10:08Z: the host shows `paidIntervals`
   2, paid through 11:37Z, and the box's channel total went from 1102 to 8102 units. Plan step 6's gate is
   met: the toon-client payer works from inside the proxied box with an explicit `rpcUrl`.
+
+### One payer for everything (2026-11-05, 10:18Z to 11:10Z)
+
+Edison's plugins and crons had bridged into the Air (`limactl`, the `toon` VM, a payer sidecar). In the
+box they share the rent's one channel, and a channel store has exactly one writer, so the box now runs
+one `charter payer` (charter main dab906f, 2d7261b, 93d2812; `docs/env.md`) and everything else pays
+through it (`CHARTER_PAYER=url`, `TOON_PAYER_URL`, `CHARTER_PAYER_URL`, all `http://127.0.0.1:3510`).
+
+- [x] 10:18Z: the running `renew` (toon-client payer) stopped and `charter payer` started 2 s later,
+  then `renew` with `CHARTER_PAYER=url`; its first status read went through the service within 10 s,
+  nothing missed (the next tick was 50 minutes away). `~/.charter/boot.sh` now starts payer, renew,
+  gateway in that order (`payer.env`, `start-payer.sh`, `start-renew.sh`, `restart-gateway.sh`); a
+  box re-create at 10:40Z ran it unattended and all three came back paying.
+- [x] hermes-toon main ffa9298: charter-tool 0.4.0 (`CHARTER_PAYER_URL`), toon-node 0.2.0 (rewritten
+  over the service; the VM bridge is gone), web-toon 0.1.3; installed in the box pinned to that sha
+  (`hermes plugins install --force --enable --yes-deps --ref`, no pty needed).
+- [x] 11:10Z, the three tools from inside the box, each paid from the box's channel
+  `0x300c3432…fbd7`: `web_extract` of example.com through web-toon (1000, job `ed8d4472…`, content hash
+  `6ad6a6c3…`), `charter_rent` of a Python job (lease `de176d5d95cb276039e8e5efa551c532`, done,
+  `hello from a Charter python job aarch64 2`, 8200), `toon_post` on Drew's relay (event
+  `ffe6b2e9a95ca2c8ce1b54cdcf69b651767b49b86a9028c1d10eb7511f2d71d7`, 1000, read back with
+  `toon_read mine`). The channel's running total moved 18502 to 28702, exactly the three.
+- [x] Crons: `ai-signal-digest`, `news-roundup-dm`, `ai-psychosis-starters` copied into
+  `~/.hermes/cron/jobs.json` with `timezone: America/New_York` (same expressions as on the Air, whose
+  gateway stays off), their pre-scripts and prompts in `~/.hermes/scripts`; the pre-scripts reach GitHub
+  through the box proxy.
+  Found: Hermes's package manager refilled `~/.hermes/tools` (568 MB, then 206 MB of Python and uv during
+  a plugin install) on the 2 GiB disk; `HERMES_DISABLE_LAZY_INSTALLS=1` in `payer.env` stops the per-start
+  refill. Found: the onion ssh session drops during a long command; run long work detached in the box.
   Still open in the box: Hermes's package manager re-downloads about 570 MB of tool bundles at every
   gateway start and fills the 2 GiB disk (removed three times); the toon, l402 and charter tool plugins and
   the crons bridge through the Air and do not work from the box. Both are being fixed in their own
