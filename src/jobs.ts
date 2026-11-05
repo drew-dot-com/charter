@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-import { FETCH_IMAGE, HOME_IMAGE, JOB_IMAGES, PYTHON_IMAGE } from './images.js';
+import { FETCH_IMAGE, HERMES_IMAGE, HOME_IMAGE, HOME_IMAGES, JOB_IMAGES, PYTHON_IMAGE } from './images.js';
 import type { JobSpec } from './types.js';
 
-export { FETCH_IMAGE, HOME_IMAGE, JOB_IMAGES, PYTHON_IMAGE };
+export { FETCH_IMAGE, HERMES_IMAGE, HOME_IMAGE, HOME_IMAGES, JOB_IMAGES, PYTHON_IMAGE };
 
 export const MAX_URLS = 5;
 /** Largest script the python job takes. Keeps the open packet well under ILP's 32 KiB data limit once sealed. */
@@ -62,21 +62,26 @@ export function pythonJob(script: string): JobSpec {
   return { image: PYTHON_IMAGE, args: { SCRIPT: script } };
 }
 
-export function homeJob(normalized: string[]): JobSpec {
-  return { image: HOME_IMAGE, args: { SSH_KEYS: normalized.join('\n') } };
+export function isHomeImage(v: unknown): v is string {
+  return typeof v === 'string' && HOME_IMAGES.includes(v);
+}
+
+export function homeJob(normalized: string[], image: string = HOME_IMAGE): JobSpec {
+  return { image, args: { SSH_KEYS: normalized.join('\n') } };
 }
 
 /**
  * The job a renter's request body asks for: `{ urls: string[] }` for a fetch, `{ python: { script } }` for a
- * script, `{ home: { sshKeys: string[] } }` for a home. Exactly one of the three. Null when none is well formed.
+ * script, `{ home: { sshKeys: string[], image? } }` for a home (image is one of the home images, default charter-home). Exactly one of the three. Null when none is well formed.
  */
 export function jobFromBody(body: { urls?: unknown; python?: unknown; home?: unknown }): JobSpec | null {
   const { urls, python, home } = body;
   if ([urls, python, home].filter((x) => x !== undefined).length > 1) return null;
   if (home !== undefined) {
     if (typeof home !== 'object' || home === null || Array.isArray(home)) return null;
-    const keys = normalizeSshKeys((home as { sshKeys?: unknown }).sshKeys);
-    return keys ? homeJob(keys) : null;
+    const { sshKeys, image = HOME_IMAGE } = home as { sshKeys?: unknown; image?: unknown };
+    const keys = normalizeSshKeys(sshKeys);
+    return keys && isHomeImage(image) ? homeJob(keys, image) : null;
   }
   if (urls !== undefined) {
     if (!Array.isArray(urls) || urls.length < 1 || urls.length > MAX_URLS || !urls.every(isUrl)) return null;

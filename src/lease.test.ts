@@ -170,3 +170,12 @@ test('lease.ts stays browser-safe: no node: import and no jobs.js import', () =>
   assert.doesNotMatch(src, /from\s+['"]node:/);
   assert.doesNotMatch(src, /from\s+['"]\.\/jobs\.js['"]/);
 });
+
+test('a hermes home is a home: same homeId rules, never done on exit', () => {
+  const keys = normalizeSshKeys([KEY])!;
+  const l = newLease('c'.repeat(32), offer, homeJob(keys, 'charter-hermes'), 1000, homeIdOf(keys));
+  assert.equal(isHome(l), true);
+  assert.equal(l.homeId, newLease('d'.repeat(32), offer, homeJob(keys), 1000, homeIdOf(keys)).homeId);
+  const running = onTick(onBooted(l, 1000), 0, 1000, 60_000).lease;
+  assert.equal(onJobExit(running, 0), running);
+});

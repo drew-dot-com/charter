@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FETCH_IMAGE, JOB_IMAGES, MAX_SCRIPT_BYTES, MAX_URLS, PYTHON_IMAGE, fetchJob, homeIdOf, homeJob, isScript, jobFromBody, normalizeSshKeys, pythonJob } from './jobs.js';
+import { FETCH_IMAGE, HOME_IMAGES, JOB_IMAGES, MAX_SCRIPT_BYTES, MAX_URLS, PYTHON_IMAGE, fetchJob, homeIdOf, homeJob, isScript, jobFromBody, normalizeSshKeys, pythonJob } from './jobs.js';
 
 test('the job images are the only ones a renter can ask for', () => {
-  assert.deepEqual(JOB_IMAGES, ['charter-job-fetch', 'charter-job-python', 'charter-home']);
+  assert.deepEqual(JOB_IMAGES, ['charter-job-fetch', 'charter-job-python', 'charter-home', 'charter-hermes']);
   assert.deepEqual(fetchJob(['https://a.com', 'http://b.com/x?y=1']), { image: FETCH_IMAGE, args: { URLS: 'https://a.com,http://b.com/x?y=1' } });
   assert.deepEqual(pythonJob('print(1)'), { image: PYTHON_IMAGE, args: { SCRIPT: 'print(1)' } });
 });
@@ -94,4 +94,16 @@ test('jobFromBody: { home: { sshKeys } } is a home job and excludes the other tw
   assert.equal(jobFromBody({ home: { sshKeys: [ok] }, urls: ['https://a.com'] }), null);
   assert.equal(jobFromBody({ home: { sshKeys: [] } }), null);
   assert.equal(jobFromBody({ home: 'x' }), null);
+});
+
+test('jobFromBody: home.image picks the hermes image, defaults to the home, and refuses anything else', () => {
+  const ok = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGx1bWFueXJhbmRvbWJ5dGVzMTIzNDU2Nzg5MDEyMzQ1 c';
+  const keys = normalizeSshKeys([ok])!;
+  assert.deepEqual(jobFromBody({ home: { sshKeys: [ok], image: 'charter-hermes' } }), { image: 'charter-hermes', args: { SSH_KEYS: keys.join('\n') } });
+  assert.deepEqual(jobFromBody({ home: { sshKeys: [ok] } }), homeJob(keys));
+  assert.equal(jobFromBody({ home: { sshKeys: [ok] } })!.image, 'charter-home');
+  for (const image of ['charter-job-python', '', 5, null, 'charter-hermes ']) {
+    assert.equal(jobFromBody({ home: { sshKeys: [ok], image } }), null, String(image));
+  }
+  assert.deepEqual(HOME_IMAGES, ['charter-home', 'charter-hermes']);
 });
