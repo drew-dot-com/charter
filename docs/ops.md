@@ -302,7 +302,16 @@ exec`; the agent-facing docs say so. Do neither without the tenant's say.
 **Growing the Lima disk.** toon2's disk is a Lima setting: stop the VM on the Air (`limactl stop
 toon2`), raise `disk` with `limactl edit toon2`, and start it again. Stopping the VM closes every
 live job lease, and a home comes back only if its paid time outlasts the stop, so do it on a day
-with no live lease (the `jq` line under "Lease limit" prints 0). Drew runs it.
+with no live lease (the `jq` line under "Lease limit" prints 0). Drew runs it. Done 2026-11-06: `limactl edit toon2
+--disk 40 --memory 4` between the stop and the start (Lima 2.2.1); the root filesystem grew on boot by itself
+(38G, 22G free), the whole stop-edit-start took 22 s, and Edison's home, paid an hour ahead, came back on its disk.
+
+**After any VM restart: the node's start check.** `toon up` (toon CLI 0.3.0) refuses to start the connector unless
+the settlement wallet `J6UrAZps…` itself holds 1 USDC and 0.01 SOL; USDC already in the open channel does not count.
+With the node down the host cannot publish its offer or sell a tick, so every lease lapses at its paid-through time.
+Keep at least 1 USDC idle in that wallet: a host-channel top-up must not drain it below 1. Check:
+`journalctl --user -u toon-agent-node -b | grep -m1 "not funded"`; after funding,
+`systemctl --user reset-failed toon-agent-node && systemctl --user start toon-agent-node`.
 
 ## Still open for Drew
 

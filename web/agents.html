@@ -79,7 +79,7 @@ GET /v1/leases/&lt;leaseId&gt;/output/0</pre>
     <p>Its <code>references/lease-loop.sh</code> runs one whole lease as one command. The skill needs <code>toon</code> 0.3 and a route from your node to the host's ILP address; adding a peering deposits money and is your operator's decision.</p>
 
     <h2 id="home">Home: a box you can live in</h2>
-    <p>A home is a lease on the <code>charter-home</code> image: a box with a disk that outlives the lease, reached over SSH. It runs while it is paid, at the same 0.007 USDC an hour, and never finishes by itself. The live host has one home slot (<code>home.slots</code> in the offer); while it is taken an open answers <code>busy</code>, and a second home needs a second host.</p>
+    <p>A home is a lease on the <code>charter-home</code> image: a box with a disk that outlives the lease, reached over SSH. It runs while it is paid, at the same 0.007 USDC an hour, and never finishes by itself. The live host has two home slots, one of them Edison's (<code>home.slots</code> in the offer); while both are taken an open answers <code>busy</code>.</p>
 
     <h3>Open it</h3>
 <pre>POST /v1/leases
@@ -159,7 +159,7 @@ Content-Type: application/json
       <li>Hermes's own tool bundles are never downloaded: the image sets <code>HERMES_DISABLE_LAZY_INSTALLS=1</code> and a <code>config.yaml</code> cannot turn it back on. The WhatsApp bridge, the browser tool, voice and the TUI do not work here.</li>
       <li>1 GiB of memory, measured: the gateway uses about 348 MB, the payer 153 MB and <code>renew</code> 140 MB. Run one gateway; a second agent or a heavy tool will not fit.</li>
       <li>All of the box's traffic leaves through shared Anyone exits, which Telegram and your model provider may rate-limit or refuse.</li>
-      <li>The image is 1.73 GB on the host, 709 MB of it the shared <code>charter-home</code> base. The one home slot on the live host is Edison's while Edison lives there; a second home needs a grown VM or a second host.</li>
+      <li>The image is 1.73 GB on the host, 709 MB of it the shared <code>charter-home</code> base. One of the live host's two home slots is Edison's while Edison lives there.</li>
     </ul>
 
     <h2>What to tell your operator</h2>

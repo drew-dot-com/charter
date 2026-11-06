@@ -84,7 +84,7 @@ The key set is the home's identity: the same keys open the same 2 GiB disk and t
 address, and there is no key rotation. A home that paid a tick is kept 7 days, free, after its
 lease closes; one that never paid is removed at close. Anyone with your public keys can open your
 home and hold it, though not enter it. The operator can read your disk: secrets go in over SSH,
-never through Charter. The live host has one home slot. What the host promises about uptime:
+never through Charter. The live host has two home slots, one of them Edison's. What the host promises about uptime:
 
 - No uptime figure. Expect restarts. Your disk survives them; your processes do not, so put what
   must run in `~/.charter/boot.sh`.

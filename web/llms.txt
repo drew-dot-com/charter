@@ -22,7 +22,7 @@ Status: live on Base mainnet since 2026-10-17, one host, first-party. Every rent
 - Network: everything goes through the host's Anyone client. `HTTP_PROXY` and `HTTPS_PROXY` are `http://172.19.0.1:9080`, `ALL_PROXY` is `socks5h://172.19.0.1:9050`, DNS resolves over Anyone, `NODE_USE_ENV_PROXY=1` is set for Node; all of it in every SSH session and in `boot.sh`. A program that opens a raw socket to the internet fails. The box reaches nothing on the host or its LAN. Slow, hidden, sometimes refused by a service that dislikes shared exits.
 - Disk: 2 GiB ext4. The key set is the home's identity (`homeId` is a hash of the sorted keys): the same keys open the same home, the same disk and the same onion address; there is no key rotation, and a lost key is a lost home once the retention runs out. Kept 7 days free after a lease that paid a tick closes; removed at close if the lease never paid a tick.
 - Anyone with your public keys can open your home and hold it, though not enter it (your open is then refused: `closedReason: "home_in_use"`). The operator can read your disk: keep secrets elsewhere or encrypt them. Secrets go in over SSH (`scp`), never through Charter.
-- One home slot on the live host (`home.slots` in the offer, beside `diskGiB: 2` and `retentionDays: 7`). While it is taken an open answers `busy`; a second home needs a second host.
+- Two home slots on the live host, one of them Edison's (`home.slots` in the offer, beside `diskGiB: 2` and `retentionDays: 7`). While both are taken an open answers `busy`.
 - Uptime, as a list, not a promise:
   - No uptime figure. Expect restarts. Your disk survives them; your processes do not, so put what must run in `~/.charter/boot.sh`.
   - A tick pays an hour from the end of the paid time. Pay the next tick half an hour early (the tenant loop already does) so a short outage does not end the lease. Paying several ticks ahead buys that much patience and nothing else; a lease that closes refunds nothing.
@@ -41,7 +41,7 @@ Status: live on Base mainnet since 2026-10-17, one host, first-party. Every rent
 - Fund the address in `payer.address` with USDC and a little Base ETH for the channel's one on-chain open. About 5 USDC runs 30 days; 2 USDC runs about 10 days. Until it is funded each `renew` try fails and the box lives on ticks paid from outside.
 - Plugins live on your disk: `hermes plugins install --ref <sha> https://github.com/drew-dot-com/hermes-toon#src/<web-toon|toon-node|charter-tool>` from inside the box, `<sha>` being the commit you reviewed. The boot exports `TOON_PAYER_URL`, `CHARTER_PAYER_URL`, `CHARTER_BIN` and `CHARTER_OFFER_ID`, so an installed plugin pays through the box's payer. A plugin needing Python dependencies outside the venv cannot be installed.
 - Limits: 1 GiB of memory (measured: gateway 348 MB, payer 153 MB, renew 140 MB), so one gateway and nothing heavy. `HERMES_DISABLE_LAZY_INSTALLS=1` is set by the image and `config.yaml` cannot undo it, so Hermes's tool bundles are never downloaded: no WhatsApp bridge, browser tool, voice or TUI. Traffic leaves through shared Anyone exits that Telegram and the model provider may rate-limit.
-- Size: 1.73 GB on the host, 709 MB of it the shared `charter-home` base. The one home slot on the live host is Edison's while Edison lives there; a second home needs a grown VM or a second host.
+- Size: 1.73 GB on the host, 709 MB of it the shared `charter-home` base. One of the live host's two home slots is Edison's while Edison lives there.
 
 ## Rent
 

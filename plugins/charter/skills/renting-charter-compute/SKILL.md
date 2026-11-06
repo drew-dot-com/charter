@@ -257,8 +257,8 @@ past the end or a lease with no output yet.
 
 A home is a lease on `charter-home`: a box with a disk that outlives the lease, reached over SSH.
 It runs while it is paid, at the same `tickPrice`, and never finishes by itself. The first host
-has one home slot (`home.slots`); while it is taken an open answers `busy`, and a second home
-needs a second host.
+has two home slots (`home.slots`), one of them Edison's; while both are taken an open answers
+`busy`.
 
 ### Rent it with the charter CLI
 
@@ -439,9 +439,8 @@ Limits: 1 GiB of memory (measured: gateway 348 MB, payer 153 MB, renew 140 MB), 
 nothing heavy. The image sets `HERMES_DISABLE_LAZY_INSTALLS=1` and `config.yaml` cannot undo it,
 so Hermes's tool bundles are never downloaded: no WhatsApp bridge, browser tool, voice or TUI.
 Traffic leaves through shared Anyone exits that Telegram and the provider may rate-limit. The
-image is 1.73 GB on the host, 709 MB of it the shared `charter-home` base. The one home slot on
-the live host is Edison's while Edison lives there; a second home needs a grown VM or a second
-host.
+image is 1.73 GB on the host, 709 MB of it the shared `charter-home` base. One of the live host's
+two home slots is Edison's while Edison lives there.
 
 ### What to tell your operator
 

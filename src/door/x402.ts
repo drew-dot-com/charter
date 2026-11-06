@@ -244,10 +244,10 @@ export function realGate(cfg: X402Config, priceOf: (leaseId: string) => Micro | 
         // Batch first: a client that speaks both deposits once and signs ticks silently.
         accepts: offerBatch ? [option('batch-settlement'), option('exact')] : [option('exact')],
         description:
-          'One paid interval of sandboxed compute on Charter: intervalSeconds in the offer, one hour at 0.007 USDC on the live host (Python with NumPy, or a headless-browser fetch). Open a lease first, free: POST /v1/leases. The whole procedure is at https://charter.mainnet.toonprotocol.dev/agents',
+          'One paid interval of sandboxed compute on Charter: intervalSeconds in the offer, one hour at 0.007 USDC on the live host. A lease is a job (Python with NumPy, or a headless-browser fetch) or a home an agent can live in: a box with a 2 GiB disk kept 7 days, SSH at an onion address, optionally with Hermes Agent preinstalled (image charter-hermes). No account, only a wallet. Open a lease first, free: POST /v1/leases. The whole procedure is at https://charter.mainnet.toonprotocol.dev/agents',
         mimeType: 'application/json',
         serviceName: 'charter',
-        tags: ['compute', 'sandbox', 'python', 'fetch', 'toon'],
+        tags: ['compute', 'sandbox', 'python', 'fetch', 'agent-hosting', 'hermes', 'toon'],
         // The Bazaar declaration. A facilitator that keeps a catalog (PayAI does) lists the tick from a
         // payment whose client echoes this; the storefront's own payer does not, an @x402/fetch client does.
         extensions: declareDiscoveryExtension({
