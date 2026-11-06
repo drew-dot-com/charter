@@ -15,6 +15,8 @@ for name in HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY NODE_USE_ENV_PROXY CHARTER
 done
 # Generated once onto the disk, so the fingerprint a tenant pinned survives restarts and new containers.
 [ -f ~/.ssh/host/ssh_host_ed25519_key ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/host/ssh_host_ed25519_key
+# The logs under ~/.charter stay under a cap whatever boot.sh the tenant runs.
+nohup /app/logcap.sh "$HOME/.charter" > /dev/null 2>&1 &
 if [ -x ~/.charter/boot.sh ]; then
   nohup ~/.charter/boot.sh >> ~/.charter/boot.log 2>&1 &
 fi

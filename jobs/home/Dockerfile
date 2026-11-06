@@ -30,7 +30,7 @@ RUN set -eu; arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
   node --version; uv --version
 # A '*' password is not locked: pubkey login must not hinge on a shadow file sshd cannot read.
 RUN useradd -p '*' --uid 10001 --create-home --shell /bin/bash tenant
-COPY home.sh sshd_config /app/
+COPY home.sh logcap.sh sshd_config /app/
 ENV HOME=/home/tenant
 USER tenant
 CMD ["/app/home.sh"]
