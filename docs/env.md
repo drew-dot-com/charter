@@ -61,7 +61,7 @@ door stopped (docs/demo.md, channel rotation).
 | `CHARTER_DOOR_HOST` | no | `127.0.0.1` | Address to bind. Not to be confused with `CHARTER_DOOR_HOSTS`. |
 | `CHARTER_DOOR_HOSTS` | yes | | The hosts this door pays: `<host pubkey>=<ilpBase>`, comma separated (64 lowercase hex, then the host's ILP address). An offer is listed and opened only when its signer and its `ilpBase` both match an entry, and its prices are at most open 10000, status 1000, tick 50000. |
 | `CHARTER_DOOR_TRUST_PROXY` | no | none | `true`, or a hop count (`1` for one Caddy in front), so rate limits see the client's address. |
-| `CHARTER_DATA_DIR` | yes | | `door-ledger.json` and its sidecars (`.payments`, `.unblocks`, `.unpaid`), and cached output parts. |
+| `CHARTER_DATA_DIR` | yes | | `door-ledger.json`, its sidecars (`.payments`, `.unblocks`, `.unpaid`) and cached output parts. |
 | `CHARTER_RELAY_URL` | yes | | `wss://` relay to read offers from. |
 | `CHARTER_PAY_TO` | yes | | The door's Base address that renters' x402 payments go to. |
 | `CHARTER_CLAIM_KEY_FILE` | yes | | File holding the door's x402 claim key: one `0x` + 64 hex secp256k1 private key (`deploy/door/new-claim-key.mjs`). It authorizes claims and refunds on renters' batch-settlement channels for `CHARTER_PAY_TO` and holds no funds. Channel records live in `<CHARTER_DATA_DIR>/x402-channels/`. |

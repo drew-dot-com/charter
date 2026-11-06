@@ -405,15 +405,22 @@ overwrites it. It logs `boot:` lines to `~/.charter/boot.log`, takes the lock
    `CHARTER_PAYER_URL`.
 2. Makes `~/.charter/payer.key` if absent: the box's own wallet, on its own disk. The boot runs
    before you can SSH in, so on a new disk this is the normal path: fund `payer.address`.
-3. Starts `charter payer` (log `payer.log`) and writes its address to `~/.charter/payer.address`.
+3. Starts `charter payer` (log `payer.log`), restarted 30 seconds after it exits, and writes its
+   address to `~/.charter/payer.address`.
 4. Starts `charter renew --max-intervals 720` (30 days) in a loop that restarts it after 5
    minutes (log `renew.log`).
 5. Once `~/.hermes/.env` exists, runs `hermes gateway run`, restarted 30 seconds after it exits.
 
-To change the key or `payer.env` after the first boot, replace the file, then stop the boot
-(`kill "$(cat ~/.charter/boot.pid)"`; the lock releases and `renew` and the gateway stop with
-it), stop the payer too (`kill "$(cat ~/.charter/payer.pid)"`; the boot leaves it running on
-purpose and it holds the old key), and start the boot again detached, as the box does:
+The image keeps every `~/.charter/*.log` under 10 MiB whatever your boot does: past that, the log
+is copied to `<log>.1` and emptied in place. A boot killed without its cleanup (SIGKILL, say)
+leaves a stale lock; the next run checks the pid in it, stops what the dead boot left running and
+takes over.
+
+To change the key or `payer.env` after the first boot, replace the file, then run
+`~/.charter/boot.sh stop`: it stops the boot (the lock releases and `renew` and the gateway stop
+with it) and the payer (which a boot leaves running on purpose, and which holds the old key). It
+kills a pid only while it still names a boot or a payer, so a pidfile left by a crash or a reboot
+never kills anything else. Then start the boot again detached, as the box does:
 `nohup ~/.charter/boot.sh >> ~/.charter/boot.log 2>&1 &`. Run in the foreground over SSH, it
 stops when the session closes. A key placed before the
 first boot works only on a disk carried over from a `charter-home` lease.
