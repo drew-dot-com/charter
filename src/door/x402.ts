@@ -9,6 +9,10 @@ import { paymentMiddleware, x402ResourceServer } from '@x402/express';
 import type { Micro } from '../types.js';
 import { claimSigner } from './config.js';
 
+/** The tick's catalog tags, most important first: PayAI's catalog keeps only the first five (seen 2026-11-06). */
+export const BAZAAR_TAGS = ['compute', 'agent-hosting', 'hermes', 'sandbox', 'python', 'fetch', 'toon'] as const;
+export const CATALOG_KEPT_TAGS = 5;
+
 export interface X402Config {
   payTo: string;
   network: 'eip155:8453';
@@ -247,7 +251,7 @@ export function realGate(cfg: X402Config, priceOf: (leaseId: string) => Micro | 
           'One paid interval of sandboxed compute on Charter: intervalSeconds in the offer, one hour at 0.007 USDC on the live host. A lease is a job (Python with NumPy, or a headless-browser fetch) or a home an agent can live in: a box with a 2 GiB disk kept 7 days, SSH at an onion address, optionally with Hermes Agent preinstalled (image charter-hermes). No account, only a wallet. Open a lease first, free: POST /v1/leases. The whole procedure is at https://charter.mainnet.toonprotocol.dev/agents',
         mimeType: 'application/json',
         serviceName: 'charter',
-        tags: ['compute', 'sandbox', 'python', 'fetch', 'agent-hosting', 'hermes', 'toon'],
+        tags: [...BAZAAR_TAGS],
         // The Bazaar declaration. A facilitator that keeps a catalog (PayAI does) lists the tick from a
         // payment whose client echoes this; the storefront's own payer does not, an @x402/fetch client does.
         extensions: declareDiscoveryExtension({

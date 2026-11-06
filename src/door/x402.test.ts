@@ -25,6 +25,8 @@ import { DoorLedger } from './ledger.js';
 import { doorApp, type DoorDeps } from './server.js';
 import {
   BASE_USDC,
+  BAZAAR_TAGS,
+  CATALOG_KEPT_TAGS,
   MAX_TIMEOUT_SECONDS,
   MIN_WINDOW_SECONDS,
   WITHDRAW_DELAY_SECONDS,
@@ -678,4 +680,10 @@ test('a facilitator that lists exact only: offerBatch false keeps the door up an
     d.close();
     fac.close();
   }
+});
+
+test('the catalog tags that survive PayAI keeping five name what an agent searches for', () => {
+  const kept = BAZAAR_TAGS.slice(0, CATALOG_KEPT_TAGS);
+  for (const tag of ['compute', 'agent-hosting', 'hermes']) assert.ok(kept.includes(tag as never), `${tag} is in the first ${CATALOG_KEPT_TAGS}`);
+  assert.equal(new Set(BAZAAR_TAGS).size, BAZAAR_TAGS.length, 'no tag twice');
 });
