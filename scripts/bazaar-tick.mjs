@@ -6,6 +6,7 @@
 //
 //   node scripts/bazaar-tick.mjs --dry-run                  # reads offers, probes a 402, pays nothing
 //   BAZAAR_KEY_FILE=~/keys/bazaar-payer node scripts/bazaar-tick.mjs
+//   ... --rent      # the same through POST /v1/rent: open and tick 0 in one paid call (lists the rent route)
 //
 // BAZAAR_KEY_FILE: a file holding one secp256k1 private key as 0x + 64 hex (never put the key
 // in the environment or on the command line). CHARTER_DOOR_URL overrides the door. The dry run
@@ -20,6 +21,7 @@ import { decodePaymentResponseHeader, wrapFetchWithPaymentFromConfig } from '@x4
 const DOOR = (process.env.CHARTER_DOOR_URL ?? 'https://charter.mainnet.toonprotocol.dev').replace(/\/$/, '');
 const CATALOG = 'https://facilitator.payai.network/discovery/resources';
 const dryRun = process.argv.includes('--dry-run');
+const viaRent = process.argv.includes('--rent');
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
 const b64json = (s) => JSON.parse(Buffer.from(s, 'base64').toString('utf8'));
@@ -60,6 +62,24 @@ const door = await json(await fetch(`${DOOR}/v1/door`));
 log(`door pays to ${door.payTo} on ${door.network}`);
 const offer = await pickOffer();
 
+const job = { offerId: offer.offerId, python: { script: `print("charter bazaar ${viaRent ? 'rent' : 'tick'}")\n` } };
+
+if (dryRun && viaRent) {
+  const res = await fetch(`${DOOR}/v1/rent`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(job) });
+  log(`probe POST /v1/rent (python job) -> ${res.status}`);
+  const header = res.headers.get('payment-required');
+  if (res.status === 402 && header) {
+    const required = b64json(header);
+    log(`accepts ${required.accepts.map((a) => `${a.scheme} ${a.amount} to ${a.payTo} on ${a.network}`).join('; ')}`);
+    log(`bazaar declaration ${required.extensions?.bazaar ? 'present' : 'MISSING'}`);
+  } else {
+    log('no 402 to inspect:', JSON.stringify(await json(res)));
+  }
+  log(await listed(door.payTo));
+  log('dry run over, nothing paid');
+  process.exit(0);
+}
+
 if (dryRun) {
   const lease = process.env.DRY_RUN_LEASE ?? '811904795c4b68fcfd8a9020dfc03e50';
   const res = await fetch(`${DOOR}/v1/leases/${lease}/ticks`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ index: 1 }) });
@@ -93,13 +113,27 @@ log(`paying from ${account.address}; this spends one tick, ${offer.tickPrice} mi
 // Exact only: one EIP-3009 authorization for the tick, no channel deposit to refund later.
 const paidFetch = wrapFetchWithPaymentFromConfig(fetch, { schemes: [{ network: 'eip155:8453', client: new ExactEvmScheme(account) }] });
 
-const job = { offerId: offer.offerId, python: { script: 'print("charter bazaar tick")\n' } };
+let id;
+if (viaRent) {
+  // One paid call: the door opens the lease and pays tick 0; a non-2xx never settles.
+  const rent = await paidFetch(`${DOOR}/v1/rent`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(job) });
+  const body = await json(rent);
+  if (rent.status !== 200) {
+    console.error(`rent refused ${rent.status}:`, JSON.stringify(body), '(a non-2xx never settles; nothing was charged)');
+    process.exit(1);
+  }
+  id = body.leaseId;
+  const receipt = rent.headers.get('payment-response');
+  const settled = receipt ? decodePaymentResponseHeader(receipt) : undefined;
+  log(`rented lease ${id}: paidIntervals ${body.paidIntervals}; settle tx ${settled?.transaction ?? '(no receipt header)'} on ${settled?.network ?? '?'}`);
+  if (settled?.transaction) log(`https://basescan.org/tx/${settled.transaction}`);
+} else {
 const opened = await json(await fetch(`${DOOR}/v1/leases`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(job) }));
 if (!opened.leaseId || opened.state !== 'awaiting_first_tick') {
   console.error('open refused, nothing paid:', JSON.stringify(opened));
   process.exit(1);
 }
-const id = opened.leaseId;
+id = opened.leaseId;
 log(`lease ${id} opened (free); paying tick 0 within the host's grace`);
 
 const tick = await paidFetch(`${DOOR}/v1/leases/${id}/ticks`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ index: 0 }) });
@@ -112,6 +146,7 @@ const receipt = tick.headers.get('payment-response');
 const settled = receipt ? decodePaymentResponseHeader(receipt) : undefined;
 log(`tick 0 paid: paidIntervals ${body.paidIntervals}; settle tx ${settled?.transaction ?? '(no receipt header)'} on ${settled?.network ?? '?'}`);
 if (settled?.transaction) log(`https://basescan.org/tx/${settled.transaction}`);
+}
 
 // The script finishes inside its one interval. No second tick, ever: maxIntervals is 1.
 let lease;
