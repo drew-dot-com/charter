@@ -1850,3 +1850,241 @@ test('readBudget: 40 free reads, 8 more per tick, and one per paid minute', () =
   assert.equal(readBudget(2, 30), 57);
   assert.equal(readBudget(1, 3600), 108);
 });
+
+// ---------------------------------------------------------------------------
+// POST /v1/rent: open a lease and pay its first tick in one x402 call
+
+test('rent: one call opens the lease and pays tick 0; the ledger counts the open, the host tick and the renter tick, and it settles once at the tick price', async () => {
+  const host = fakeHost();
+  const d = await start(host);
+  try {
+    const r = await d.post('/v1/rent', { offerId: OFFER_ID, urls: URLS }, { 'x-test-payer': '0xabc' });
+    assert.equal(r.status, 200);
+    const body = (await r.json()) as Record<string, unknown>;
+    assert.equal(body.leaseId, LEASE);
+    assert.equal(body.paidIntervals, 1);
+    assert.equal(body.paidThrough, 31_000);
+    assert.deepEqual(body.next, { path: `/v1/leases/${LEASE}/ticks`, index: 1 });
+    assert.equal((body.offer as { offerId: string }).offerId, OFFER_ID);
+    assert.deepEqual(host.calls, ['open', 'tick:0'], 'no status read: a lease just opened cannot have finished');
+    assert.deepEqual(host.opened, [{ image: 'charter-job-fetch', args: { URLS: URLS.join(',') } }]);
+    assert.deepEqual(d.settled, [{ leaseId: LEASE, price: 5000n }]);
+    const rec = d.ledger.get(LEASE)!;
+    assert.equal(rec.offerId, OFFER_ID);
+    assert.equal(rec.nextIndex, 1);
+    assert.equal(rec.ticksPaidToHost, 1);
+    assert.equal(rec.ticksPaidByRenter, 1);
+    assert.equal(rec.payer, '0xabc');
+    // The lease goes on through the tick route.
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 1 })).status, 200);
+  } finally {
+    d.close();
+  }
+});
+
+test('rent: with no offerId the door picks the cheapest listed offer that carries the job image', async () => {
+  const pricey: Offer = { ...OFFER, id: 'o2', tickPrice: 9000n };
+  const host = fakeHost();
+  const d = await start(host, { offers: async () => [pricey, OFFER] });
+  try {
+    const r = await d.post('/v1/rent', { urls: URLS });
+    assert.equal(r.status, 200);
+    assert.equal(d.ledger.get(LEASE)!.offerId, OFFER_ID);
+    assert.deepEqual(d.settled, [{ leaseId: LEASE, price: 5000n }]);
+  } finally {
+    d.close();
+  }
+});
+
+test('rent: a bad body, an unknown offer or an image the offer lacks is refused before the gate with no host call', async () => {
+  const host = fakeHost();
+  const d = await start(host);
+  try {
+    assert.equal((await d.post('/v1/rent', { offerId: OFFER_ID })).status, 400);
+    assert.equal((await d.post('/v1/rent', { offerId: OFFER_ID, urls: ['ftp://x'] })).status, 400);
+    assert.equal((await d.post('/v1/rent', { offerId: 'nope:o1', urls: URLS })).status, 404);
+    const img = await d.post('/v1/rent', { offerId: OFFER_ID, python: { script: 'print(1)' } });
+    assert.equal(img.status, 400);
+    assert.deepEqual(await img.json(), { error: 'image_not_offered' });
+    // No offer carries python, so with no offerId there is nothing to rent.
+    assert.equal((await d.post('/v1/rent', { python: { script: 'print(1)' } })).status, 404);
+    assert.deepEqual(d.gate, []);
+    assert.deepEqual(host.calls, []);
+  } finally {
+    d.close();
+  }
+});
+
+test('rent: a host open that fails answers 502 and nothing settles; a tick that fails after the open answers 502 with the leaseId, the lease kept for the tick route', async () => {
+  const failOpen = fakeHost({ open: async () => { throw new HostError(500, 'boom'); } });
+  const a = await start(failOpen);
+  try {
+    const r = await a.post('/v1/rent', { offerId: OFFER_ID, urls: URLS });
+    assert.equal(r.status, 502);
+    assert.deepEqual(a.settled, []);
+    assert.equal(a.ledger.get(LEASE), undefined);
+  } finally {
+    a.close();
+  }
+  const failTick = fakeHost({}, (n) => (n === 1 ? new Error('network') : undefined));
+  const b = await start(failTick);
+  try {
+    const r = await b.post('/v1/rent', { offerId: OFFER_ID, urls: URLS });
+    assert.equal(r.status, 502);
+    assert.equal(((await r.json()) as { leaseId?: string }).leaseId, LEASE);
+    assert.deepEqual(b.settled, []);
+    assert.equal(b.ledger.get(LEASE)!.ticksPaidByRenter, 0);
+    // The renter pays tick 0 again through the tick route.
+    assert.equal((await b.post(`/v1/leases/${LEASE}/ticks`, { index: 0 })).status, 200);
+  } finally {
+    b.close();
+  }
+});
+
+test('rent: a boot that closes the lease at open answers 502 with its reason, no tick is paid and nothing settles', async () => {
+  const host = fakeHost({ open: async () => ({ leaseId: LEASE, state: 'closed', closedReason: 'boot_failed', error: 'no disk' }) });
+  const d = await start(host);
+  try {
+    const r = await d.post('/v1/rent', { offerId: OFFER_ID, urls: URLS });
+    assert.equal(r.status, 502);
+    assert.deepEqual(await r.json(), { error: 'boot_failed', leaseId: LEASE, state: 'closed', closedReason: 'boot_failed', detail: 'no disk' });
+    assert.ok(!host.calls.some((c) => c.startsWith('tick')));
+    assert.deepEqual(d.settled, []);
+  } finally {
+    d.close();
+  }
+});
+
+test('rent: a settlement failure after the host tick books the loss and stops the lease', async () => {
+  const host = fakeHost();
+  const d = await start(host, { testHooks: { settle: () => { throw new Error(PAYER_FAULT); } } });
+  try {
+    const r = await d.post('/v1/rent', { offerId: OFFER_ID, urls: URLS }, { 'x-test-payer': '0xabc' });
+    assert.equal(r.status, 402);
+    const rec = d.ledger.get(LEASE)!;
+    assert.equal(rec.ticksPaidToHost, 1);
+    assert.equal(rec.ticksPaidByRenter, 0);
+    assert.equal(rec.losses, 5000n);
+    assert.equal(rec.stopped, true);
+  } finally {
+    d.close();
+  }
+});
+
+test('rent: a blocked payer is refused 403 after verify and before any open', async () => {
+  const host = fakeHost({ open: counterOpen() });
+  let fail = true;
+  const d = await start(host, { testHooks: { settle: () => { if (fail) throw new Error(PAYER_FAULT); } } });
+  try {
+    assert.equal((await d.post('/v1/rent', { offerId: OFFER_ID, urls: URLS }, { 'x-test-payer': '0xabc', 'payment-signature': pay('0xd1', '0x01') })).status, 402);
+    fail = false;
+    host.calls.length = 0;
+    const r = await d.post('/v1/rent', { offerId: OFFER_ID, urls: URLS }, { 'x-test-payer': '0xABC', 'payment-signature': pay('0xd2', '0x02') });
+    assert.equal(r.status, 403);
+    assert.deepEqual(await r.json(), { error: 'payer_blocked' });
+    assert.deepEqual(host.calls, [], 'no open for a blocked payer');
+  } finally {
+    d.close();
+  }
+});
+
+test('rent: one exact authorization cannot rent twice, and a bad or short-lived payment is refused before the gate', async () => {
+  const host = fakeHost({ open: counterOpen() });
+  const d = await start(host);
+  try {
+    assert.equal((await d.post('/v1/rent', { offerId: OFFER_ID, urls: URLS }, { 'payment-signature': pay('0xd1', '0x01') })).status, 200);
+    host.calls.length = 0;
+    const again = await d.post('/v1/rent', { offerId: OFFER_ID, urls: URLS }, { 'payment-signature': pay('0xd1', '0x01', 1) });
+    assert.equal(again.status, 409);
+    assert.deepEqual(await again.json(), { error: 'payment_reused' });
+    assert.equal((await d.post('/v1/rent', { offerId: OFFER_ID, urls: URLS }, { 'payment-signature': 'garbage' })).status, 400);
+    const soon = String(Math.floor(1_000_000 / 1000) + 30);
+    const short = await d.post('/v1/rent', { offerId: OFFER_ID, urls: URLS }, { 'payment-signature': pay('0xd3', '0x03', 0, { validBefore: soon }) });
+    assert.equal(short.status, 400);
+    assert.deepEqual(await short.json(), { error: 'authorization_window' });
+    assert.deepEqual(host.calls, []);
+  } finally {
+    d.close();
+  }
+});
+
+test('rent: capacity, a low channel and the open rate limits refuse before the gate with no host call', async () => {
+  const host = fakeHost();
+  const low = await start(host, { headroom: async () => 15_000n });
+  try {
+    // open 1000 + tick 5000 + margin 10000 = 16000 needed.
+    const r = await low.post('/v1/rent', { offerId: OFFER_ID, urls: URLS });
+    assert.equal(r.status, 503);
+    assert.deepEqual(await r.json(), { error: 'capacity' });
+    assert.deepEqual(low.gate, []);
+    assert.deepEqual(host.calls, []);
+  } finally {
+    low.close();
+  }
+  const d = await start(fakeHost({ open: counterOpen() }));
+  try {
+    for (let i = 0; i < 10; i++) await d.post('/v1/rent', { offerId: OFFER_ID, urls: URLS }, { 'payment-signature': pay('0xd1', `0x${(i + 1).toString(16)}`) });
+    const r = await d.post('/v1/rent', { offerId: OFFER_ID, urls: URLS }, { 'payment-signature': pay('0xd1', '0xff') });
+    assert.equal(r.status, 429, 'rent shares the per-IP open limit');
+  } finally {
+    d.close();
+  }
+});
+
+test('rent, real gate: a bare probe (no body, no content type) gets the 402 challenge at the default offer price, and opens nothing', async () => {
+  await withRealDoor(async (d) => {
+    const bare = await fetch(d.base + '/v1/rent', { method: 'POST' });
+    assert.equal(bare.status, 402);
+    const required = JSON.parse(Buffer.from(bare.headers.get('payment-required')!, 'base64').toString()) as { accepts: Array<Record<string, unknown>>; extensions?: { bazaar?: unknown } };
+    assert.deepEqual(required.accepts.map((a) => a.scheme), ['batch-settlement', 'exact']);
+    for (const a of required.accepts) assert.equal(a.amount, '5000');
+    assert.ok(required.extensions?.bazaar, 'the rent route declares itself to the Bazaar too');
+    assert.equal(bare.headers.get('access-control-allow-origin'), '*');
+    // An empty JSON body is a probe too.
+    assert.equal((await d.post('/v1/rent', {})).status, 402);
+    // A full body gets the challenge for its offer.
+    assert.equal((await d.post('/v1/rent', { offerId: OFFER_ID, urls: URLS })).status, 402);
+    // A body that is present and wrong is told so before it is asked to pay.
+    assert.equal((await d.post('/v1/rent', { offerId: OFFER_ID })).status, 400);
+    assert.equal(d.ledger.all().length, 0, 'no lease opened by any of it');
+  });
+});
+
+test('GET /openapi.json describes the paid rent route for x402 indexes, with the free routes marked public', async () => {
+  const d = await start(fakeHost());
+  try {
+    const r = await d.get('/openapi.json');
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('access-control-allow-origin'), '*');
+    const doc = (await r.json()) as {
+      openapi: string;
+      info: { title: string; version: string; 'x-guidance': string };
+      paths: Record<string, Record<string, { 'x-payment-info'?: { price: Record<string, string>; protocols: unknown[] }; security?: unknown[]; requestBody?: unknown; responses: Record<string, unknown> }>>;
+    };
+    assert.match(doc.openapi, /^3\.1\./);
+    assert.equal(doc.info.title, 'Charter');
+    assert.match(doc.info['x-guidance'], /POST \/v1\/rent/);
+    assert.match(doc.info['x-guidance'], /\/v1\/leases\/\{leaseId\}\/ticks/);
+    const rent = doc.paths['/v1/rent']!.post!;
+    assert.deepEqual(rent['x-payment-info'], { price: { mode: 'fixed', currency: 'USD', amount: '0.005000' }, protocols: [{ x402: {} }] });
+    assert.ok(rent.requestBody);
+    assert.ok(rent.responses['200'] && rent.responses['402']);
+    for (const [p, m] of [['/v1/offers', 'get'], ['/v1/leases', 'post'], ['/v1/leases/{leaseId}', 'get']] as const) {
+      assert.deepEqual(doc.paths[p]![m]!.security, [], `${m} ${p} is public`);
+      assert.equal(doc.paths[p]![m]!['x-payment-info'], undefined);
+    }
+    assert.equal(doc.paths['/v1/leases/{leaseId}/ticks'], undefined, 'the tick route is in the guidance, not probed: it needs a live lease');
+  } finally {
+    d.close();
+  }
+});
+
+test('GET /openapi.json prices rent as a range when the listed offers differ in price', async () => {
+  const d = await start(fakeHost(), { offers: async () => [OFFER, { ...OFFER, id: 'o2', tickPrice: 9000n }] });
+  try {
+    const doc = (await (await d.get('/openapi.json')).json()) as { paths: Record<string, Record<string, { 'x-payment-info': { price: Record<string, string> } }>> };
+    assert.deepEqual(doc.paths['/v1/rent']!.post!['x-payment-info'].price, { mode: 'dynamic', currency: 'USD', min: '0.005000', max: '0.009000' });
+  } finally {
+    d.close();
+  }
+});

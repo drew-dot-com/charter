@@ -3,13 +3,14 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
-import { HostError, type HostApi } from '../tenant/host-api.js';
+import { HostError, type HostApi, type OpenResult } from '../tenant/host-api.js';
 import { findOfferExact } from '../tenant/offers.js';
 import { JOB_IMAGES, jobFromBody } from '../jobs.js';
-import type { Lease, Micro, Offer } from '../types.js';
+import type { JobSpec, Lease, Micro, Offer } from '../types.js';
 import { DeadlinePassedError, SendTimeoutError } from '../payer.js';
 import { offerOfSnapshot, snapshotOffer, type DoorLedger, type LossKind } from './ledger.js';
-import { MAX_TIMEOUT_SECONDS, MIN_WINDOW_SECONDS, SETTLE_MARGIN_SECONDS, isPayerFault, paymentIdOf, realGate, settleReasonOf, stubGate, type Gate, type Schemes, type TestHooks, type X402Config } from './x402.js';
+import { MAX_TIMEOUT_SECONDS, MIN_WINDOW_SECONDS, SETTLE_MARGIN_SECONDS, isPayerFault, microToUsdc, paymentIdOf, realGate, settleReasonOf, stubGate, type Gate, type PaymentId, type Schemes, type TestHooks, type X402Config } from './x402.js';
+import { openApiDoc } from './openapi.js';
 
 export interface DoorDeps {
   /** Live offers. The door caches the answer for 60 s. */
@@ -149,8 +150,18 @@ export function doorApp(deps: DoorDeps): express.Express {
   const priceOf = (leaseId: string): Micro | undefined => (ledger.get(leaseId) ? leaseOffer(leaseId).tickPrice : undefined);
   const withdrawing: (channelId: string) => Promise<boolean> =
     deps.withdrawing ?? (deps.schemes ? async (id) => ((await deps.schemes!.batch.getStorage().get(id))?.withdrawRequestedAt ?? 0) > 0 : async () => false);
+  /**
+   * The offer each paid rent was guarded against, keyed by its parsed body, so the gate prices exactly the
+   * offer the handler opens on. A body with no entry (a bare probe) is priced from the offers as they stand.
+   */
+  const rentPicks = new WeakMap<object, Offer>();
+  const rentPriceOf = async (body: unknown): Promise<Micro | undefined> => {
+    if (typeof body === 'object' && body !== null && rentPicks.has(body)) return rentPicks.get(body)!.tickPrice;
+    const pick = pickRentOffer(await offers(), body);
+    return typeof pick === 'string' ? undefined : pick.offer.tickPrice;
+  };
   const gate: Gate =
-    deps.x402 === 'free-for-tests' ? stubGate(priceOf, deps.testHooks) : realGate(deps.x402, priceOf, deps.schemes, deps.offerBatch ?? true);
+    deps.x402 === 'free-for-tests' ? stubGate(priceOf, deps.testHooks) : realGate(deps.x402, priceOf, deps.schemes, deps.offerBatch ?? true, rentPriceOf);
 
   let offersCache: { at: number; p: Promise<Offer[]> } | undefined;
   const offers = (): Promise<Offer[]> => {
@@ -170,6 +181,31 @@ export function doorApp(deps: DoorDeps): express.Express {
     o.statusPrice <= MAX_STATUS_PRICE &&
     o.tickPrice <= MAX_TICK_PRICE;
   const overCap = (): boolean => ledger.unpaidToday(now()) >= DAILY_UNPAID_CAP;
+  /** Offers a renter can open a job on now: trusted, unexpired, carrying a job image. */
+  const rentable = (list: Offer[]): Offer[] => list.filter((o) => trusted(o) && o.expiresAt > now() && o.images.some((i) => JOB_IMAGES.includes(i)));
+
+  /**
+   * The offer a rent body opens on, and its job (null for an empty body: a probe, priced at the default).
+   * A named offerId must be listed; with none, the cheapest offer that runs the job, ties by offerId.
+   */
+  const pickRentOffer = (list: Offer[], body: unknown): { offer: Offer; job: JobSpec | null } | 'bad_request' | 'not_found' | 'image_not_offered' => {
+    if (body !== undefined && (typeof body !== 'object' || body === null || Array.isArray(body))) return 'bad_request';
+    const b = (body ?? {}) as { offerId?: unknown; urls?: unknown; python?: unknown; home?: unknown };
+    const empty = Object.keys(b).length === 0;
+    const job = empty ? null : jobFromBody(b);
+    if (!empty && (!job || (b.offerId !== undefined && typeof b.offerId !== 'string'))) return 'bad_request';
+    const open = rentable(list);
+    if (typeof b.offerId === 'string') {
+      const o = findOfferExact(open, b.offerId);
+      if (!o) return 'not_found';
+      if (job && !o.images.includes(job.image)) return 'image_not_offered';
+      return { offer: o, job };
+    }
+    const fits = open
+      .filter((o) => !job || o.images.includes(job.image))
+      .sort((x, y) => (x.tickPrice === y.tickPrice ? (`${x.hostPubkey}:${x.id}` < `${y.hostPubkey}:${y.id}` ? -1 : 1) : x.tickPrice < y.tickPrice ? -1 : 1));
+    return fits[0] ? { offer: fits[0], job } : 'not_found';
+  };
   /** Runs a host call and books whatever it cost the door as spend no renter paid for. */
   const unpaid = async <T>(api: HostApi, fn: () => Promise<T>): Promise<T> => {
     const before = api.spent();
@@ -297,8 +333,10 @@ export function doorApp(deps: DoorDeps): express.Express {
     next();
   });
   // A POST must say it is JSON. A cross-origin form or a text/plain fetch cannot, without a preflight.
+  // A bare probe of the rent route (no payment, no body: what an x402 index sends) is let through to its 402.
   app.use((req, res, next) => {
-    if (req.method === 'POST' && !req.is('application/json')) return void res.status(415).json({ error: 'unsupported_media_type' });
+    const bareRentProbe = req.path === '/v1/rent' && deps.x402 !== 'free-for-tests' && paymentIdOf(req) === 'none' && !req.headers['content-type'];
+    if (req.method === 'POST' && !req.is('application/json') && !bareRentProbe) return void res.status(415).json({ error: 'unsupported_media_type' });
     next();
   });
   // A python job carries a script of up to 8 KiB, which JSON escaping can grow.
@@ -418,6 +456,25 @@ export function doorApp(deps: DoorDeps): express.Express {
     if (seen === 'closed') return void res.status(409).json({ error: 'not_running' });
     if (index !== rec.nextIndex) return void res.status(409).json({ error: 'out_of_order', expected: rec.nextIndex });
     if (ticking.has(id)) return void res.status(409).json({ error: 'busy' });
+    const payment = admitPayment(req, res);
+    if (payment === undefined) return;
+    ticking.add(id);
+    // The one check that reads a file comes after the claim on the lease, which `ticking` holds meanwhile.
+    if (payment !== 'none' && payment.kind === 'batch' && (await withdrawing(payment.channelId))) {
+      ticking.delete(id);
+      return void res.status(409).json({ error: 'channel_withdrawing' });
+    }
+    res.locals.offer = offerOfSnapshot(rec.offer);
+    res.locals.index = index;
+    next();
+  };
+
+  /**
+   * The payment checks every paid route makes before its gate: one decodable header, a window that outlasts
+   * verify-to-settle, an exact authorization not already used (claimed here, given back by `booked`). Sets
+   * `payer`, `paymentKey` and `deadline` on res.locals. Undefined when it has answered the request itself.
+   */
+  const admitPayment = (req: express.Request, res: express.Response): PaymentId | 'none' | undefined => {
     // A payment is the authorization it carries, not the bytes of the header that carries it.
     const payment = paymentIdOf(req);
     if (payment === 'bad') return void res.status(400).json({ error: 'bad_payment' });
@@ -446,27 +503,18 @@ export function doorApp(deps: DoorDeps): express.Express {
       // The host tick must be over in time for the payment to settle before it lapses.
       res.locals.deadline = (payment.validBefore - SETTLE_MARGIN_SECONDS) * 1000;
     }
-    ticking.add(id);
-    // The one check that reads a file comes after the claim on the lease, which `ticking` holds meanwhile.
-    if (payment !== 'none' && payment.kind === 'batch' && (await withdrawing(payment.channelId))) {
-      ticking.delete(id);
-      return void res.status(409).json({ error: 'channel_withdrawing' });
-    }
-    res.locals.offer = offerOfSnapshot(rec.offer);
-    res.locals.index = index;
-    next();
+    return payment;
   };
 
-  /** Runs the payment gate, then books the outcome once the response is final. */
-  const paidTick: express.RequestHandler = async (req, res, next) => {
-    const id = req.params.id as string;
+  /** Runs the payment gate, then books the outcome once the response is final. `release` frees what the guard held. */
+  const booked = (release: (req: express.Request, res: express.Response) => void): express.RequestHandler => async (req, res, next) => {
     let failure: unknown;
     try {
       await gate(req, res, next);
     } catch (e) {
       failure = e;
     } finally {
-      ticking.delete(id);
+      release(req, res);
       if (res.locals.paymentKey) claimed.delete(res.locals.paymentKey as string);
     }
     const paid = res.locals.hostPaid as { leaseId: string; price: Micro } | undefined;
@@ -483,14 +531,23 @@ export function doorApp(deps: DoorDeps): express.Express {
     if (failure) throw failure;
   };
 
+  const paidTick = booked((req) => void ticking.delete(req.params.id as string));
+
+  /**
+   * Run first by every paid handler: the payment has verified, so from now on it is spent, whatever happens
+   * next, and the payer is known. One that cost the door before does not cost it again. False when answered.
+   */
+  const verified = (res: express.Response): boolean => {
+    if (res.locals.paymentKey) ledger.addPayment(res.locals.paymentKey as string);
+    const payer = res.locals.payer as string | undefined;
+    if (payer && ledger.payerHasLoss(payer, now())) return void res.status(403).json({ error: 'payer_blocked' }), false;
+    return true;
+  };
+
   const tick: express.RequestHandler = async (req, res) => {
     const id = req.params.id as string;
     const offer = res.locals.offer as Offer;
-    const payer = res.locals.payer as string | undefined;
-    // Reaching here means the payment verified: from now on it is spent, whatever happens next.
-    if (res.locals.paymentKey) ledger.addPayment(res.locals.paymentKey as string);
-    // The payment has verified, so the payer is known. One that cost the door before does not cost it again.
-    if (payer && ledger.payerHasLoss(payer, now())) return void res.status(403).json({ error: 'payer_blocked' });
+    if (!verified(res)) return;
     // A channel too low for this tick would be replaced inside the tick's send, past its payment window.
     // Nothing is sent and the renter's payment does not settle: the renter signs again.
     if (await headroomShort(offer.tickPrice + HEADROOM_MARGIN, 'ticks')) return void res.status(503).json({ error: 'retry_later' });
@@ -509,23 +566,41 @@ export function doorApp(deps: DoorDeps): express.Express {
     statuses.set(id, { lease: fresh, at: now() });
     if (fresh.state === 'done') return void res.status(409).json({ error: 'lease_done' });
     if (fresh.state === 'closed') return void res.status(409).json({ error: 'not_running' });
+    await payHostTick(res, api, id, res.locals.index as number, offer, (t) => t);
+  };
+
+  /**
+   * Pays the host one tick and answers the renter: `answer` shapes a 2xx body, and `extra` rides on every
+   * error body. Books a host tick, or a loss when the host took the door's money and counted nothing.
+   */
+  const payHostTick = async (
+    res: express.Response,
+    api: HostApi,
+    id: string,
+    index: number,
+    offer: Offer,
+    answer: (t: Awaited<ReturnType<HostApi['tick']>>) => object,
+    extra: Record<string, unknown> = {},
+  ): Promise<void> => {
+    const payer = res.locals.payer as string | undefined;
+    const deadline = res.locals.deadline as number | undefined;
     const before = api.spent();
     try {
-      const t = await api.tick(id, res.locals.index as number, sendOpts);
+      const t = await api.tick(id, index, deadline === undefined ? {} : { deadline });
       if (t.duplicate) {
         // The host already counted this index: it was paid for nothing, and the renter is not charged.
         const lost = api.spent() - before;
         if (lost > 0n) ledger.loss(id, lost, 'host_refused', now(), payer);
         ledger.stop(id);
-        return void res.status(409).json({ error: 'duplicate' });
+        return void res.status(409).json({ error: 'duplicate', ...extra });
       }
       ledger.hostTick(id);
       res.locals.hostPaid = { leaseId: id, price: offer.tickPrice };
-      res.status(200).json(t);
+      res.status(200).json(answer(t));
     } catch (e) {
       // The send waited too long to start: nothing was sent, nothing is owed, and the renter's payment
       // will not settle (non-2xx). The renter retries the same index with a fresh authorization.
-      if (e instanceof DeadlinePassedError) return void res.status(503).json({ error: 'retry_later' });
+      if (e instanceof DeadlinePassedError) return void res.status(503).json({ error: 'retry_later', ...extra });
       // A host that answered, even with an error, took the door's money. It will not be paid again.
       // A send that timed out may have been paid, though nothing was counted.
       const lost = e instanceof SendTimeoutError ? offer.tickPrice : api.spent() - before;
@@ -534,13 +609,138 @@ export function doorApp(deps: DoorDeps): express.Express {
         ledger.stop(id);
       }
       if (e instanceof HostError && e.status === 409 && (e.error === 'lease_done' || e.error === 'not_running')) {
-        return void res.status(409).json({ error: e.error });
+        return void res.status(409).json({ error: e.error, ...extra });
       }
-      res.status(502).json({ error: hostMessage(e) });
+      res.status(502).json({ error: hostMessage(e), ...extra });
     }
   };
 
   app.post('/v1/leases/:id/ticks', tickGuard, paidTick, tick);
+
+  // POST /v1/rent: open a lease and pay its first tick in one x402 call. The open is the same as
+  // POST /v1/leases; the tick the same as the tick route's index 0, with no status read first (a lease
+  // just opened cannot have finished). A failure after the open leaves the lease for the tick route.
+
+  /** Payers with a rent in flight: one at a time, so one batch voucher cannot open two leases at once. */
+  const renting = new Set<string>();
+
+  const rentGuard: express.RequestHandler = async (req, res, next) => {
+    const payment = deps.x402 === 'free-for-tests' ? undefined : paymentIdOf(req);
+    const body: unknown = req.body;
+    const empty = body === undefined || (typeof body === 'object' && body !== null && !Array.isArray(body) && Object.keys(body).length === 0);
+    // Unpaid: answer the 402 challenge, after refusing what paying would not fix. Nothing opens, nothing is
+    // counted. The gate answers 402 itself to a request with no payment; it never reaches a handler.
+    const challenge = payment === 'none';
+    if (!challenge) {
+      if (!allowOpen(req.ip ?? 'unknown')) return void res.status(429).json({ error: 'rate_limited' });
+      if (empty) return void res.status(400).json({ error: 'bad_request' });
+    }
+    let list: Offer[];
+    try {
+      list = await offers();
+    } catch {
+      return void res.status(502).json({ error: 'offers_unavailable' });
+    }
+    const pick = pickRentOffer(list, body);
+    if (pick === 'not_found') return void res.status(404).json({ error: 'not_found' });
+    if (typeof pick === 'string') return void res.status(400).json({ error: pick });
+    const { offer, job } = pick;
+    if (overCap()) return void res.status(503).json({ error: 'capacity' });
+    if (await headroomShort(offer.openPrice + offer.tickPrice + HEADROOM_MARGIN, 'opens')) return void res.status(503).json({ error: 'capacity' });
+    if (challenge) {
+      if (typeof body === 'object' && body !== null) rentPicks.set(body, offer);
+      return void (await gate(req, res, () => void res.status(402).json({ error: 'payment_required' })));
+    }
+    // Door-wide: an open costs the door and no renter pays for it unless the tick settles.
+    if (!allowDoorOpen('door')) return void res.status(503).json({ error: 'capacity' });
+    const admitted = admitPayment(req, res);
+    if (admitted === undefined) return;
+    const payer = res.locals.payer as string | undefined;
+    if (payer !== undefined) {
+      if (renting.has(payer)) {
+        if (res.locals.paymentKey) claimed.delete(res.locals.paymentKey as string);
+        return void res.status(409).json({ error: 'busy' });
+      }
+      renting.add(payer);
+      res.locals.rentPayer = payer;
+    }
+    const release = () => {
+      if (payer !== undefined) renting.delete(payer);
+      if (res.locals.paymentKey) claimed.delete(res.locals.paymentKey as string);
+    };
+    let withdrawn = false;
+    try {
+      withdrawn = admitted !== 'none' && admitted.kind === 'batch' && (await withdrawing(admitted.channelId));
+    } catch (e) {
+      // An unreadable channel record must not leave this payer stuck at 409 busy.
+      release();
+      throw e;
+    }
+    if (withdrawn) {
+      release();
+      return void res.status(409).json({ error: 'channel_withdrawing' });
+    }
+    rentPicks.set(body as object, offer);
+    res.locals.offer = offer;
+    res.locals.job = job;
+    next();
+  };
+
+  const paidRent = booked((_req, res) => {
+    if (res.locals.rentPayer !== undefined) renting.delete(res.locals.rentPayer as string);
+    if (res.locals.leaseId !== undefined) ticking.delete(res.locals.leaseId as string);
+  });
+
+  const rent: express.RequestHandler = async (_req, res) => {
+    const offer = res.locals.offer as Offer;
+    const job = res.locals.job as JobSpec;
+    if (!verified(res)) return;
+    const api = deps.api(offer);
+    let r: OpenResult;
+    try {
+      r = await unpaid(api, () => api.open(job));
+    } catch (e) {
+      return void res.status(502).json({ error: hostMessage(e) });
+    }
+    if (!LEASE_ID.test(r.leaseId) || ledger.get(r.leaseId)) return void res.status(502).json({ error: 'bad_host_answer' });
+    const leaseId = r.leaseId;
+    ledger.open({ leaseId, offerId: `${offer.hostPubkey}:${offer.id}`, createdAt: now(), offer: snapshotOffer(offer) });
+    res.locals.leaseId = leaseId;
+    // The tick route waits for this one: the lease is the rent's until it answers.
+    ticking.add(leaseId);
+    if (r.state !== 'awaiting_first_tick') {
+      return void res.status(502).json({
+        error: r.closedReason ?? 'not_running',
+        leaseId,
+        state: r.state,
+        ...(r.closedReason ? { closedReason: r.closedReason } : {}),
+        ...(r.error ? { detail: r.error } : {}),
+      });
+    }
+    await payHostTick(
+      res,
+      api,
+      leaseId,
+      0,
+      offer,
+      (t) => ({ leaseId, state: 'running', ...t, next: { path: `/v1/leases/${leaseId}/ticks`, index: 1 }, offer: publicOffer(offer) }),
+      { leaseId },
+    );
+  };
+
+  app.post('/v1/rent', rentGuard, paidRent, rent);
+
+  // What an x402 index (x402scan) reads to list the door: the paid rent route and the free routes.
+  app.get('/openapi.json', async (_req, res) => {
+    let prices: Micro[] = [];
+    try {
+      prices = rentable(await offers()).map((o) => o.tickPrice);
+    } catch {
+      // No offers to read: the document still describes the routes, priced as a range up to the door's maximum.
+    }
+    res.set('Access-Control-Allow-Origin', '*');
+    res.json(openApiDoc(prices, MAX_TICK_PRICE, microToUsdc));
+  });
 
   /** The ledger's lease id, or a 404 written to `res`. */
   const known = (req: express.Request, res: express.Response): string | undefined => {

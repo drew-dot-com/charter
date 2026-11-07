@@ -234,38 +234,105 @@ export async function facilitatorOffersBatch(facilitatorUrl: string, network: st
   }
 }
 
-export function realGate(cfg: X402Config, priceOf: (leaseId: string) => Micro | undefined, schemes: Schemes = buildSchemes(cfg), offerBatch = true): Gate {
+/** The body `POST /v1/rent` takes: the body of `POST /v1/leases`, with `offerId` optional. One of urls, python, home. */
+export const RENT_INPUT_SCHEMA = {
+  type: 'object',
+  properties: {
+    offerId: { type: 'string', description: 'An offerId from GET /v1/offers. Left out: the cheapest listed offer that runs the job.' },
+    python: {
+      type: 'object',
+      description: 'A python job: the script runs once with NumPy and no network; stdout, stderr and the exit code come back.',
+      properties: { script: { type: 'string', maxLength: 8192 } },
+      required: ['script'],
+    },
+    urls: { type: 'array', minItems: 1, maxItems: 5, items: { type: 'string', format: 'uri' }, description: 'A fetch job: each page loaded in a headless browser through a hidden exit.' },
+    home: {
+      type: 'object',
+      description: 'A home: a box with a 2 GiB disk kept 7 days, SSH in at an onion address with these keys.',
+      properties: {
+        sshKeys: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string' } },
+        image: { type: 'string', enum: ['charter-home', 'charter-hermes'] },
+      },
+      required: ['sshKeys'],
+    },
+  },
+} as const;
+
+export const RENT_OUTPUT_EXAMPLE = {
+  leaseId: 'a'.repeat(32),
+  state: 'running',
+  paidIntervals: 1,
+  paidThrough: 1760000000000,
+  next: { path: `/v1/leases/${'a'.repeat(32)}/ticks`, index: 1 },
+};
+
+/** What `POST /v1/rent` costs for the body it carries (undefined body: a bare probe), or undefined when nothing is for rent. */
+export type RentPriceOf = (body: unknown) => Promise<Micro | undefined>;
+
+/** The tick's catalog description: what PayAI's Bazaar shows. */
+const TICK_DESCRIPTION =
+  'One paid interval of sandboxed compute on Charter: intervalSeconds in the offer, one hour at 0.007 USDC on the live host. A lease is a job (Python with NumPy, or a headless-browser fetch) or a home an agent can live in: a box with a 2 GiB disk kept 7 days, SSH at an onion address, optionally with Hermes Agent preinstalled (image charter-hermes). No account, only a wallet. Open a lease first, free: POST /v1/leases. The whole procedure is at https://charter.mainnet.toonprotocol.dev/agents';
+const RENT_DESCRIPTION =
+  'Rent sandboxed compute on Charter in one call: opens a lease and pays its first interval (one hour at 0.007 USDC on the live host). Send a job (python: a script up to 8 KiB with NumPy; urls: up to five pages fetched in a headless browser) or a home (sshKeys: a box with a 2 GiB disk kept 7 days, SSH at an onion address, image charter-hermes for Hermes Agent preinstalled). No account, only a wallet. Keep it running with POST /v1/leases/{leaseId}/ticks. The whole procedure is at https://charter.mainnet.toonprotocol.dev/agents';
+
+export function realGate(
+  cfg: X402Config,
+  priceOf: (leaseId: string) => Micro | undefined,
+  schemes: Schemes = buildSchemes(cfg),
+  offerBatch = true,
+  rentPriceOf?: RentPriceOf,
+): Gate {
   const price = async (ctx: { path: string }) => {
     const p = priceOf(leaseIdOfPath(ctx.path));
     // The route guard has already resolved the lease, so this is a bug, not a user error.
     if (p === undefined) throw new Error('no price for this lease');
     return microToUsdc(p);
   };
-  const option = (scheme: 'batch-settlement' | 'exact') => ({ scheme, network: cfg.network, payTo: cfg.payTo, maxTimeoutSeconds: MAX_TIMEOUT_SECONDS, price });
-  const mw = paymentMiddleware(
-    {
-      'POST /v1/leases/:id/ticks': {
-        // Batch first: a client that speaks both deposits once and signs ticks silently.
-        accepts: offerBatch ? [option('batch-settlement'), option('exact')] : [option('exact')],
-        description:
-          'One paid interval of sandboxed compute on Charter: intervalSeconds in the offer, one hour at 0.007 USDC on the live host. A lease is a job (Python with NumPy, or a headless-browser fetch) or a home an agent can live in: a box with a 2 GiB disk kept 7 days, SSH at an onion address, optionally with Hermes Agent preinstalled (image charter-hermes). No account, only a wallet. Open a lease first, free: POST /v1/leases. The whole procedure is at https://charter.mainnet.toonprotocol.dev/agents',
-        mimeType: 'application/json',
-        serviceName: 'charter',
-        tags: [...BAZAAR_TAGS],
-        // The Bazaar declaration. A facilitator that keeps a catalog (PayAI does) lists the tick from a
-        // payment whose client echoes this; the storefront's own payer does not, an @x402/fetch client does.
-        extensions: declareDiscoveryExtension({
-          bodyType: 'json',
-          input: { index: 0 },
-          inputSchema: { properties: { index: { type: 'number', description: 'The tick index, from 0, in order.' } }, required: ['index'] },
-          pathParams: { id: 'a'.repeat(32) },
-          pathParamsSchema: { properties: { id: { type: 'string', description: 'The leaseId from POST /v1/leases.' } }, required: ['id'] },
-          output: { example: { paidIntervals: 1, paidThrough: 1760000000000, duplicate: false } },
-        }),
-      },
+  const rentPrice = async (ctx: { adapter: { getBody?: () => unknown } }) => {
+    const p = await rentPriceOf?.(ctx.adapter.getBody?.());
+    // The route guard has already found an offer for this body, so this is a bug (or the offers changed under it).
+    if (p === undefined) throw new Error('no price for this rent');
+    return microToUsdc(p);
+  };
+  type Price = typeof price | typeof rentPrice;
+  const option = (scheme: 'batch-settlement' | 'exact', p: Price = price) => ({ scheme, network: cfg.network, payTo: cfg.payTo, maxTimeoutSeconds: MAX_TIMEOUT_SECONDS, price: p });
+  // Batch first: a client that speaks both deposits once and signs ticks silently.
+  const accepts = (p: Price = price) => (offerBatch ? [option('batch-settlement', p), option('exact', p)] : [option('exact', p)]);
+  const routes: Parameters<typeof paymentMiddleware>[0] = {
+    'POST /v1/leases/:id/ticks': {
+      accepts: accepts(),
+      description: TICK_DESCRIPTION,
+      mimeType: 'application/json',
+      serviceName: 'charter',
+      tags: [...BAZAAR_TAGS],
+      // The Bazaar declaration. A facilitator that keeps a catalog (PayAI does) lists the tick from a
+      // payment whose client echoes this; the storefront's own payer does not, an @x402/fetch client does.
+      extensions: declareDiscoveryExtension({
+        bodyType: 'json',
+        input: { index: 0 },
+        inputSchema: { properties: { index: { type: 'number', description: 'The tick index, from 0, in order.' } }, required: ['index'] },
+        pathParams: { id: 'a'.repeat(32) },
+        pathParamsSchema: { properties: { id: { type: 'string', description: 'The leaseId from POST /v1/leases.' } }, required: ['id'] },
+        output: { example: { paidIntervals: 1, paidThrough: 1760000000000, duplicate: false } },
+      }),
     },
-    schemes.server,
-  );
+  };
+  if (rentPriceOf) {
+    routes['POST /v1/rent'] = {
+      accepts: accepts(rentPrice),
+      description: RENT_DESCRIPTION,
+      mimeType: 'application/json',
+      serviceName: 'charter',
+      tags: [...BAZAAR_TAGS],
+      extensions: declareDiscoveryExtension({
+        bodyType: 'json',
+        input: { python: { script: 'print(2 + 2)' } },
+        inputSchema: RENT_INPUT_SCHEMA,
+        output: { example: RENT_OUTPUT_EXAMPLE },
+      }),
+    };
+  }
+  const mw = paymentMiddleware(routes, schemes.server);
   return async (req, res, next) => {
     await mw(req, res, next);
   };
@@ -301,8 +368,10 @@ export function stubGate(priceOf: (leaseId: string) => Micro | undefined, hooks:
     res.end = end;
 
     if (res.statusCode >= 200 && res.statusCode < 300) {
+      // A rent has no lease in its path: the handler names the lease it opened.
+      const settledId = leaseId || String(res.locals.leaseId ?? '');
       try {
-        await hooks.settle?.({ leaseId, price: priceOf(leaseId) ?? 0n });
+        await hooks.settle?.({ leaseId: settledId, price: priceOf(settledId) ?? 0n });
       } catch (e) {
         // As the real middleware: the reason travels in PAYMENT-RESPONSE.
         const errorReason = e instanceof Error ? e.message : 'Settlement failed';

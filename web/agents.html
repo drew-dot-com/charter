@@ -45,6 +45,13 @@
     <h2>Way 1: x402 over HTTP</h2>
     <p>For an agent with an x402 client and a wallet holding USDC on Base (<code>eip155:8453</code>). The facilitator submits the transfer, so the wallet needs no ETH. Every call below is to <code>https://charter.mainnet.toonprotocol.dev</code>. Only the tick is paid; the storefront pays the host for the open and the reads from its own channel.</p>
 
+    <h3>The short way: rent in one call (0.007 USDC)</h3>
+<pre>POST /v1/rent
+Content-Type: application/json
+
+{"python": {"script": "import numpy as np\nprint(np.arange(5).sum())\n"}}</pre>
+    <p>Steps 2 and 3 below in one paid request. The body is the open body of step 2, with <code>offerId</code> optional: left out, the storefront picks the cheapest listed offer that runs your job. Without a payment header the answer is the same <code>402</code> as a tick's. Paid, it answers <code>{"leaseId", "state": "running", "paidIntervals", "paidThrough", "next": {"path", "index": 1}, "offer"}</code>; go on at step 4 with index 1. A <code>400</code> or <code>404</code> before the <code>402</code> means the body or the offer is wrong, and nothing was asked of you. If the host fails after the lease opened, the error carries <code>leaseId</code> and nothing was charged: pay index 0 on that lease at step 3 within 90 seconds, or let it lapse. <code>409 busy</code> means another rent from your wallet is still in flight. Other refusals are a tick's. The same routes, machine-readable: <a href="/openapi.json"><code>/openapi.json</code></a>.</p>
+
     <h3>1. Read the offers (free)</h3>
 <pre>GET /v1/offers</pre>
     <p>A JSON array. Each offer has <code>offerId</code>, <code>cpu</code>, <code>memoryMiB</code>, <code>intervalSeconds</code>, <code>tickPrice</code> (micro-USDC, a string), <code>images</code>, <code>hiddenHost</code>, <code>hiddenEgress</code>, <code>expiresAt</code> (epoch ms) and <code>leases</code> (how many paid leases this host has served). A host that runs homes also has <code>home</code>: <code>{"diskGiB": 2, "retentionDays": 7, "slots": 1}</code> on the live host. Pick an offer whose <code>images</code> lists your job. An empty array means no host is up: do not retry in a loop.</p>

@@ -47,6 +47,8 @@ Status: live on Base mainnet since 2026-10-17, one host, first-party. Every rent
 ## Rent
 
 - [How an agent rents](https://charter.mainnet.toonprotocol.dev/agents): the two ways in (x402 over HTTP, or a toon node), every call, every price, the home and how to SSH in, what to tell your operator.
+- Rent in one x402 call: `POST https://charter.mainnet.toonprotocol.dev/v1/rent` with `{ "python": { "script": "print(2 + 2)" } }` (or `urls`, or `home`; `offerId` optional) answers 402 for one interval; paid, the lease is open with its first hour paid. Keep it with `POST /v1/leases/{leaseId}/ticks` and `{ "index": 1 }`, then 2, and so on.
+- [OpenAPI](https://charter.mainnet.toonprotocol.dev/openapi.json): the paid rent route and the free routes, for x402 clients and indexes.
 - [Live offers, JSON](https://charter.mainnet.toonprotocol.dev/v1/offers): the machines on sale right now. Free to read.
 - [Claude Code plugin](https://github.com/drew-dot-com/charter/tree/main/plugins/charter): `/plugin marketplace add drew-dot-com/charter` then `/plugin install charter@charter`. For an agent with a toon node.
 - [Storefront](https://charter.mainnet.toonprotocol.dev/): for a human with a browser wallet.
