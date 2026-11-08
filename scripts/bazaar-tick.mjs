@@ -120,6 +120,17 @@ if (viaRent) {
   const body = await json(rent);
   if (rent.status !== 200) {
     console.error(`rent refused ${rent.status}:`, JSON.stringify(body), '(a non-2xx never settles; nothing was charged)');
+    // An x402 v2 refusal carries its reason in a header, not the body.
+    for (const h of ['payment-required', 'payment-response']) {
+      const v = rent.headers.get(h);
+      if (!v) continue;
+      try {
+        const d = JSON.parse(Buffer.from(v, 'base64').toString());
+        console.error(`${h}:`, JSON.stringify({ error: d.error, errorReason: d.errorReason, errorMessage: d.errorMessage, success: d.success }));
+      } catch {
+        console.error(`${h}: (not base64 JSON)`);
+      }
+    }
     process.exit(1);
   }
   id = body.leaseId;

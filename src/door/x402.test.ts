@@ -27,8 +27,11 @@ import {
   BASE_USDC,
   BAZAAR_TAGS,
   CATALOG_KEPT_TAGS,
+  DESCRIPTION_MAX,
   MAX_TIMEOUT_SECONDS,
   MIN_WINDOW_SECONDS,
+  RENT_DESCRIPTION,
+  TICK_DESCRIPTION,
   WITHDRAW_DELAY_SECONDS,
   buildSchemes,
   facilitatorOffersBatch,
@@ -713,4 +716,11 @@ test('the catalog tags that survive PayAI keeping five name what an agent search
   const kept = BAZAAR_TAGS.slice(0, CATALOG_KEPT_TAGS);
   for (const tag of ['compute', 'agent-hosting', 'hermes']) assert.ok(kept.includes(tag as never), `${tag} is in the first ${CATALOG_KEPT_TAGS}`);
   assert.equal(new Set(BAZAAR_TAGS).size, BAZAAR_TAGS.length, 'no tag twice');
+});
+
+test('the catalog descriptions fit CDP: its facilitator refuses a payment whose resource description is over 500 characters', () => {
+  assert.equal(DESCRIPTION_MAX, 500);
+  assert.ok(TICK_DESCRIPTION.length <= DESCRIPTION_MAX, `tick: ${TICK_DESCRIPTION.length}`);
+  assert.ok(RENT_DESCRIPTION.length <= DESCRIPTION_MAX, `rent: ${RENT_DESCRIPTION.length}`);
+  for (const d of [TICK_DESCRIPTION, RENT_DESCRIPTION]) assert.match(d, /https:\/\/charter\.mainnet\.toonprotocol\.dev\/agents$/);
 });

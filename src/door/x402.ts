@@ -285,11 +285,15 @@ export const RENT_OUTPUT_EXAMPLE = {
 /** What `POST /v1/rent` costs for the body it carries (undefined body: a bare probe), or undefined when nothing is for rent. */
 export type RentPriceOf = (body: unknown) => Promise<Micro | undefined>;
 
-/** The tick's catalog description: what PayAI's Bazaar shows. */
-const TICK_DESCRIPTION =
-  'One paid interval of sandboxed compute on Charter: intervalSeconds in the offer, one hour at 0.007 USDC on the live host. A lease is a job (Python with NumPy, or a headless-browser fetch) or a home an agent can live in: a box with a 2 GiB disk kept 7 days, SSH at an onion address, optionally with Hermes Agent preinstalled (image charter-hermes). No account, only a wallet. Open a lease first, free: POST /v1/leases. The whole procedure is at https://charter.mainnet.toonprotocol.dev/agents';
-const RENT_DESCRIPTION =
-  'Rent sandboxed compute on Charter in one call: opens a lease and pays its first interval (one hour at 0.007 USDC on the live host). Send a job (python: a script up to 8 KiB with NumPy; urls: up to five pages fetched in a headless browser) or a home (sshKeys: a box with a 2 GiB disk kept 7 days, SSH at an onion address, image charter-hermes for Hermes Agent preinstalled). No account, only a wallet. Keep it running with POST /v1/leases/{leaseId}/ticks. The whole procedure is at https://charter.mainnet.toonprotocol.dev/agents';
+/**
+ * The catalog descriptions, as PayAI's and CDP's Bazaars show them. At most DESCRIPTION_MAX characters: the client
+ * echoes the resource in its payment, and CDP's facilitator refuses a payload whose description is longer (11-08).
+ */
+export const DESCRIPTION_MAX = 500;
+export const TICK_DESCRIPTION =
+  'One paid hour of sandboxed compute on Charter (0.007 USDC on the live host). A lease is a job (Python with NumPy, or a headless-browser fetch) or a home an agent can live in: a box with a 2 GiB disk kept 7 days, SSH at an onion address, optionally with Hermes Agent (image charter-hermes). No account, only a wallet. Open a lease first, free: POST /v1/leases. Procedure: https://charter.mainnet.toonprotocol.dev/agents';
+export const RENT_DESCRIPTION =
+  'Rent sandboxed compute on Charter in one call: opens a lease and pays its first hour (0.007 USDC on the live host). Send a job (python: a script up to 8 KiB with NumPy; urls: up to five pages in a headless browser) or a home (sshKeys: a box with a 2 GiB disk kept 7 days, SSH at an onion address; image charter-hermes has Hermes Agent). No account, only a wallet. Extend with POST /v1/leases/{leaseId}/ticks. Procedure: https://charter.mainnet.toonprotocol.dev/agents';
 
 export function realGate(
   cfg: X402Config,
