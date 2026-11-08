@@ -7,7 +7,7 @@ const AGENTS = 'https://charter.mainnet.toonprotocol.dev/agents';
 const GUIDANCE = [
   'Rent a sandboxed machine by the hour with a wallet and no account. Read GET /v1/offers (free) for prices and images.',
   'POST /v1/rent with a job (python: { script } with NumPy and no network; urls: up to five pages fetched in a headless browser) or a home ({ home: { sshKeys } }: a box with a 2 GiB disk kept 7 days, SSH in at an onion address; image charter-hermes for Hermes Agent preinstalled). offerId is optional.',
-  'It answers 402 with the price of one interval (one hour at 0.007 USDC on the live host), batch-settlement or exact, USDC on Base. Pay it and the lease opens with its first interval paid.',
+  'It answers 402 with the price of one interval (one hour at 0.007 USDC on the live host), exact first (no deposit) or batch-settlement, USDC on Base. Pay it and the lease opens with its first interval paid.',
   'Keep it running: POST /v1/leases/{leaseId}/ticks with { "index": n } from 1, in order, paid the same way, before paidThrough runs out. Stop by not paying.',
   'Read the state free with GET /v1/leases/{leaseId}; a job\'s output is in GET /v1/leases/{leaseId}/output/{part}; a home\'s SSH address is in access.ssh.',
   `The whole procedure, prices, what to tell your operator and the trust section: ${AGENTS}`,
@@ -23,9 +23,12 @@ const leaseIdParam = { name: 'leaseId', in: 'path', required: true, schema: { ty
  * index probes each paid path literally, and a tick needs a lease that exists.
  *
  * `prices`: the tick prices of the offers open to rent now. One price is `fixed`, several a `dynamic` range,
- * none a range up to `max`.
+ * none a range up to `max`. `contactEmail`: the operator's address for `info.contact`, left out when unset.
  */
-export function openApiDoc(prices: Micro[], max: Micro, usd: (m: Micro) => string): object {
+/** Where a person reaches the operator. An index reads `info.contact` to verify who runs the origin. */
+const CONTACT_URL = 'https://github.com/drew-dot-com/charter/issues';
+
+export function openApiDoc(prices: Micro[], max: Micro, usd: (m: Micro) => string, contactEmail?: string): object {
   const sorted = [...new Set(prices)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const price =
     sorted.length === 1
@@ -38,6 +41,7 @@ export function openApiDoc(prices: Micro[], max: Micro, usd: (m: Micro) => strin
       version: '1.0.0',
       description: 'Sandboxed compute by the hour, paid per interval in USDC on Base over x402. No account, only a wallet.',
       'x-guidance': GUIDANCE,
+      contact: { name: 'Charter', url: CONTACT_URL, ...(contactEmail ? { email: contactEmail } : {}) },
     },
     externalDocs: { description: 'How an agent rents', url: AGENTS },
     paths: {
@@ -66,7 +70,7 @@ export function openApiDoc(prices: Micro[], max: Micro, usd: (m: Micro) => strin
               'The lease is open and its first interval paid.',
             ),
             '400': error('The body is not a job or a home, or the offer does not run that image.'),
-            '402': { description: 'Payment Required: one interval, batch-settlement or exact, USDC on Base.' },
+            '402': { description: 'Payment Required: one interval, exact first or batch-settlement, USDC on Base.' },
             '403': error('payer_blocked: this payer cost the door a failed settlement in the last 24 hours.'),
             '404': error('No listed offer for this body.'),
             '409': error('payment_reused, busy, or channel_withdrawing.'),

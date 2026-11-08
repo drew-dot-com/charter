@@ -52,6 +52,8 @@ export interface DoorDeps {
   webDir?: string;
   /** Express `trust proxy`, for a door behind a reverse proxy (the rate limit keys on the client IP). */
   trustProxy?: boolean | number | string;
+  /** The operator's email for `info.contact` in /openapi.json (indexes verify ownership with it). Unset: the repo's issues URL only. */
+  contactEmail?: string;
   /** Only read when `x402` is 'free-for-tests'. */
   testHooks?: TestHooks;
 }
@@ -739,7 +741,7 @@ export function doorApp(deps: DoorDeps): express.Express {
       // No offers to read: the document still describes the routes, priced as a range up to the door's maximum.
     }
     res.set('Access-Control-Allow-Origin', '*');
-    res.json(openApiDoc(prices, MAX_TICK_PRICE, microToUsdc));
+    res.json(openApiDoc(prices, MAX_TICK_PRICE, microToUsdc, deps.contactEmail));
   });
 
   /** The ledger's lease id, or a 404 written to `res`. */

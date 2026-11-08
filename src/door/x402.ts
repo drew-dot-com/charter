@@ -245,7 +245,7 @@ export const RENT_INPUT_SCHEMA = {
       properties: { script: { type: 'string', maxLength: 8192 } },
       required: ['script'],
     },
-    urls: { type: 'array', minItems: 1, maxItems: 5, items: { type: 'string', format: 'uri' }, description: 'A fetch job: each page loaded in a headless browser through a hidden exit.' },
+    urls: { type: 'array', minItems: 1, maxItems: 5, items: { type: 'string', description: 'An http or https URL.' }, description: 'A fetch job: each page loaded in a headless browser through a hidden exit.' },
     home: {
       type: 'object',
       description: 'A home: a box with a 2 GiB disk kept 7 days, SSH in at an onion address with these keys.',
@@ -296,8 +296,11 @@ export function realGate(
   };
   type Price = typeof price | typeof rentPrice;
   const option = (scheme: 'batch-settlement' | 'exact', p: Price = price) => ({ scheme, network: cfg.network, payTo: cfg.payTo, maxTimeoutSeconds: MAX_TIMEOUT_SECONDS, price: p });
-  // Batch first: a client that speaks both deposits once and signs ticks silently.
+  // Ticks: batch first, so a client that speaks both deposits once and signs ticks silently.
   const accepts = (p: Price = price) => (offerBatch ? [option('batch-settlement', p), option('exact', p)] : [option('exact', p)]);
+  // Rent: exact first. A rent is one call, so a batch deposit (ten ticks at least) overpays a client that
+  // only wanted the first hour, and CDP's Bazaar refuses a resource whose first option is not exact or upto.
+  const rentAccepts = (p: Price) => (offerBatch ? [option('exact', p), option('batch-settlement', p)] : [option('exact', p)]);
   const routes: Parameters<typeof paymentMiddleware>[0] = {
     'POST /v1/leases/:id/ticks': {
       accepts: accepts(),
@@ -319,7 +322,7 @@ export function realGate(
   };
   if (rentPriceOf) {
     routes['POST /v1/rent'] = {
-      accepts: accepts(rentPrice),
+      accepts: rentAccepts(rentPrice),
       description: RENT_DESCRIPTION,
       mimeType: 'application/json',
       serviceName: 'charter',

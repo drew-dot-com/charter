@@ -73,6 +73,7 @@ async function main(): Promise<void> {
     schemes,
     offerBatch,
     ...(trustProxy === undefined ? {} : { trustProxy }),
+    ...(env.CHARTER_CONTACT_EMAIL?.trim() ? { contactEmail: env.CHARTER_CONTACT_EMAIL.trim() } : {}),
   });
   const host = env.CHARTER_DOOR_HOST?.trim() || '127.0.0.1';
   const server = app.listen(port, host);

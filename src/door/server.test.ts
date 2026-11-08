@@ -2036,7 +2036,8 @@ test('rent, real gate: a bare probe (no body, no content type) gets the 402 chal
     const bare = await fetch(d.base + '/v1/rent', { method: 'POST' });
     assert.equal(bare.status, 402);
     const required = JSON.parse(Buffer.from(bare.headers.get('payment-required')!, 'base64').toString()) as { accepts: Array<Record<string, unknown>>; extensions?: { bazaar?: unknown } };
-    assert.deepEqual(required.accepts.map((a) => a.scheme), ['batch-settlement', 'exact']);
+    // Exact first: a rent is one call, and CDP's Bazaar refuses a resource whose first option is batch.
+    assert.deepEqual(required.accepts.map((a) => a.scheme), ['exact', 'batch-settlement']);
     for (const a of required.accepts) assert.equal(a.amount, '5000');
     assert.ok(required.extensions?.bazaar, 'the rent route declares itself to the Bazaar too');
     assert.equal(bare.headers.get('access-control-allow-origin'), '*');
@@ -2076,6 +2077,24 @@ test('GET /openapi.json describes the paid rent route for x402 indexes, with the
     assert.equal(doc.paths['/v1/leases/{leaseId}/ticks'], undefined, 'the tick route is in the guidance, not probed: it needs a live lease');
   } finally {
     d.close();
+  }
+});
+
+test('GET /openapi.json names a reachable contact: the repo issues always, an email only when the door is given one', async () => {
+  const plain = await start(fakeHost());
+  try {
+    const doc = (await (await plain.get('/openapi.json')).json()) as { info: { contact: { name: string; url: string; email?: string } } };
+    assert.equal(doc.info.contact.url, 'https://github.com/drew-dot-com/charter/issues');
+    assert.equal(doc.info.contact.email, undefined);
+  } finally {
+    plain.close();
+  }
+  const mailed = await start(fakeHost(), { contactEmail: 'ops@example.com' });
+  try {
+    const doc = (await (await mailed.get('/openapi.json')).json()) as { info: { contact: { email?: string } } };
+    assert.equal(doc.info.contact.email, 'ops@example.com');
+  } finally {
+    mailed.close();
   }
 });
 
