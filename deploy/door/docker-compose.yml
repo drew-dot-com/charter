@@ -9,6 +9,7 @@
 #   data/             the ledger, the TOON channel store, cached output
 #   secrets/          toon-payer.json (0400, from new-payer-key.mjs), rpc-url (0400),
 #                     claim-key (0400, from new-claim-key.mjs: the x402 claim authorizer, no funds)
+#                     cdp-key.json (0400, optional: the CDP portal's API key download; CHARTER_CDP_KEY_FILE in door.env)
 #
 # Losing data/channels.json strands the live channel's deposit: back it up.
 services:

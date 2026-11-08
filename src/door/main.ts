@@ -8,7 +8,9 @@ import { fetchOffers } from '../tenant/offers.js';
 import { BatchSettlementChannelManager } from '@x402/evm/batch-settlement/server';
 import { channelCommand } from './channel.js';
 import { idleMsFor, startClaims, x402Command } from './claims.js';
-import { parseClaimKey, parseDoorHosts, parseTrustProxy } from './config.js';
+import { createFacilitatorConfig } from '@coinbase/x402';
+import { HTTPFacilitatorClient } from '@x402/core/server';
+import { parseCdpKey, parseClaimKey, parseDoorHosts, parseTrustProxy } from './config.js';
 import { DoorLedger, LEDGER_FILE } from './ledger.js';
 import { doorApp } from './server.js';
 import { BASE_USDC, buildSchemes, facilitatorOffersBatch, type Schemes, type X402Config } from './x402.js';
@@ -27,7 +29,16 @@ function x402Config(env: NodeJS.ProcessEnv): X402Config {
     facilitatorUrl: env.X402_FACILITATOR_URL?.trim() || 'https://facilitator.payai.network',
     claimKey: parseClaimKey(readFileSync(need(env, 'CHARTER_CLAIM_KEY_FILE'), 'utf8')),
     channelDir: join(need(env, 'CHARTER_DATA_DIR'), 'x402-channels'),
+    ...cdpExact(env),
   };
+}
+
+/** CDP as the exact facilitator, when CHARTER_CDP_KEY_FILE names a key: what lists the door in CDP's Bazaar. */
+function cdpExact(env: NodeJS.ProcessEnv): Pick<X402Config, 'exactFacilitator'> {
+  const file = env.CHARTER_CDP_KEY_FILE?.trim();
+  if (!file) return {};
+  const key = parseCdpKey(readFileSync(file, 'utf8'));
+  return { exactFacilitator: createFacilitatorConfig(key.id, key.secret) };
 }
 
 function claimManager(cfg: X402Config, schemes: Schemes): BatchSettlementChannelManager {
@@ -60,6 +71,17 @@ async function main(): Promise<void> {
   // Batch is offered only when the facilitator lists it: otherwise every tick, exact included, would fail.
   const offerBatch = await facilitatorOffersBatch(x402.facilitatorUrl, x402.network);
   if (!offerBatch) console.error(`charter-door: ${x402.facilitatorUrl} does not list batch-settlement on ${x402.network}; ticks are exact only until a restart`);
+  if (x402.exactFacilitator) {
+    // Said at boot because the resource server falls back to the main facilitator without a word.
+    try {
+      const kinds = (await new HTTPFacilitatorClient(x402.exactFacilitator).getSupported()).kinds;
+      const ok = kinds.some((k) => k.scheme === 'exact' && k.network === x402.network);
+      if (ok) console.log(`charter-door: exact settles through ${x402.exactFacilitator.url}`);
+      else console.error(`charter-door: ${x402.exactFacilitator.url} does not list exact on ${x402.network}; exact settles through ${x402.facilitatorUrl}`);
+    } catch (e) {
+      console.error(`charter-door: ${x402.exactFacilitator.url} unreachable or refused the key (${String(e instanceof Error ? e.message : e).slice(0, 160)}); exact settles through ${x402.facilitatorUrl} until a restart`);
+    }
+  }
 
   const app = doorApp({
     offers: () => fetchOffers(relayUrl, Date.now()),

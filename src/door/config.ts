@@ -48,6 +48,24 @@ export function parseClaimKey(fileText: string): `0x${string}` {
   return s as `0x${string}`;
 }
 
+/**
+ * A CDP API key as the CDP portal downloads it: `{"id", "privateKey"}` (or the legacy `{"name", "privateKey"}`).
+ * The door uses it only to sign the JWTs CDP's facilitator asks for. Errors never quote the file.
+ */
+export function parseCdpKey(fileText: string): { id: string; secret: string } {
+  const bad = new Error('CHARTER_CDP_KEY_FILE must hold the JSON the CDP portal downloads: {"id", "privateKey"}');
+  let j: unknown;
+  try {
+    j = JSON.parse(fileText);
+  } catch {
+    throw bad;
+  }
+  const o = (j ?? {}) as { id?: unknown; name?: unknown; privateKey?: unknown };
+  const id = typeof o.id === 'string' ? o.id : typeof o.name === 'string' ? o.name : '';
+  if (!id || typeof o.privateKey !== 'string' || !o.privateKey) throw bad;
+  return { id, secret: o.privateKey };
+}
+
 /** The claim key as the x402 batch-settlement server's receiver authorizer: an address and a typed-data signer. */
 export function claimSigner(key: `0x${string}`): AuthorizerSigner {
   const account = privateKeyToAccount(key);

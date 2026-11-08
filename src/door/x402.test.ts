@@ -446,6 +446,33 @@ test('a payment the facilitator refuses: 402 with the reason, no host call, and 
   }
 });
 
+test('with an exact facilitator (CDP), exact payments verify and settle there and vouchers stay with the main facilitator, which hears nothing of exact', async () => {
+  const main = await facilitator();
+  const cdp = await facilitator();
+  const d = await realDoor(main, { x402: { ...config(main), exactFacilitator: { url: cdp.url } } });
+  try {
+    const id = await d.open();
+    const required = await d.challenge(id);
+    assert.deepEqual(required.accepts.map((a) => a.scheme), ['batch-settlement', 'exact'], 'the challenge is the same either way');
+    const r = await d.post(`/v1/leases/${id}/ticks`, { index: 0 }, { 'payment-signature': exactPayment(required, '0xabc', '0x01') });
+    assert.equal(r.status, 200, await r.text());
+    assert.deepEqual(cdp.calls.map((c) => c.path), ['/verify', '/settle']);
+    assert.deepEqual(main.calls, [], 'exact never reaches the main facilitator');
+
+    const { channelId } = channelOf(required);
+    main.verify = (b) => ({ isValid: true, payer: payerOf(b.paymentPayload), extra: { channelId, ...CHANNEL_STATE } });
+    const id2 = await d.open();
+    const v = await d.post(`/v1/leases/${id2}/ticks`, { index: 0 }, { 'payment-signature': await voucher(await d.challenge(id2), 5000n) });
+    assert.equal(v.status, 200, await v.text());
+    assert.deepEqual(main.calls.map((c) => c.path), ['/verify'], 'the voucher is verified by the main facilitator');
+    assert.equal(cdp.calls.length, 2, 'and not by CDP, though it lists batch-settlement too');
+  } finally {
+    d.close();
+    main.close();
+    cdp.close();
+  }
+});
+
 test('a settlement that fails for the payer\'s own reason is booked settle_failed and blocks the payer; a transient reason is booked transient and does not', async () => {
   for (const [reason, kind, blocks] of [
     ['invalid_exact_evm_insufficient_balance', 'settle_failed', true],

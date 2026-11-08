@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { claimSigner, parseClaimKey, parseDoorHosts, parseTrustProxy } from './config.js';
+import { claimSigner, parseCdpKey, parseClaimKey, parseDoorHosts, parseTrustProxy } from './config.js';
 
 const A = 'ab'.repeat(32);
 const B = 'cd'.repeat(32);
@@ -52,4 +52,15 @@ test('claimSigner derives the key address and signs typed data', async () => {
     message: { v: 1n },
   });
   assert.match(sig, /^0x[0-9a-f]{130}$/);
+});
+
+test('parseCdpKey: the JSON the CDP portal downloads, {id} or legacy {name}, with privateKey; anything else is refused without echoing the file', () => {
+  assert.deepEqual(parseCdpKey(JSON.stringify({ id: 'key-1', privateKey: 'c2VjcmV0' })), { id: 'key-1', secret: 'c2VjcmV0' });
+  assert.deepEqual(parseCdpKey(JSON.stringify({ name: 'organizations/o/apiKeys/k', privateKey: '-----BEGIN EC PRIVATE KEY-----\nx\n-----END EC PRIVATE KEY-----\n' })), {
+    id: 'organizations/o/apiKeys/k',
+    secret: '-----BEGIN EC PRIVATE KEY-----\nx\n-----END EC PRIVATE KEY-----\n',
+  });
+  for (const bad of ['not json SECRETVALUE', '{}', JSON.stringify({ id: 'k' }), JSON.stringify({ privateKey: 'SECRETVALUE' }), JSON.stringify({ id: '', privateKey: 'SECRETVALUE' })]) {
+    assert.throws(() => parseCdpKey(bad), (e: Error) => /CHARTER_CDP_KEY_FILE/.test(e.message) && !e.message.includes('SECRETVALUE'), bad);
+  }
 });

@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
-import { HTTPFacilitatorClient } from '@x402/core/server';
+import { HTTPFacilitatorClient, type FacilitatorConfig } from '@x402/core/server';
 import { decodePaymentResponseHeader, decodePaymentSignatureHeader } from '@x402/core/http';
 import { BatchSettlementEvmScheme } from '@x402/evm/batch-settlement/server';
 import { FileChannelStorage } from '@x402/evm/batch-settlement/server/file-storage';
@@ -21,6 +21,19 @@ export interface X402Config {
   claimKey: `0x${string}`;
   /** Where the batch-settlement server keeps its channel records (one JSON file per channel). */
   channelDir: string;
+  /**
+   * A second facilitator for `exact` only (CDP, CHARTER_CDP_KEY_FILE). CDP's Bazaar lists a resource only from
+   * payments settled through CDP; batch stays with `facilitatorUrl`, whose claims and refunds the door's timers run.
+   */
+  exactFacilitator?: FacilitatorConfig;
+}
+
+/** A facilitator client that admits to `exact` only, so the resource server sends it nothing else. */
+class ExactOnlyFacilitator extends HTTPFacilitatorClient {
+  override async getSupported(): ReturnType<HTTPFacilitatorClient['getSupported']> {
+    const s = await super.getSupported();
+    return { ...s, kinds: s.kinds.filter((k) => k.scheme === 'exact') };
+  }
 }
 
 /**
@@ -216,7 +229,10 @@ export function buildSchemes(cfg: X402Config): Schemes {
     receiverAuthorizerSigner: claimSigner(cfg.claimKey),
     withdrawDelay: WITHDRAW_DELAY_SECONDS,
   });
-  const server = new x402ResourceServer(facilitator).register(cfg.network, batch).register(cfg.network, new ExactEvmScheme());
+  // Earlier facilitators take precedence per scheme. An exact facilitator that cannot be reached at boot lists
+  // nothing, and exact falls back to the main facilitator.
+  const clients = cfg.exactFacilitator ? [new ExactOnlyFacilitator(cfg.exactFacilitator), facilitator] : facilitator;
+  const server = new x402ResourceServer(clients).register(cfg.network, batch).register(cfg.network, new ExactEvmScheme());
   return { server, batch, facilitator };
 }
 
