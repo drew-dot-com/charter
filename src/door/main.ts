@@ -12,11 +12,14 @@ import { createFacilitatorConfig } from '@coinbase/x402';
 import { HTTPFacilitatorClient } from '@x402/core/server';
 import { parseCdpKey, parseClaimKey, parseDoorHosts, parseTrustProxy } from './config.js';
 import { DoorLedger, LEDGER_FILE } from './ledger.js';
+import { fileRequestSink } from './reqlog.js';
 import { doorApp } from './server.js';
 import { BASE_USDC, buildSchemes, facilitatorOffersBatch, type Schemes, type X402Config } from './x402.js';
 import { unblockCommand } from './unblock.js';
 
 /** The door's own TOON wallet, which pays hosts. */
+const REQUEST_LOG_FILE = 'requests.jsonl';
+
 async function doorPayer(env: NodeJS.ProcessEnv): Promise<ToonClientPayer> {
   return ToonClientPayer.create(toonClientConfigFromEnv(env));
 }
@@ -96,6 +99,7 @@ async function main(): Promise<void> {
     offerBatch,
     ...(trustProxy === undefined ? {} : { trustProxy }),
     ...(env.CHARTER_CONTACT_EMAIL?.trim() ? { contactEmail: env.CHARTER_CONTACT_EMAIL.trim() } : {}),
+    ...(env.CHARTER_REQUEST_LOG?.trim() === 'off' ? {} : { requestSink: fileRequestSink(join(dataDir, REQUEST_LOG_FILE)) }),
   });
   const host = env.CHARTER_DOOR_HOST?.trim() || '127.0.0.1';
   const server = app.listen(port, host);

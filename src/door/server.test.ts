@@ -11,6 +11,7 @@ import { OFFER } from '../tenant/test-host.js';
 import type { Lease, Micro, Offer } from '../types.js';
 import { DoorLedger, offerOfSnapshot, snapshotOffer } from './ledger.js';
 import { doorApp, readBudget, type DoorDeps } from './server.js';
+import type { RequestEntry } from './reqlog.js';
 import * as payerMod from '../payer.js';
 import { facilitatorOffersBatch, isPayerFault, MIN_WINDOW_SECONDS, paymentIdOf } from './x402.js';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -2103,6 +2104,20 @@ test('GET /openapi.json prices rent as a range when the listed offers differ in 
   try {
     const doc = (await (await d.get('/openapi.json')).json()) as { paths: Record<string, Record<string, { 'x-payment-info': { price: Record<string, string> } }>> };
     assert.deepEqual(doc.paths['/v1/rent']!.post!['x-payment-info'].price, { mode: 'dynamic', currency: 'USD', min: '0.005000', max: '0.009000' });
+  } finally {
+    d.close();
+  }
+});
+
+test('a door given a request sink reports each request', async () => {
+  const got: RequestEntry[] = [];
+  const d = await start(fakeHost(), { requestSink: (e) => void got.push(e) });
+  try {
+    assert.equal((await d.get('/openapi.json?x=1')).status, 200);
+    for (let i = 0; i < 100 && got.length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.equal(got[0]?.p, '/openapi.json');
+    assert.equal(got[0]?.s, 200);
+    assert.equal(got[0]?.paid, false);
   } finally {
     d.close();
   }

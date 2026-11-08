@@ -9,6 +9,7 @@ import { JOB_IMAGES, jobFromBody } from '../jobs.js';
 import type { JobSpec, Lease, Micro, Offer } from '../types.js';
 import { DeadlinePassedError, SendTimeoutError } from '../payer.js';
 import { offerOfSnapshot, snapshotOffer, type DoorLedger, type LossKind } from './ledger.js';
+import { logRequests, type RequestSink } from './reqlog.js';
 import { MAX_TIMEOUT_SECONDS, MIN_WINDOW_SECONDS, SETTLE_MARGIN_SECONDS, isPayerFault, microToUsdc, paymentIdOf, realGate, settleReasonOf, stubGate, type Gate, type PaymentId, type Schemes, type TestHooks, type X402Config } from './x402.js';
 import { openApiDoc } from './openapi.js';
 
@@ -54,6 +55,8 @@ export interface DoorDeps {
   trustProxy?: boolean | number | string;
   /** The operator's email for `info.contact` in /openapi.json (indexes verify ownership with it). Unset: the repo's issues URL only. */
   contactEmail?: string;
+  /** Told of each request when its response finishes (reqlog.ts says what an entry holds). Left out: nothing is logged. */
+  requestSink?: RequestSink;
   /** Only read when `x402` is 'free-for-tests'. */
   testHooks?: TestHooks;
 }
@@ -319,6 +322,7 @@ export function doorApp(deps: DoorDeps): express.Express {
   const app = express();
   app.disable('x-powered-by');
   if (deps.trustProxy !== undefined) app.set('trust proxy', deps.trustProxy);
+  if (deps.requestSink) app.use(logRequests(deps.requestSink, now));
 
   // A browser on another origin may read offers and leases and pay ticks. The payment headers go both ways.
   // Opening a lease is same-origin only (the page is served from here): no CORS on POST /v1/leases.

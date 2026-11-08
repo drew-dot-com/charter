@@ -56,6 +56,21 @@ When "Charter door down" arrives:
   `offer publish failed: ToonCliError` on every publish. The journal truncates the toon error, so check
   `toon channel list` in toon2 first.
 
+## Who reaches the door
+
+The door appends one JSON line per request to `/root/charter-door/data/requests.jsonl`: time, method, path, status,
+milliseconds, user agent, the referrer's host, and whether a payment header came with it. It never records the client
+IP, the query string or the body. Past 5 MiB the file rolls to `requests.jsonl.1`, one old file kept.
+`CHARTER_REQUEST_LOG=off` in door.env turns it off. The canary's own requests are in there too. On the box:
+
+```bash
+jq -r '.ua // "(none)"' /root/charter-door/data/requests.jsonl | sort | uniq -c | sort -rn | head -20
+```
+
+```bash
+jq -r 'select(.paid or .p == "/v1/rent" or .p == "/openapi.json" or .p == "/llms.txt") | [.t,.m,.p,.s,.paid,.ua] | @tsv' /root/charter-door/data/requests.jsonl | tail -40
+```
+
 ## Headroom and daily spend
 
 `charter-headroom.sh` reads the same files the door reads, with no TOON client and no chain read:
