@@ -1,4 +1,4 @@
-// Bundles the storefront into web/dist: app.js (esbuild); index.html, agents.html, llms.txt, style.css and fonts/ (copied).
+// Bundles the storefront into web/dist: app.js (esbuild); index.html, agents.html, privacy.html, llms.txt, style.css and fonts/ (copied).
 import { copyFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +20,6 @@ await build({
   logLevel: 'info',
 });
 
-for (const f of ['index.html', 'agents.html', 'llms.txt', 'style.css', 'favicon.svg']) copyFileSync(join(root, 'web', f), join(out, f));
+for (const f of ['index.html', 'agents.html', 'privacy.html', 'llms.txt', 'style.css', 'favicon.svg']) copyFileSync(join(root, 'web', f), join(out, f));
 mkdirSync(join(out, 'fonts'), { recursive: true });
 for (const f of readdirSync(join(root, 'web', 'fonts'))) copyFileSync(join(root, 'web', 'fonts', f), join(out, 'fonts', f));
