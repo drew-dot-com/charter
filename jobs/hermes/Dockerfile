@@ -1,6 +1,6 @@
 # A home with Hermes Agent and the charter CLI preinstalled read-only, and a default boot that runs them.
 # Built from the repo root after `npm run build`: docker build -f jobs/hermes/Dockerfile -t charter-hermes .
-# Image size: 1.73 GB on arm64 with charter-home at 709 MB (toon2, 2026-11-05): /opt/hermes/app 186 MB,
+# Image size: 1.94 GB on arm64 with charter-home at 842 MB (toon2, 2026-11-16; 1.73 GB on the 709 MB bookworm base): /opt/hermes/app 186 MB,
 # /opt/hermes/venv 360 MB, /opt/hermes/python 92 MB, /opt/charter 136 MB.
 ARG BASE=charter-home
 FROM ${BASE}

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -102,6 +102,19 @@ test('a home keeps its files, boot script and host key across a restart, and its
   assert.equal(ssh('a', p, 'id -un').out, 'tenant');
   // A session sees the box env through ~/.ssh/environment.
   assert.equal(ssh('a', p, 'printf %s "$HTTPS_PROXY:$CHARTER_LEASE_ID"').out, 'http://10.0.0.1:9080:abc');
+  // Secrets come in by scp, which speaks SFTP since OpenSSH 9: the box must answer the subsystem.
+  const secret = join(tmp, 'secret.env');
+  writeFileSync(secret, 'TOKEN=1\n');
+  const copy = sh('scp', ['-i', join(tmp, 'a'), '-P', p, '-o', 'StrictHostKeyChecking=no',
+    '-o', `UserKnownHostsFile=${join(tmp, 'known_hosts')}`, '-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR',
+    secret, 'tenant@127.0.0.1:secret.env']);
+  assert.equal(copy.code, 0, `scp refused: ${copy.err}`);
+  assert.equal(ssh('a', p, 'cat ~/secret.env').out, 'TOKEN=1');
+  // What a current binary needs: glibc 2.39 or newer (bookworm's 2.36 could not start OpenHuman's build).
+  const glibc = ssh('a', p, 'ldd --version | head -n 1').out.match(/(\d+)\.(\d+)$/);
+  assert.ok(glibc && (Number(glibc[1]) > 2 || Number(glibc[2]) >= 39), `glibc too old: ${glibc?.[0]}`);
+  // The x402 rent payer is on the PATH and finds its modules on the read-only root.
+  assert.match(ssh('a', p, 'charter-x402 2>&1; true').out, /^usage: charter-x402 open/);
   const set = ssh('a', p, 'echo hi > ~/kept; printf "#!/bin/sh\\ntouch ~/booted\\nexec sleep 3600\\n" > ~/.charter/boot.sh; chmod +x ~/.charter/boot.sh');
   assert.equal(set.code, 0, set.err);
   const before = fingerprint(p);

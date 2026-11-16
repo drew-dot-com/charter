@@ -1,6 +1,9 @@
 # A tenant's home: sshd as the unprivileged tenant on the tenant's own disk, with Node, Python, uv and git.
-# Image size: 709 MB on arm64 (docker image ls, 2026-11-04).
-FROM debian:bookworm-slim
+# Image size: 842 MB on arm64 (docker image ls, 2026-11-16): 732 MB before /opt/x402, 709 MB on bookworm.
+# Debian trixie since 2026-11-16: glibc 2.41, so a binary built on a current distribution starts as it is
+# (OpenHuman's aarch64 build needs 2.39; bookworm has 2.36). BASE=debian:bookworm-slim builds the old box.
+ARG BASE=debian:trixie-slim
+FROM ${BASE}
 ARG TARGETARCH
 ARG NODE_VERSION=22.23.4
 ARG UV_VERSION=0.13.7
@@ -30,6 +33,15 @@ RUN set -eu; arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
   node --version; uv --version
 # A '*' password is not locked: pubkey login must not hinge on a shadow file sshd cannot read.
 RUN useradd -p '*' --uid 10001 --create-home --shell /bin/bash tenant
+# charter-x402: opens and renews a lease with plain x402 calls from a Base wallet (x402-rent.mjs says how).
+# The script sits beside its node_modules, which is how Node finds them; a tenant runs it by its name.
+COPY x402/package.json x402/package-lock.json /opt/x402/
+RUN set -eu; cd /opt/x402; \
+  npm_config_cache=/tmp/npm-cache npm ci --omit=dev --ignore-scripts; \
+  rm -rf /tmp/npm-cache; \
+  ln -s /opt/x402/x402-rent.mjs /usr/local/bin/charter-x402
+COPY x402-rent.mjs /opt/x402/
+RUN chmod 755 /opt/x402/x402-rent.mjs
 COPY home.sh logcap.sh sshd_config /app/
 ENV HOME=/home/tenant
 USER tenant

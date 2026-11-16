@@ -16,4 +16,7 @@ X11Forwarding no
 ClientAliveInterval 60
 # Sessions get the box env from ~/.ssh/environment. sshd already runs as the tenant, so this grants nothing new.
 PermitUserEnvironment yes
+# scp from OpenSSH 9 on speaks SFTP: without a subsystem `scp file tenant@host:` is refused
+# ("subsystem request failed") and only `scp -O` works. In-process, so no second program to find.
+Subsystem sftp internal-sftp
 StrictModes yes
