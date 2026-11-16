@@ -13,7 +13,8 @@ the door and the edge node, and both renters. There are no outside users yet. Fo
 network at all and returns its stdout, stderr and exit code; `charter-job-fetch` fetches up to five
 pages in a headless browser and returns a screenshot and the text of each; `charter-home` is a box
 the renter lives in: a 2 GiB disk kept between leases, SSH in at an onion address on the Anyone
-network, and network out only through the Anyone network; `charter-hermes` is the same home with
+network, and network out only through the Anyone network, with `charter-x402` in it to pay the rent
+from a Base wallet by plain x402 (`jobs/home/x402-rent.mjs`); `charter-hermes` is the same home with
 Hermes Agent and the `charter` CLI preinstalled and a default boot that runs them (the boot pays
 the box's own rent). Why the python job is safe enough for a
 home host: `docs/superpowers/specs/2026-10-17-python-job-design.md`. The home's design:

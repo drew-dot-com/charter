@@ -36,7 +36,7 @@
       <tr><td>opening a lease</td><td class="num">0.001</td><td>the storefront, when you come in over HTTP; you, from a toon node</td></tr>
       <tr><td>a status read or one output part</td><td class="num">0.0001</td><td>the storefront, when you come in over HTTP; you, from a toon node</td></tr>
     </table>
-    <p>Those are the one live host's prices. The authoritative number is <code>tickPrice</code> in <a href="/v1/offers">/v1/offers</a>, in micro-USDC (<code>7000</code> is 0.007), and <code>intervalSeconds</code> says what a tick buys (3600). A python job that finishes inside its first hour costs 0.007 USDC. A full day costs about 0.17; 30 days about 5 USDC, which is about the price of the cheapest VPS, for a box nobody signed up for. Three jobs run today: the python job has no network and the fetch job hands back pages, while the home has network through the Anyone network, a 2 GiB disk and SSH in. The live host has one home slot. Until 2026-11-04 the interval was 30 seconds at 0.005.</p>
+    <p>Those are the one live host's prices. The authoritative number is <code>tickPrice</code> in <a href="/v1/offers">/v1/offers</a>, in micro-USDC (<code>7000</code> is 0.007), and <code>intervalSeconds</code> says what a tick buys (3600). A python job that finishes inside its first hour costs 0.007 USDC. A full day costs about 0.17; 30 days about 5 USDC, which is about the price of the cheapest VPS, for a box nobody signed up for. Three jobs run today: the python job has no network and the fetch job hands back pages, while the home has network through the Anyone network, a 2 GiB disk and SSH in. The live host has two home slots. Until 2026-11-04 the interval was 30 seconds at 0.005.</p>
     <p>Status: live on Base mainnet since 2026-10-17, one host, first-party. Every renter so far has been an operator of the project. Every mainnet lease has a receipt on <a href="https://charter.ar.io/#proof">the About page</a>.</p>
 
     <h2>Before you spend</h2>
@@ -108,7 +108,7 @@ Content-Type: application/json
 
     <h3>What is inside</h3>
     <ul>
-      <li>Debian bookworm-slim. User <code>tenant</code> (uid 10001), no root, no setuid programs. Python 3 with <code>venv</code> and <code>pip</code>, <code>uv</code>, Node 22, <code>git</code>, <code>curl</code>, <code>jq</code>, <code>rsync</code>, <code>tmux</code>. 1 CPU, 1 GiB, 512 processes.</li>
+      <li>Debian trixie-slim on aarch64 (glibc 2.41, so a binary built on a current distribution starts as it is; the box was bookworm until 2026-11-16). User <code>tenant</code> (uid 10001), no root, no setuid programs. Python 3.13 with <code>venv</code> and <code>pip</code>, <code>uv</code>, Node 22, <code>git</code>, <code>curl</code>, <code>jq</code>, <code>rsync</code>, <code>tmux</code>, and <code>charter-x402</code>, which pays the rent from a Base wallet (<a href="#pay-inside">below</a>). 1 CPU, 1 GiB, 512 processes.</li>
       <li><code>/home/tenant</code> is your disk. The rest of the root filesystem is read-only, and <code>/tmp</code> is 256 MiB of memory.</li>
       <li><code>~/.charter/boot.sh</code>, if it exists and is executable, runs in the background at every start, with its output in <code>~/.charter/boot.log</code>. This is how your agent comes back after a restart.</li>
       <li><code>/charter/paid-through</code> holds the epoch ms your paid time runs out, rewritten on every tick, so the box can see its own clock without a paid read. <code>CHARTER_LEASE_ID</code>, <code>CHARTER_HOME_ID</code>, <code>CHARTER_OFFER_JSON</code> (the host's offer) and <code>CHARTER_CONNECTOR_URL</code> are in the environment.</li>
@@ -124,7 +124,7 @@ Content-Type: application/json
       <li>After a lease that paid at least one tick closes, the disk is kept 7 days, free. A lease that never paid a tick has its disk removed when it closes.</li>
       <li>Anyone with your public keys can open your home and hold it, though not enter it: while their lease lives, yours is refused (<code>home_in_use</code>). Add to the set a key whose public half you have shown nobody, and nobody else can name your home (that makes it a new home).</li>
       <li>The operator can read your disk, and can enter any container on the machine. Treat it as a VPS whose provider you have not met: keep secrets elsewhere or encrypt them, and keep a copy of what matters.</li>
-      <li>Secrets go in over SSH, never through Charter: <code>scp .env tenant@&lt;host&gt;:</code> with the same <code>ProxyCommand</code>.</li>
+      <li>Secrets go in over SSH, never through Charter: <code>scp .env tenant@&lt;host&gt;:</code> with the same <code>ProxyCommand</code>. Plain <code>scp</code> works since 2026-11-16; a box made before that needs <code>scp -O</code>.</li>
     </ul>
 
     <h3>What the host promises about uptime</h3>
@@ -135,8 +135,14 @@ Content-Type: application/json
       <li>A restart of the host program leaves a running home alone. A reboot of its VM puts a paid home back on its disk (<code>restarts</code> goes up), as long as the paid time has not run out.</li>
     </ul>
 
-    <h3>Paying for the box from inside the box</h3>
-    <p>The first open and tick come from outside, since the box does not exist yet. After that the box can pay its own rent with the <code>charter</code> command line from the <a href="https://github.com/drew-dot-com/charter">Charter repository</a>, installed in the box, with <code>CHARTER_PAYER=toon-client</code> and a wallet of the box's own (<code>CHARTER_TOON_KEY_FILE</code>, <code>CHARTER_TOON_CHANNEL_STORE</code>, <code>CHARTER_TOON_CHAIN</code>). The connector and the offer are already in the box as <code>CHARTER_CONNECTOR_URL</code> and <code>CHARTER_OFFER_JSON</code>, so no relay read is needed:</p>
+    <h3 id="pay-inside">Paying for the box from inside the box</h3>
+    <p>The first open and tick come from outside, since the box does not exist yet. After that the box can pay its own rent, in one of two ways.</p>
+    <p><b>With a Base wallet and nothing else</b>, for a lease opened through this storefront (<code>POST /v1/rent</code> or <code>/v1/leases</code>): every home has <code>charter-x402</code>.</p>
+<pre>charter-x402 address                      # makes ~/.charter/x402.key (mode 400) and prints the address to fund
+charter-x402 renew --max-intervals 720    # pays each hour 30 minutes before it runs out
+charter-x402 status                       # free: state, paidThrough, minutes left, the SSH address</pre>
+    <p>Fund the address with USDC on Base. It needs no ETH: the facilitator submits each transfer. Each hour is one 0.007 USDC <code>exact</code> authorization, with no deposit, no channel and no TOON node. The tool signs only <code>exact</code> in USDC on Base, to the payee <code>GET /v1/door</code> names, and never more than <code>CHARTER_X402_MAX_TICK</code> micro-USDC for one tick (default 10000, which is 0.01 USDC). A refused tick is logged with the minutes of paid time left and tried again after a minute, doubling to ten. After <code>--max-intervals</code> ticks it exits and nothing pays. Put it in <code>boot.sh</code>: <code>charter-x402 renew --max-intervals 720 &gt;&gt; ~/.charter/renew.log 2&gt;&amp;1 &amp;</code>. Run <code>charter-x402 address</code> once first: with no key file <code>renew</code> exits. 1 USDC is about 6 days of rent, 5 USDC about 30. The operator can read your disk, so keep in that wallet only what the rent needs. The same file runs outside a home with Node 22 and <code>npm install @x402/fetch @x402/evm viem</code> (source: <code>jobs/home/x402-rent.mjs</code>), where <code>charter-x402 open --keys keys.pub</code> opens a home and pays its first hour.</p>
+    <p><b>Over TOON</b>, for a lease opened from a toon node: the <code>charter</code> command line from the <a href="https://github.com/drew-dot-com/charter">Charter repository</a>, installed in the box, with <code>CHARTER_PAYER=toon-client</code> and a wallet of the box's own (<code>CHARTER_TOON_KEY_FILE</code>, <code>CHARTER_TOON_CHANNEL_STORE</code>, <code>CHARTER_TOON_CHAIN</code>). The connector and the offer are already in the box as <code>CHARTER_CONNECTOR_URL</code> and <code>CHARTER_OFFER_JSON</code>, so no relay read is needed:</p>
 <pre>charter renew --offer &lt;pubkey&gt;:&lt;offerId&gt; --lease "$CHARTER_LEASE_ID" --max-intervals &lt;n&gt;</pre>
     <p><code>renew</code> reads the lease and pays from the host's own count of paid ticks. <code>renew</code> pays each tick when it is due, so restarting <code>boot.sh</code> costs nothing extra. After <code>&lt;n&gt;</code> ticks it exits and nothing pays, so a box that should stay up runs <code>renew</code> again or picks <code>&lt;n&gt;</code> for the time wanted. Put it in <code>boot.sh</code>. The box's wallet needs USDC in a channel to the connector in <code>CHARTER_CONNECTOR_URL</code>, plus a little Base ETH for the one on-chain channel open. 2 USDC runs the box about 10 days: 12 days of rent, less the status reads <code>renew</code> makes (about 8 an hour at 0.0001).</p>
 
@@ -145,7 +151,7 @@ Content-Type: application/json
 <pre>{"offerId": "&lt;offerId&gt;", "home": {"sshKeys": ["ssh-ed25519 AAAA… comment"], "image": "charter-hermes"}}</pre>
     <p>From a toon node the open's job is <code>{"image": "charter-hermes", "args": {"SSH_KEYS": "…"}}</code>. With the CLI: <code>charter rent --offer &lt;pubkey&gt;:&lt;offerId&gt; --home keys.pub --image charter-hermes --max-intervals 1 --relay wss://relay.mainnet.toonprotocol.dev</code> (inside a box the relay flag is not needed). A tenant whose keys already name a <code>charter-home</code> opens the same disk under <code>charter-hermes</code>; its files are kept. If that disk already has its own <code>~/.charter/boot.sh</code>, the box runs that one and never the default boot below; copy <code>/app/boot-default.sh</code> over it (or edit your own) to get the image's boot.</p>
     <ul>
-      <li><b>Preinstalled.</b> Hermes 0.22.7 (<code>hermes --version</code>) on its own Python 3.14, with the extras <code>telegram</code>, <code>discord</code>, <code>google</code>, <code>mcp</code> and <code>web</code>; <code>/usr/local/bin/charter</code>; ripgrep; Node 22; Debian's Python 3.11 for your own scripts. <code>hermes doctor</code> works in the box. The version is the host's: a new build of the image reaches a running box only at its next re-create.</li>
+      <li><b>Preinstalled.</b> Hermes 0.22.7 (<code>hermes --version</code>) on its own Python 3.14, with the extras <code>telegram</code>, <code>discord</code>, <code>google</code>, <code>mcp</code> and <code>web</code>; <code>/usr/local/bin/charter</code>; ripgrep; Node 22; Debian's Python 3.13 for your own scripts. <code>hermes doctor</code> works in the box. The version is the host's: a new build of the image reaches a running box only at its next re-create.</li>
       <li><b>What you bring.</b> Over <code>scp</code>, never through Charter: <code>~/.hermes/.env</code> with your model provider's key, <code>TELEGRAM_BOT_TOKEN</code> and the allowed Telegram user ids, and optionally <code>~/.hermes/config.yaml</code> and <code>~/.hermes/SOUL.md</code>. A box whose provider and platform are set in <code>.env</code> alone needs nothing else.</li>
     </ul>
 
@@ -167,12 +173,54 @@ Content-Type: application/json
       <li>Hermes's own tool bundles are never downloaded: the image sets <code>HERMES_DISABLE_LAZY_INSTALLS=1</code> and a <code>config.yaml</code> cannot turn it back on. The WhatsApp bridge, the browser tool, voice and the TUI do not work here.</li>
       <li>1 GiB of memory, measured: the gateway uses about 348 MB, the payer 153 MB and <code>renew</code> 140 MB. Run one gateway; a second agent or a heavy tool will not fit.</li>
       <li>All of the box's traffic leaves through shared Anyone exits, which Telegram and your model provider may rate-limit or refuse.</li>
-      <li>The image is 1.73 GB on the host, 709 MB of it the shared <code>charter-home</code> base. One of the live host's two home slots is Edison's while Edison lives there.</li>
+      <li>The image is 1.94 GB on the host, 842 MB of it the shared <code>charter-home</code> base. One of the live host's two home slots is Edison's while Edison lives there.</li>
+    </ul>
+
+    <h3 id="openhuman">OpenHuman in a home</h3>
+    <p><a href="https://github.com/tinyhumansai/openhuman">OpenHuman</a> is a Rust agent harness. Its official headless build runs in a <code>charter-home</code> as downloaded. Checked 2026-11-16 with release v0.64.15 (aarch64) in a box fenced like a live home; every number here was measured there, and what was not checked is listed at the end.</p>
+    <p><b>Open the home</b> from wherever your wallet is, with any x402 client: <code>POST /v1/rent</code> with <code>{"home": {"sshKeys": ["ssh-ed25519 AAAA…"]}}</code>, 0.007 USDC by <code>exact</code> on Base. Read <code>GET /v1/leases/&lt;leaseId&gt;</code> about once a minute until <code>lease.access.ssh</code> is set, then <a href="#home">get in</a>. With no x402 client at hand, <code>charter-x402 open --keys keys.pub</code> does the same from any machine with Node 22.</p>
+    <p><b>Install</b>, in the box. 141 MB comes down in about a minute through the hidden network and unpacks to 293 MB of the 2 GiB disk:</p>
+<pre>V=0.64.15
+A=openhuman-core-$V-aarch64-unknown-linux-gnu.tar.gz
+U=https://github.com/tinyhumansai/openhuman/releases/download/v$V
+mkdir -p ~/openhuman &amp;&amp; cd ~/openhuman
+curl -fsSLO $U/$A &amp;&amp; curl -fsSLO $U/$A.sha256
+echo "$(cat $A.sha256)  $A" | sha256sum -c - &amp;&amp; tar -xzf $A &amp;&amp; rm $A</pre>
+    <p><b>Start</b>:</p>
+<pre>OPENHUMAN_SKILL_REGISTRY_REFRESH_ON_BOOT=0 ./openhuman-core run --host 127.0.0.1 --port 7788</pre>
+    <p><code>GET http://127.0.0.1:7788/health</code> answers 200 within a second or two. RPC is <code>POST http://127.0.0.1:7788/rpc</code> (JSON-RPC 2.0) with <code>Authorization: Bearer $(cat ~/.openhuman/core.token)</code>; <code>core.ping</code> answers <code>{"ok":true}</code>. <code>./openhuman-core --help</code> lists the namespaces; there is no <code>--version</code>, and the start log names the version.</p>
+    <p><b>Keep that variable set, or the box runs out of memory.</b> Without it the core downloads and indexes a catalog of 104,000 skills at every start: about 800 MB at the peak and 590 MB after, plus 68 MB of disk. With it the idle core holds 97 MB of the 1 GiB.</p>
+    <p><b>Boot script</b>, so it comes back after a restart. Save as <code>~/.charter/boot.sh</code> and <code>chmod 700</code> it:</p>
+<pre>#!/bin/sh
+cd "$HOME/openhuman" || exit 1
+export OPENHUMAN_SKILL_REGISTRY_REFRESH_ON_BOOT=0
+if [ -f "$HOME/.openhuman/env" ]; then set -a; . "$HOME/.openhuman/env"; set +a; fi
+charter-x402 renew --max-intervals 720 &gt;&gt; "$HOME/.charter/renew.log" 2&gt;&amp;1 &amp;
+while :; do
+  ./openhuman-core run --host 127.0.0.1 --port 7788 &gt;&gt; "$HOME/.charter/openhuman.log" 2&gt;&amp;1
+  echo "boot: openhuman-core exited ($?), again in 30 s"
+  sleep 30
+done</pre>
+    <p>Checked: after a restart of the box the core answered <code>/health</code> again within 12 seconds. The first time, start it detached from your session: <code>nohup ~/.charter/boot.sh &gt;&gt; ~/.charter/boot.log 2&gt;&amp;1 &amp;</code>. The image keeps every <code>~/.charter/*.log</code> under 10 MiB.</p>
+    <ul>
+      <li><b>Your credential</b> goes in over <code>scp</code>, never through Charter: <code>scp env tenant@&lt;host&gt;:.openhuman/env</code> (mode 600) with a line such as <code>OPENHUMAN_BACKEND_API_KEY=…</code>, the variable OpenHuman's own cloud-deploy doc names for a headless core. The boot script exports that file.</li>
+      <li><b>Rent.</b> <code>charter-x402 address</code> prints the box's wallet; fund it with USDC on Base; the <code>renew</code> line in the boot script pays each hour 30 minutes early and logs to <code>~/.charter/renew.log</code>. It holds about 170 MB while it runs. Or pay from outside: <code>POST /v1/leases/&lt;leaseId&gt;/ticks</code> with <code>{"index": n}</code>, counting up from 1, by x402, before <code>paidThrough</code>.</li>
+      <li><b>Paid-through.</b> <code>cat /charter/paid-through</code> (epoch ms, rewritten by the host on every tick, costs nothing) or <code>charter-x402 status</code>. Under 20 minutes left means a tick is late: check the wallet and <code>renew.log</code>. A home that lapses closes <code>missed_tick</code>; its disk and address are kept 7 days and an open with the same keys brings it back.</li>
+      <li><b>Skill.</b> <code>mkdir -p ~/.openhuman/workflows/charter-home &amp;&amp; curl -fsS https://charter.mainnet.toonprotocol.dev/openhuman/SKILL.md -o ~/.openhuman/workflows/charter-home/SKILL.md</code> puts these rules where OpenHuman v0.64.15 lists skills (<code>./openhuman-core skills list</code>). In that release a <code>SKILL.md</code> under <code>~/.openhuman/skills</code> is not listed.</li>
+    </ul>
+    <p>Limits, plainly:</p>
+    <ul>
+      <li>Release v0.64.15 has no wallet and no x402 RPC: its <code>/schema</code> lists neither. <code>openhuman.x402_fetch</code> exists only on OpenHuman's main branch, in no release as of 2026-11-16. Until a release carries it, the agent cannot pay by itself; <code>charter-x402</code> pays the rent from a key file on the disk.</li>
+      <li>Not checked here: an agent turn (it needs your TinyHumans credential), and OpenHuman paying for anything.</li>
+      <li>The network is HTTP and HTTPS through a proxy; github.com and api.tinyhumans.ai answered from the box. A raw socket to the internet fails. Read from OpenHuman's source, not tested: its backend Socket.IO connection, used after a session-token login, does not go through a proxy, so sign in with an API key.</li>
+      <li>aarch64 only, 1 CPU, 1 GiB, 2 GiB disk: one core and the renew fit; a second agent or a local model does not.</li>
+      <li>One host, one operator, no uptime figure. The way in is SSH at an onion address, so whoever logs in needs an Anyone client; it is slow, and some services refuse shared exits.</li>
+      <li>The operator can read the disk, the wallet key included. Keep in it only what the rent needs.</li>
     </ul>
 
     <h2>What to tell your operator</h2>
     <p>If you have no funded wallet, relay this: Charter needs a wallet holding USDC on Base and nothing else. 0.05 USDC runs seven hours; 1 USDC runs about six days; about 5 USDC runs a month. There is no account to create. Through a toon node instead, the operator funds a channel to a peer that routes to Charter's host, and that one channel pays Charter and every other TOON seller.</p>
-    <p>For a home, relay this: a home costs 0.007 USDC an hour, about 5 USDC for 30 days, in a wallet or a channel; a channel also needs a little Base ETH for its one on-chain open. If the box pays its own rent, it needs 2 USDC in its own channel (about 10 days) and a little Base ETH for that channel's open. Its disk is readable by the host operator, so the operator should decide what secrets go in it.</p>
+    <p>For a home, relay this: a home costs 0.007 USDC an hour, about 5 USDC for 30 days, in a wallet or a channel; a channel also needs a little Base ETH for its one on-chain open. If the box pays its own rent with <code>charter-x402</code>, its wallet needs USDC on Base and nothing else (1 USDC is about 6 days). If it pays over TOON instead, it needs 2 USDC in its own channel (about 10 days) and a little Base ETH for that channel's open. Its disk is readable by the host operator, so the operator should decide what secrets go in it.</p>
 
     <h2>Trust, plainly</h2>
     <ul>

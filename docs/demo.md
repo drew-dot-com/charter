@@ -521,3 +521,52 @@ ripgrep, and a default `~/.charter/boot.sh` that starts `charter payer`, pays re
   disk went from 213 MiB free to 1419 MiB free (27 % used). Container memory 471 MiB of 1 GiB. The first
   self-paid tick from the image's `renew` landed at about 21:18Z: `renew.log` `paid tick 1`, `/charter/paid-through`
   1793915305889 to 1793918905889 (one hour), paid through the box's `charter payer` on its own channel.
+
+## 15. A trixie home, OpenHuman, and rent by plain x402 (2026-11-16)
+
+Why: OpenHuman's founder agreed to be a tenant, and its official aarch64 build would not start in a
+home (`GLIBC_2.39 not found`; the box was bookworm, glibc 2.36). Branch `feat/openhuman-home`.
+Deploy steps: `docs/deploy-openhuman-home.md`.
+
+- [x] `jobs/home/Dockerfile`: `BASE=debian:trixie-slim` (glibc 2.41, Python 3.13.5, OpenSSH 10.0p2); the
+  image gains `charter-x402` (`jobs/home/x402-rent.mjs` with its modules in `/opt/x402`) and
+  `Subsystem sftp internal-sftp` (a plain `scp` was refused before, on bookworm too: only `scp -O` worked).
+- [x] toon2, new tags only, from the staged tree `~/src/charter-trixie-build`: `charter-home:trixie-1116`
+  `940bf7093299` (842 MB; 709 MB before) and `charter-hermes:trixie-1116` `5cac2d5fffec` (1.94 GB; 1.73
+  before). `latest` untouched. `CHARTER_IMAGE_TESTS=1 node --test` under runsc on real loop disks:
+  `jobs/home/home.test.mjs` 1 of 1 (now also: plain `scp`, glibc 2.39 or newer, `charter-x402` on the
+  PATH), `jobs/hermes/*.test.mjs` 11 of 11. `npm test` on the Mac: all pass, 2 image tests skipped.
+- [x] A staged box (`~/src/charter-trixie-build/stage-box.sh up charter-home:trixie-1116`): the flags of a
+  live home read off `docker inspect` (runsc, 1 CPU, 1 GiB, 512 pids, read-only root, no capabilities, the
+  `charter-home` bridge with the Anyone proxies and DNS, a fresh 2 GiB ext4 loop disk), SSH on
+  `127.0.0.1:22050`. Not a lease: `latest` could not be touched.
+- [x] In it, the official `openhuman-core-0.64.15-aarch64-unknown-linux-gnu.tar.gz`: 141 MB down in 65 s
+  through the fence, SHA-256 equal to the release's `.sha256`, 293 MB unpacked. `ldd` resolves against
+  the box's own libc. `./openhuman-core run --host 127.0.0.1 --port 7788`: `/health` 200 after 1 s,
+  `core.ping` over `/rpc` with the token in `~/.openhuman/core.token` answers `{"ok":true}`.
+  `--version` is not a command (exit 1, "unknown namespace"); the start log names 0.64.15.
+- [x] Memory, the number that matters in 1 GiB: 155 MB at 20 s, then the core downloads and indexes a
+  104,239-entry skill catalog (`hermes-agent.nousresearch.com/docs/api/skills.json`, 40 s through the
+  fence): 803 MB at the peak, 591 MB after, 68 MB on disk. With `OPENHUMAN_SKILL_REGISTRY_REFRESH_ON_BOOT=0`
+  (OpenHuman's own switch, `skills/catalog/ops.rs`): 97 MB, flat over two minutes, with or without the
+  cached catalog on disk. The 11-16 morning test's "140 MB" was read before the catalog landed.
+- [x] `~/.charter/boot.sh` with the core in a restart loop: `docker restart`, `/health` 200 twelve
+  seconds later, pid tree `home.sh` > `boot.sh` > `openhuman-core`.
+- [x] v0.64.15's `/schema` (300 KB) names no `x402` and no `wallet` method: the release is built without
+  the `web3` feature. `openhuman.x402_fetch` is on their main only (PRs 8690 and 8692, 11-12 and 11-13),
+  in no tag. Skills: a `SKILL.md` under `~/.openhuman/workflows/<name>/` is listed by `skills list`;
+  one under `~/.openhuman/skills/` is not.
+- [x] `charter-x402` from inside the box against the live door, with an unfunded wallet so nothing was
+  spent: `address` made `~/.charter/x402.key` (mode 400); an unpaid open through the door from the box
+  (leases `e109e35b…` and `377212e8…`, each closed `missed_tick` unpaid after 90 s, 0.001 each of the
+  door's own spend); `status` read it; `renew --once` reached the facilitator through the proxy and was
+  refused as it should be: `payment refused (insufficient_funds …): does the wallet hold USDC on Base?`.
+  `renew` holds 172 MB.
+- [x] `deploy/host/charter-home-watch.sh` run by hand in toon2 against the live records, state in `/tmp`:
+  `fail lapsed-ac83e7d5…` (Edison's home, closed `missed_tick` 02:48Z, kept until 11-23) and `ok
+  home-e5fbcd39…` (the morning's test home, 37 min left); with the threshold raised to 90 min the second
+  went `fail`, then back to `ok` with a "recovered". Not installed.
+- [ ] Not done, each waits for Drew: `latest` moved to the new builds; a real lease from a fresh key on
+  the new image; one tick paid by `charter-x402` from a funded wallet; the door redeployed with the new
+  `/agents`, `/llms.txt` and `/openhuman/SKILL.md`; the home watch installed.
+

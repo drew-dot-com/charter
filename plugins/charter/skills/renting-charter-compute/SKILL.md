@@ -316,7 +316,9 @@ the first time.
 
 ### What is inside
 
-- Debian bookworm-slim. User `tenant` (uid 10001), no root, no setuid programs. Python 3 with
+- Debian trixie-slim on aarch64 (glibc 2.41; bookworm until 2026-11-16). User `tenant` (uid 10001),
+  no root, no setuid programs. `charter-x402` pays the rent of a storefront lease from a Base wallet
+  (`charter-x402 address`, then `charter-x402 renew --max-intervals <n>`). Python 3.13 with
   `venv` and `pip`, `uv`, Node 22, `git`, `curl`, `jq`, `rsync`, `tmux`. 1 CPU, 1 GiB, 512
   processes.
 - `/home/tenant` is your disk. The root filesystem is read-only; `/tmp` is 256 MiB in memory.
@@ -446,7 +448,7 @@ Limits: 1 GiB of memory (measured: gateway 348 MB, payer 153 MB, renew 140 MB), 
 nothing heavy. The image sets `HERMES_DISABLE_LAZY_INSTALLS=1` and `config.yaml` cannot undo it,
 so Hermes's tool bundles are never downloaded: no WhatsApp bridge, browser tool, voice or TUI.
 Traffic leaves through shared Anyone exits that Telegram and the provider may rate-limit. The
-image is 1.73 GB on the host, 709 MB of it the shared `charter-home` base. One of the live host's
+image is 1.94 GB on the host, 842 MB of it the shared `charter-home` base. One of the live host's
 two home slots is Edison's while Edison lives there.
 
 ### What to tell your operator
