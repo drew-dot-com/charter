@@ -1,0 +1,11 @@
+# systemd --user unit, in the host's VM (toon2), beside charter-host.
+# Install: cp this and charter-home-watch.timer to ~/.config/systemd/user/, copy
+# deploy/host/charter-home-watch.sh and deploy/ops/charter-alert.sh to ~/.local/bin/ (mode 755),
+# write ~/.config/charter/ops.env (mode 600; deploy/host/ops.env.example), then
+#   systemctl --user daemon-reload && systemctl --user enable --now charter-home-watch.timer
+[Unit]
+Description=Charter home watch: alert when a home is about to lapse or has lapsed
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/charter-home-watch.sh --alert
