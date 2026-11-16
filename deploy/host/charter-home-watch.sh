@@ -26,7 +26,9 @@
 #
 # Config: $CHARTER_OPS_ENV (default ~/.config/charter/ops.env), the same keys
 # charter-alert.sh reads (TELEGRAM_BOT_TOKEN_FILE + TELEGRAM_CHAT_ID, or NTFY_URL),
-# plus CHARTER_DATA_DIR and HOME_LAPSE_WARN_MINUTES. State: $CHARTER_OPS_STATE
+# plus CHARTER_DATA_DIR, HOME_LAPSE_WARN_MINUTES and HOME_WATCH_SKIP (homeIds or their
+# first 8 characters, separated by spaces or commas: homes that never alert, such as
+# test leases; a skipped home's state is dropped with no "recovered"). State: $CHARTER_OPS_STATE
 # (default ~/.local/state/charter-ops). Install: deploy/host/charter-home-watch.timer.
 set -uo pipefail
 export PATH="/usr/local/bin:/usr/bin:/bin"
@@ -45,6 +47,7 @@ fi
 DATA="${CHARTER_DATA_DIR:-$HOME/.local/share/charter}"
 WARN="${HOME_LAPSE_WARN_MINUTES:-20}"
 RETENTION_DAYS="${HOME_RETENTION_DAYS:-7}"
+SKIP="$(printf '%s' "${HOME_WATCH_SKIP:-}" | tr ',' ' ')"
 ALERT="${CHARTER_ALERT:-$here/charter-alert.sh}"
 [ -x "$ALERT" ] || ALERT=/usr/local/bin/charter-alert.sh
 alert=0
@@ -70,8 +73,10 @@ forget() { rm -f "$CHARTER_OPS_STATE/$1.state" "$CHARTER_OPS_STATE/$1.state.sinc
 seen=""
 while IFS=$'\t' read -r home lease state reason through paid image closed; do
   [ -n "$home" ] || continue
-  seen="$seen $home"
   short="${home:0:8}"
+  # Skipped homes stay out of $seen, so the cleanup below drops their state silently.
+  case " $SKIP " in *" $home "*|*" $short "*) echo "skip $home on HOME_WATCH_SKIP"; continue ;; esac
+  seen="$seen $home"
   left=$(( (through - now) / 60 ))
   case "$state" in
     running)
