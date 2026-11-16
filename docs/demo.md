@@ -607,7 +607,8 @@ Deploy steps: `docs/deploy-openhuman-home.md`.
   `~/.openhuman/workflows/charter-home/SKILL.md` is listed by `skills list` with no warnings. OpenHuman's own
   `skills install_from_url` fetches the same file but writes it to `~/.openhuman/skills/charter-home/`, which
   v0.64.15 does not list, so the docs keep the `curl` line.
-- [x] Branch `feat/openhuman-home` pushed (Drew's go). Not merged to main.
+- [x] Branch `feat/openhuman-home` pushed, then fast-forwarded into main and pushed at `07996fc` (Drew's go
+  for each); 562 tests pass on main.
 - [ ] Left as it is: the proof home lapses at 20:10Z (the watch will say so) and keeps its disk 7 days,
   with OpenHuman installed in `~/openhuman`. Not checked, and only the tenant can: an OpenHuman agent turn,
   and OpenHuman paying by itself (no release has the wallet).
