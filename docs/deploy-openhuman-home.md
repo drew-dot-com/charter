@@ -5,6 +5,8 @@ Branch `feat/openhuman-home`. Built on toon2 under new tags only, from the stage
 `charter-hermes:trixie-1116` (`5cac2d5fffec`, 1.94 GB, BASE = the new home tag). `latest` is untouched
 until step 2. What was checked and how: `docs/demo.md` section 15.
 
+Done 2026-11-16: steps 1 to 5, between 18:10Z and 18:20Z. The outcome of each is in that section.
+
 What changes for whom:
 
 - A new home starts on Debian trixie (glibc 2.41) with `charter-x402` and a working plain `scp`.

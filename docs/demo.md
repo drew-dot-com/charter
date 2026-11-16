@@ -566,7 +566,48 @@ Deploy steps: `docs/deploy-openhuman-home.md`.
   `fail lapsed-ac83e7d5…` (Edison's home, closed `missed_tick` 02:48Z, kept until 11-23) and `ok
   home-e5fbcd39…` (the morning's test home, 37 min left); with the threshold raised to 90 min the second
   went `fail`, then back to `ok` with a "recovered". Not installed.
-- [ ] Not done, each waits for Drew: `latest` moved to the new builds; a real lease from a fresh key on
-  the new image; one tick paid by `charter-x402` from a funded wallet; the door redeployed with the new
-  `/agents`, `/llms.txt` and `/openhuman/SKILL.md`; the home watch installed.
-
+- [x] Drew's go, 18:10Z. toon2: old images kept as `charter-home:pre-1116` (`1124b47dbde7`) and
+  `charter-hermes:pre-1116` (`0dac66d1e19c`); `latest` now `940bf7093299` and `5cac2d5fffec`. The
+  morning's test home (lease `12f4c805…`, on the old image) was running and was left alone. No host restart.
+- [x] A real home, opened by plain x402 from a fresh SSH key (`~/charter-openhuman-proof/key` in the
+  `toon` VM): `node jobs/home/x402-rent.mjs open --keys proof.pub` on the Mac with the test payer
+  `0xb66E…c715`. Lease `a924dce31c28a1fb7b17e5ba457bb7c0`, tick 0 settled by `exact` in 3 s, Base tx
+  `0xd30fd3db3f375d274a1b216bfcafe4fed6f76d6950ec1afde3899182e411a990` (status 1, 7000 units to the door's
+  payee `0xbD87…2385`), paid through 19:10:06Z. `access.ssh` set within 20 s:
+  `uvqkkwxu…na6id.anyone`. The container runs image `940bf709…` under runsc.
+- [x] In over the onion from the `toon` VM (`ssh -F ~/charter-openhuman-proof/ssh.cfg proof`, the node's
+  Anyone SOCKS port 63244), first try. glibc 2.41, Debian 13.7. The install lines of `/agents#openhuman`
+  as printed: checksum OK, 71 s, 293 MB.
+- [x] The documented `~/.charter/boot.sh` (with `--max-intervals 1`, to hold the spend to one tick),
+  started with `nohup`: `/health` 200, core 96 MB after a minute, `charter-x402 renew` waiting at 160 MB,
+  247 MB of the box's 1024 in use. `docker restart` of the container at 18:13:34Z: 29 s later `boot.sh`,
+  the core (95 MB, `/health` 200) and `renew` were all back, and the log says `boot catalog refresh
+  disabled` at both starts.
+- [x] The served skill file, copied in by a plain `scp` to `~/.openhuman/workflows/charter-home/SKILL.md`:
+  `./openhuman-core skills list` shows `charter-home` with no warnings. `/schema` in the real box: no `x402`.
+- [x] The box paid its own second hour, from inside, by plain x402: the boot script's `charter-x402 renew`
+  woke when the tick came due (18:40:06Z, half an hour before the paid time ended) and paid index 1 at
+  18:40:10Z through the fence. Base tx `0x7e202aa411fba376eb6a2e3e8d24ec93982372d04a5cdf77db1a708541967c58`
+  (status 1, 7000 units `0xb66E…c715` to `0xbD87…2385`), `/charter/paid-through` moved to 20:10:06Z, the
+  door ledger reads 2 renter ticks, 2 host ticks, 0 losses, and `renew` exited at its cap of one. The core
+  was still at 96 MB after 27 minutes. The key in the box was the test payer's, piped in over SSH for this
+  one tick and deleted from the box after it (0.006 USDC left in that wallet). Total spend: 0.014 USDC.
+- [x] Door, 18:18Z (Drew's go): backup `/opt/charter.bak-20261116-preopenhuman`, rsync by checksum (no
+  `--delete`), `compose up -d --build`, healthy in 12 s, `channel ready, headroom 1808600`. Live:
+  `/llms.txt` has `## OpenHuman on Charter`, `/agents` has `#openhuman`, `/openhuman/SKILL.md` answers 200
+  as `text/markdown` (3468 bytes), `/v1/offers` lists the four images and two home slots, a bare
+  `POST /v1/rent` answers 402, the canary is ok. The proof lease kept its state across the restart.
+- [x] Home watch, 18:19Z (Drew's go): `charter-home-watch.sh` and `charter-alert.sh` in `~/.local/bin/` on
+  toon2, `~/.config/charter/ops.env`, a copy of the box's alert bot token at
+  `~/.config/charter/telegram.token` (mode 600), `charter-home-watch.timer` enabled (every 5 minutes).
+  First run: two Telegram messages delivered, "Charter home ac83e7d5 lapsed" (Edison's, since 02:48Z) and
+  "Charter home e5fbcd39 lapses in 5 min" (the morning's test home, which nobody renews); the proof home
+  read `ok`, 50 min left.
+- [x] Skill from the live door, in the real home: the documented `curl` line to
+  `~/.openhuman/workflows/charter-home/SKILL.md` is listed by `skills list` with no warnings. OpenHuman's own
+  `skills install_from_url` fetches the same file but writes it to `~/.openhuman/skills/charter-home/`, which
+  v0.64.15 does not list, so the docs keep the `curl` line.
+- [x] Branch `feat/openhuman-home` pushed (Drew's go). Not merged to main.
+- [ ] Left as it is: the proof home lapses at 20:10Z (the watch will say so) and keeps its disk 7 days,
+  with OpenHuman installed in `~/openhuman`. Not checked, and only the tenant can: an OpenHuman agent turn,
+  and OpenHuman paying by itself (no release has the wallet).
