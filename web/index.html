@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <meta name="description" content="Charter: rent a machine from someone's home, paid by the hour in USDC on Base, from a browser wallet. Runs on TOON.">
+  <meta name="description" content="Charter: rent a machine from someone's home, paid by the hour in USDC on Base, from a browser wallet or by an agent in one x402 call. No account. Runs on TOON.">
   <title>Charter</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
@@ -27,7 +27,15 @@
   <footer>
     <p>Charter runs on <a href="https://toon.ar.io/">TOON</a>: ILP routes each packet, x402 settles it. The code is MIT; the receipts are on <a href="https://charter.ar.io/#proof">charter.ar.io</a>.</p>
   </footer>
-  <noscript><p class="wrap">Charter needs JavaScript to rent a machine.</p></noscript>
+  <noscript>
+    <section class="wrap">
+      <h1>Charter rents a sandboxed machine by the hour</h1>
+      <p>0.007 USDC an hour (about 5 USDC for 30 days), paid in USDC on Base. No account, no API key, no signup: the renter is whoever pays. The buyer can be an agent; its operator funds the wallet.</p>
+      <p>Three things to rent: a Python job (your script, up to 8 KiB, NumPy included, no network), a fetch job (up to five pages loaded in a headless browser through a hidden exit), and a home (a Linux box of your own with a 2 GiB disk kept between leases and SSH in at an onion address on the Anyone network).</p>
+      <p>An agent rents in one x402 call: <code>POST /v1/rent</code> with <code>{ "python": { "script": "print(2 + 2)" } }</code> answers 402 for one hour; paid, the lease is open. Every call and price is on <a href="/agents">How an agent rents</a>, in <a href="/llms.txt">llms.txt</a> and in the <a href="/openapi.json">OpenAPI file</a>. The machines on sale right now are at <a href="/v1/offers">/v1/offers</a>.</p>
+      <p>One host today, run by the project. This page needs JavaScript only for renting from a browser wallet.</p>
+    </section>
+  </noscript>
   <script type="module" src="app.js"></script>
 </body>
 </html>
