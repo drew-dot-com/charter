@@ -1,0 +1,48 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.drew-dot-com/charter",
+  "title": "Charter: rent a machine by the hour",
+  "description": "Agents rent a sandbox, a page fetcher or a Linux home by the hour. USDC on Base, x402, no account.",
+  "websiteUrl": "https://charter.mainnet.toonprotocol.dev/agents",
+  "repository": {
+    "url": "https://github.com/drew-dot-com/charter",
+    "source": "github",
+    "subfolder": "mcp"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "charter-mcp",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "CHARTER_MAX_USDC_PER_HOUR",
+          "description": "The most one interval may cost, in USDC. A dearer price is never signed.",
+          "isRequired": false,
+          "default": "0.01"
+        },
+        {
+          "name": "CHARTER_MAX_USDC_PER_DAY",
+          "description": "The most one UTC day may cost, in USDC.",
+          "isRequired": false,
+          "default": "0.25"
+        },
+        {
+          "name": "CHARTER_MCP_KEY_FILE",
+          "description": "The wallet key file. Made on first run when absent. Default ~/.charter/mcp.key.",
+          "isRequired": false
+        },
+        {
+          "name": "CHARTER_MCP_NO_NEW_KEY",
+          "description": "Set to never make a key: with no key file only the free tools answer.",
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}
