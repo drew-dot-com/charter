@@ -4,7 +4,9 @@ import {
   BASE,
   BASE_USDC,
   CapError,
+  MAX_PARTS,
   MAX_TEXT,
+  PayError,
   cheapestOffer,
   extend,
   lease,
@@ -29,12 +31,18 @@ function book(maxDay = 250_000n): SpendBook & { days: Map<string, bigint> } {
     days,
     maxDay,
     spent: (d) => days.get(d) ?? 0n,
-    add: (d, m) => void days.set(d, (days.get(d) ?? 0n) + m),
+    reserve: (d, m) => {
+      const next = (days.get(d) ?? 0n) + m;
+      if (next > maxDay) return false;
+      days.set(d, next);
+      return true;
+    },
+    release: (d, m) => void days.set(d, (days.get(d) ?? 0n) - m),
   };
 }
 
 interface Fake extends Deps {
-  paid: { path: string; json: any }[];
+  paid: { path: string; json: any; limit: bigint }[];
   gets: string[];
   spend: ReturnType<typeof book>;
 }
@@ -57,8 +65,8 @@ function fake(routes: Record<string, Answer | (() => Answer)>, onPay?: (path: st
     },
     ...(onPay
       ? {
-          pay: async (path: string, json: unknown) => {
-            f.paid.push({ path, json });
+          pay: async (path: string, json: unknown, limit: bigint) => {
+            f.paid.push({ path, json, limit });
             return onPay(path, json);
           },
         }
@@ -111,7 +119,8 @@ test('the cheapest offer that runs the job is picked, and no fitting offer is an
 test('rent pays one interval on the cheapest offer and books it against the day', async () => {
   const d = fake({ '/v1/offers': offers }, rentOk);
   const r = await rent(d, { python: { script: 'print(1)' } });
-  assert.deepEqual(d.paid, [{ path: '/v1/rent', json: { python: { script: 'print(1)' }, offerId: 'host:one' } }]);
+  // The most the call may sign is the price read before it, not the hourly cap.
+  assert.deepEqual(d.paid, [{ path: '/v1/rent', json: { python: { script: 'print(1)' }, offerId: 'host:one' }, limit: 7000n }]);
   assert.equal(r.leaseId, ID);
   assert.equal(r.paidUsdc, '0.007');
   assert.equal(r.tx, '0xabc');
@@ -134,20 +143,38 @@ test('the daily cap refuses the payment that would cross it, and counts only set
   assert.equal(d.paid.length, 2);
 });
 
-test('a refused payment gives its reservation back; one that throws keeps it, since it may have left signed', async () => {
-  const refused = fake({ '/v1/offers': offers }, () => ({ status: 402, body: {}, reason: 'insufficient_funds' }));
-  await assert.rejects(rent(refused, { python: { script: 'x' } }), /payment was refused \(insufficient_funds\).*nothing was charged/s);
-  assert.equal(refused.spend.spent('2026-11-18'), 0n);
+test('the reservation comes back only when nothing was signed or the signed payment was refused with a 402', async () => {
+  const job = { python: { script: 'x' } } as const;
+  const after = async (onPay: () => Answer, expect: RegExp): Promise<bigint> => {
+    const d = fake({ '/v1/offers': offers }, onPay);
+    await assert.rejects(rent(d, job), expect);
+    return d.spend.spent('2026-11-18');
+  };
+  // The facilitator turned a signed payment down: an empty wallet, most often.
+  assert.equal(await after(() => ({ status: 402, body: {}, reason: 'insufficient_funds', signed: true }), /turned down \(insufficient_funds\).*address to fund.*nothing was charged/s), 0n);
+  // A 402 that names a settlement is not a refusal.
+  assert.equal(await after(() => ({ status: 402, body: {}, tx: '0xabc', signed: true }), /turned down/), 7000n);
+  // The door answered without ever being sent a payment.
+  assert.equal(await after(() => ({ status: 409, body: { error: 'busy', leaseId: ID }, signed: false }), /busy.*lapses by itself/s), 0n);
+  // Any other answer after a payment was signed is kept: the door holds an authorization it could settle.
+  assert.equal(await after(() => ({ status: 409, body: { error: 'busy' }, signed: true }), /busy/), 7000n);
+  assert.equal(await after(() => ({ status: 500, body: {}, signed: true }), /status 500/), 7000n);
+  // No answer at all: kept if a payment had left, given back if it had not.
+  assert.equal(await after(() => { throw new PayError('socket hang up', true); }, /socket hang up/), 7000n);
+  assert.equal(await after(() => { throw new PayError('door down', false); }, /door down/), 0n);
+  assert.equal(await after(() => { throw new Error('unknown'); }, /unknown/), 7000n);
+});
 
-  const thrown = fake({ '/v1/offers': offers }, () => {
-    throw new Error('socket hang up');
-  });
-  await assert.rejects(rent(thrown, { python: { script: 'x' } }), /socket hang up/);
-  assert.equal(thrown.spend.spent('2026-11-18'), 7000n);
-
-  const busy = fake({ '/v1/offers': offers }, () => ({ status: 409, body: { error: 'busy', leaseId: ID } }));
-  await assert.rejects(rent(busy, { home: { sshKeys: ['k'] } }), /busy.*lapses by itself/s);
-  assert.equal(busy.spend.spent('2026-11-18'), 0n);
+test('an offer or lease with no usable price is refused before any payment', async () => {
+  for (const tickPrice of ['0', '-5', '7e3', '', undefined, '9'.repeat(13)]) {
+    const offer = { ...OFFER, tickPrice };
+    const r = fake({ '/v1/offers': { status: 200, body: [offer] } }, rentOk);
+    await assert.rejects(rent(r, { python: { script: 'x' } }), /no machine on sale/, String(tickPrice));
+    const e = fake({ [`/v1/leases/${ID}`]: { status: 200, body: { lease: { state: 'running', paidIntervals: 1, paidThrough: 0 }, offer } } }, rentOk);
+    await assert.rejects(extend(e, ID, 3), /no usable price.*nothing was paid/, String(tickPrice));
+    assert.equal(r.paid.length + e.paid.length, 0);
+    assert.equal(e.spend.spent('2026-11-18'), 0n);
+  }
 });
 
 test('with no wallet the paid tools say so and send nothing', async () => {
@@ -218,6 +245,10 @@ test('fetch output drops the screenshots and long text is cut', async () => {
   assert.equal(out.pages[0].jpegBase64, undefined);
   assert.equal(out.pages[1].error, 'timeout');
   await assert.rejects(output(d, ID, 3), /output part 2 answered 404/);
+  // The door's own count is not trusted past a bound.
+  await assert.rejects(output(d, ID, MAX_PARTS + 1), /at most 64 are read/);
+  await assert.rejects(output(d, ID, 1e9), /at most 64 are read/);
+  assert.equal(d.gets.length, 5);
 });
 
 test('extend pays the next intervals in order from the host\'s own count', async () => {
@@ -232,6 +263,7 @@ test('extend pays the next intervals in order from the host\'s own count', async
   );
   const r = await extend(d, ID, 3);
   assert.deepEqual(d.paid.map((p) => p.json.index), [2, 3, 4]);
+  assert.deepEqual(d.paid.map((p) => p.limit), [7000n, 7000n, 7000n]);
   assert.equal(r.hoursPaid, 3);
   assert.equal(r.paidUsdc, '0.021');
   assert.deepEqual(r.txs, ['0x3', '0x4', '0x5']);
@@ -243,7 +275,7 @@ test('extend stops at the first refusal and reports what it did pay', async () =
   let n = 0;
   const d = fake(
     { [`/v1/leases/${ID}`]: { status: 200, body: { lease: { state: 'running', paidIntervals: 1, paidThrough: 0 }, offer: OFFER } } },
-    () => (++n === 1 ? { status: 200, body: { paidThrough: Date.UTC(2026, 10, 18, 14) } } : { status: 402, body: {}, reason: 'insufficient_funds' }),
+    () => (++n === 1 ? { status: 200, body: { paidThrough: Date.UTC(2026, 10, 18, 14) } } : { status: 402, body: {}, reason: 'insufficient_funds', signed: true }),
   );
   const r = await extend(d, ID, 5);
   assert.equal(r.hoursPaid, 1);

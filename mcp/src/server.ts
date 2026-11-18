@@ -8,7 +8,7 @@
  * stdout belongs to the MCP transport; every log line here goes to stderr.
  */
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -22,7 +22,9 @@ import { z } from 'zod';
 import {
   BASE,
   BASE_USDC,
+  CapError,
   DEFAULT_DOOR,
+  PayError,
   extend,
   lease,
   microToUsdc,
@@ -65,40 +67,104 @@ export function optionsFromEnv(env: NodeJS.ProcessEnv): Options {
 }
 
 const KEY = /^0x[0-9a-fA-F]{64}$/;
+const GET_TIMEOUT_MS = 30_000;
+/** A rent waits for the host to open the lease over an onion hop, which has taken 15 s and more. */
+const PAY_TIMEOUT_MS = 90_000;
 
 /** The key in the file; made first (mode 600, never overwriting) when the file is absent and `make` is set. */
 export function loadKey(file: string, make: boolean): `0x${string}` | undefined {
   if (!existsSync(file)) {
     if (!make) return undefined;
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-    writeFileSync(file, `0x${randomBytes(32).toString('hex')}\n`, { mode: 0o600, flag: 'wx' });
+    try {
+      writeFileSync(file, `0x${randomBytes(32).toString('hex')}\n`, { mode: 0o600, flag: 'wx' });
+    } catch (e) {
+      // Another server started at the same moment and made it first: use that one.
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+    }
   }
   const key = readFileSync(file, 'utf8').trim();
   if (!KEY.test(key)) throw new Error(`${file} must hold one private key: 0x and 64 hex digits`);
   return key as `0x${string}`;
 }
 
-/** The day's spend in one small JSON file, rewritten whole on every change. An unreadable file counts as nothing spent. */
-export function fileSpendBook(file: string, maxDay: bigint): SpendBook {
-  const read = (): Record<string, string> => {
+const LOCK_WAIT_MS = 3_000;
+const LOCK_STALE_MS = 10_000;
+
+/** Runs `fn` holding `<file>.lock` (a directory, so making it is atomic), since two MCP clients may run two servers on one book. */
+function locked<T>(file: string, fn: () => T): T {
+  const lock = `${file}.lock`;
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  const until = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
     try {
-      const o = JSON.parse(readFileSync(file, 'utf8'));
-      return o && typeof o === 'object' ? o : {};
-    } catch {
-      return {};
+      mkdirSync(lock);
+      break;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      try {
+        // A server killed while holding it must not block the book for good.
+        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) rmdirSync(lock);
+      } catch {
+        // Gone already: try again.
+      }
+      if (Date.now() > until) throw new CapError(`the spend book ${file} is locked by another server; nothing was paid. Try again.`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
     }
+  }
+  try {
+    return fn();
+  } finally {
+    try {
+      rmdirSync(lock);
+    } catch {
+      // Removed as stale by another server: nothing to undo.
+    }
+  }
+}
+
+/**
+ * The day's spend in one small JSON file, changed only under a lock and rewritten whole. A file that
+ * exists but cannot be read is an error, never "nothing spent": a damaged book must not reopen the cap.
+ */
+export function fileSpendBook(file: string, maxDay: bigint): SpendBook {
+  const read = (): Record<string, unknown> => {
+    let raw: string;
+    try {
+      raw = readFileSync(file, 'utf8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return {};
+      throw e;
+    }
+    let o: unknown;
+    try {
+      o = JSON.parse(raw);
+    } catch {
+      o = undefined;
+    }
+    if (!o || typeof o !== 'object' || Array.isArray(o) || Object.values(o).some((v) => typeof v !== 'string' || !/^\d{1,15}$/.test(v))) {
+      throw new CapError(`the spend book ${file} is damaged, so today's spend is unknown and nothing is paid. Delete the file to start the day's count again.`);
+    }
+    return o as Record<string, unknown>;
   };
-  const of = (o: Record<string, string>, d: string): bigint => (/^\d+$/.test(String(o[d])) ? BigInt(o[d]!) : 0n);
+  const of = (o: Record<string, unknown>, d: string): bigint => (typeof o[d] === 'string' ? BigInt(o[d] as string) : 0n);
+  const write = (d: string, total: bigint): void => {
+    // Only today is kept: yesterday's total bounds nothing.
+    const tmp = `${file}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ [d]: (total < 0n ? 0n : total).toString() }), { mode: 0o600 });
+    renameSync(tmp, file);
+  };
   return {
     maxDay,
     spent: (d) => of(read(), d),
-    add: (d, micro) => {
-      const next = of(read(), d) + micro;
-      mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-      // Only today is kept: yesterday's total bounds nothing.
-      writeFileSync(`${file}.tmp`, JSON.stringify({ [d]: (next < 0n ? 0n : next).toString() }), { mode: 0o600 });
-      renameSync(`${file}.tmp`, file);
-    },
+    reserve: (d, micro) =>
+      locked(file, () => {
+        const next = of(read(), d) + micro;
+        if (micro < 0n || next > maxDay) return false;
+        write(d, next);
+        return true;
+      }),
+    release: (d, micro) => locked(file, () => write(d, of(read(), d) - micro)),
   };
 }
 
@@ -127,35 +193,62 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
   const account = key ? privateKeyToAccount(key) : undefined;
   const spend = fileSpendBook(o.spendFile, o.maxDay);
 
+  const origin = new URL(o.door).origin;
+  const agent = { 'user-agent': `charter-mcp/${VERSION}` };
+
+  /**
+   * Every request this server makes: to the door's own origin only, never following a redirect (a
+   * redirect could carry a signed payment to another host), and never waiting for ever.
+   */
+  const guarded = (ms: number, onSend?: (signed: boolean) => void): typeof fetch =>
+    (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const req = new Request(input, init);
+      if (new URL(req.url).origin !== origin) throw new Error(`refusing a request to ${new URL(req.url).origin}: this server talks to ${origin} only`);
+      onSend?.(req.headers.has('payment-signature') || req.headers.has('x-payment'));
+      return fetchFn(new Request(req, { redirect: 'error', signal: AbortSignal.timeout(ms) }));
+    }) as typeof fetch;
+
   const get = async (path: string): Promise<Answer> => {
-    const res = await fetchFn(`${o.door}${path}`, { headers: { 'user-agent': `charter-mcp/${VERSION}` } });
+    const res = await guarded(GET_TIMEOUT_MS)(`${o.door}${path}`, { headers: agent });
     return { status: res.status, body: await body(res) };
   };
 
-  // Built on first use: where payments go is read from the door once, and nothing is signed until it is known.
-  let paid: Promise<typeof fetch> | undefined;
-  const paidFetch = (): Promise<typeof fetch> =>
-    (paid ??= (async () => {
+  // Where payments go is read from the door once, and nothing is signed until it is known.
+  let payee: Promise<string> | undefined;
+  const payTo = (): Promise<string> =>
+    (payee ??= (async () => {
       const info = await get('/v1/door');
       if (info.status !== 200 || !/^0x[0-9a-fA-F]{40}$/.test(info.body?.payTo ?? '') || info.body.network !== BASE) {
         throw new Error(`GET /v1/door answered ${info.status}: cannot tell where payments go, nothing signed`);
       }
-      return wrapFetchWithPaymentFromConfig(fetchFn, {
-        schemes: [{ network: BASE, client: new ExactEvmScheme(account!) }],
-        policies: [onlyDoorExact(info.body.payTo, o.maxHour)],
-      }) as typeof fetch;
+      return info.body.payTo as string;
     })().catch((e) => {
-      paid = undefined;
+      payee = undefined;
       throw e;
     }));
 
-  const pay = async (path: string, json: unknown): Promise<Answer> => {
-    const res = await (await paidFetch())(`${o.door}${path}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'user-agent': `charter-mcp/${VERSION}` },
-      body: JSON.stringify(json),
-    });
-    const out: Answer = { status: res.status, body: await body(res) };
+  const pay = async (path: string, json: unknown, limit: bigint): Promise<Answer> => {
+    let signed = false;
+    let res: Response;
+    try {
+      const to = await payTo();
+      // One client a call, so each signs at most what this call reserved (and never over the hourly cap).
+      const paidFetch = wrapFetchWithPaymentFromConfig(
+        guarded(PAY_TIMEOUT_MS, (s) => void (signed ||= s)),
+        {
+          schemes: [{ network: BASE, client: new ExactEvmScheme(account!) }],
+          policies: [onlyDoorExact(to, limit < o.maxHour ? limit : o.maxHour)],
+        },
+      );
+      res = await paidFetch(`${o.door}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', ...agent }, body: JSON.stringify(json) });
+    } catch (e) {
+      log(`paid call ${path} failed ${signed ? 'after' : 'before'} a payment was signed: ${String((e as Error)?.message ?? e).slice(0, 160)}`);
+      throw new PayError(
+        `${String((e as Error)?.message ?? e).slice(0, 300)}. ${signed ? 'A signed payment had left, so it is counted against the day in case it settles.' : 'No payment was signed; nothing was charged.'}`,
+        signed,
+      );
+    }
+    const out: Answer = { status: res.status, body: await body(res), signed };
     const receipt = res.headers.get('payment-response');
     if (receipt) {
       try {
@@ -275,14 +368,14 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
       description: `PAID. ${cost} Runs your Python 3 script once in a sandbox on a rented machine and returns its stdout, stderr and exit code. NumPy is installed; there is no network and no other package; the script is at most 8 KiB. Most scripts finish in seconds. If it is still running when the wait ends, the leaseId comes back and charter_lease collects the output for free.`,
       inputSchema: {
         script: z.string().min(1).max(8192).describe('the Python 3 source, at most 8192 bytes'),
-        waitSeconds: z.number().int().min(10).max(240).optional().describe('how long to wait for the job before handing back the leaseId (default 90)'),
+        waitSeconds: z.number().int().min(10).max(240).optional().describe('how long to wait for the job before handing back the leaseId (default 40, under most clients\' 60 s tool timeout)'),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     async ({ script, waitSeconds }) => {
       try {
         if (Buffer.byteLength(script, 'utf8') > 8192) throw new Error('the script is over 8192 bytes; nothing was paid');
-        return text(await runJob(deps, { python: { script } }, waitSeconds ?? 90));
+        return text(await runJob(deps, { python: { script } }, waitSeconds ?? 40));
       } catch (e) {
         return fail(e);
       }
@@ -296,13 +389,13 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
       description: `PAID. ${cost} Loads up to five http or https pages in a headless browser on a rented machine, through an exit on the Anyone network so the site sees neither you nor the host, and returns each page's text. Useful when a page needs JavaScript or your own address is refused. Slow (a page can take a minute) and some sites refuse shared exits. If it is still running when the wait ends, charter_lease collects the output for free.`,
       inputSchema: {
         urls: z.array(z.string().url().regex(/^https?:\/\//i)).min(1).max(5).describe('one to five http or https URLs'),
-        waitSeconds: z.number().int().min(10).max(240).optional().describe('how long to wait for the job before handing back the leaseId (default 180)'),
+        waitSeconds: z.number().int().min(10).max(240).optional().describe('how long to wait for the job before handing back the leaseId (default 40, under most clients\' 60 s tool timeout; pages often need longer, so expect to collect with charter_lease)'),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     async ({ urls, waitSeconds }) => {
       try {
-        return text(await runJob(deps, { urls }, waitSeconds ?? 180));
+        return text(await runJob(deps, { urls }, waitSeconds ?? 40));
       } catch (e) {
         return fail(e);
       }

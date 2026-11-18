@@ -35,7 +35,7 @@ Node 22 or newer.
 3. Send USDC on Base to that address. No ETH is needed: the facilitator submits each transfer. 0.05 USDC is enough for seven test runs; 1 USDC is about 6 days of a home.
 4. Ask the agent to run something: "run `print(2 + 2)` on Charter".
 
-Until the wallet is funded the free tools work and the paid ones answer with the reason and the address to fund.
+Until the wallet is funded the free tools work and the paid ones answer with the reason; `charter_wallet` gives the address to fund.
 
 ## Tools
 
@@ -49,14 +49,18 @@ Until the wallet is funded the free tools work and the paid ones answer with the
 | `charter_lease` | free | a lease's state, paid time left, SSH address, finished output |
 | `charter_extend` | one interval each | pays the next 1 to 24 intervals of a running lease |
 
+A job tool waits up to 40 seconds by default, under most clients' tool timeout. A job still running then hands back its `leaseId`, and `charter_lease` collects the output for free.
+
 ## What bounds the money
 
 - The server signs only `exact` payments in USDC on Base, to the payee Charter's door names at `GET /v1/door`. Anything else a 402 offers is never signed.
+- It reads the price first and never signs for more than that price, whatever the 402 then asks.
 - `CHARTER_MAX_USDC_PER_HOUR` (default `0.01`): a dearer interval is never signed.
-- `CHARTER_MAX_USDC_PER_DAY` (default `0.25`): the most one UTC day may cost, kept in `~/.charter/mcp-spend.json` so a restart does not reset it.
-- A refused call never settles, so nothing is charged for it. A call that fails mid-flight is counted as spent, so the cap errs low.
+- `CHARTER_MAX_USDC_PER_DAY` (default `0.25`): the most one UTC day may cost. The count is kept in `~/.charter/mcp-spend.json`, under a lock, so a restart or a second client on the same machine does not reset it. A damaged file stops payments until you delete it.
+- A call is counted against the day unless no payment was signed, or the signed payment was turned down with a 402 (an empty wallet, most often). So a call refused as `busy` after signing is counted although it never settles: the count errs toward having spent.
+- It talks to the door's own address only, follows no redirect, and gives up on a request after 30 seconds (90 for a paid one).
 - Every paid tool's description starts with `PAID` and names the price, so a client that asks before a tool call shows it.
-- Keep only what the rent needs in this wallet. The key is a plain file.
+- What the caps do not do: bind a door that lies about a refusal. Against that the bound is the wallet's balance. Keep only what the rent needs in this wallet; the key is a plain file.
 
 Other settings: `CHARTER_MCP_KEY_FILE`, `CHARTER_MCP_SPEND_FILE`, `CHARTER_MCP_NO_NEW_KEY` (never make a key; paid tools stay off without one), `CHARTER_BASE_RPC`, `CHARTER_DOOR_URL`.
 

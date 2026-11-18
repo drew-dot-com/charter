@@ -5,8 +5,13 @@
  * The money rules, all in this file:
  *  - only `exact` in USDC on Base, to the payee the door itself names, is ever signed (onlyDoorExact);
  *  - one hour never costs more than `maxHour` (a dearer 402 is not signed);
- *  - one UTC day never costs more than `maxDay` (reserved before a payment, given back only when the
- *    door answers a non-200, since that never settles; a call that throws keeps its reservation).
+ *  - a payment is never signed for more than the price read before the call (the reservation);
+ *  - one UTC day never costs more than `maxDay`. The amount is reserved before a payment and given
+ *    back only when no payment was signed, or when the signed payment was refused with a 402. Any other
+ *    answer after signing keeps the reservation, so the book errs toward having spent.
+ *
+ * What the caps do not do: bind a door that lies. A door that answers 402 and settles anyway is bounded
+ * by the wallet's balance, not by this book. Keep the wallet small.
  */
 
 export const BASE = 'eip155:8453';
@@ -16,6 +21,9 @@ export const LEASE_ID = /^[0-9a-f]{32}$/;
 
 /** Longest text handed back for one page or one stream, so a tool answer stays readable. */
 export const MAX_TEXT = 20_000;
+/** The most output parts and bytes read for one lease, whatever the door says there are. */
+export const MAX_PARTS = 64;
+export const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 /** Between two looks at a lease: the door caches a status for 5 s and each fresh look costs it a paid read. */
 export const POLL_MS = 5_000;
 
@@ -26,13 +34,29 @@ export interface Answer {
   tx?: string;
   /** Why a payment was refused, when the door or facilitator says. */
   reason?: string;
+  /** A paid call only: whether a signed payment left this machine. Absent counts as signed. */
+  signed?: boolean;
+}
+
+/** A paid call that failed without an answer. `signed` says whether a signed payment had already left. */
+export class PayError extends Error {
+  constructor(
+    message: string,
+    readonly signed: boolean,
+  ) {
+    super(message);
+    this.name = 'PayError';
+  }
 }
 
 export interface Deps {
   /** A free read of the door. */
   get(path: string): Promise<Answer>;
-  /** A paid POST. Throws when the policy left nothing to sign. Undefined when the server has no wallet. */
-  pay?: (path: string, json: unknown) => Promise<Answer>;
+  /**
+   * A paid POST that signs at most `limit` micro-USDC. Throws PayError when no answer came back.
+   * Undefined when the server has no wallet.
+   */
+  pay?: (path: string, json: unknown, limit: bigint) => Promise<Answer>;
   now(): number;
   sleep(ms: number): Promise<void>;
   spend: SpendBook;
@@ -82,7 +106,10 @@ export function onlyDoorExact(payTo: string, maxHour: bigint) {
 export interface SpendBook {
   /** Micro-USDC spent on `day` (YYYY-MM-DD). */
   spent(day: string): bigint;
-  add(day: string, micro: bigint): void;
+  /** Adds `micro` to the day if the total stays within `maxDay`, as one step. False, and nothing added, when it would not. */
+  reserve(day: string, micro: bigint): boolean;
+  /** Gives a reservation back. */
+  release(day: string, micro: bigint): void;
   readonly maxDay: bigint;
 }
 
@@ -90,20 +117,32 @@ export class CapError extends Error {}
 
 const day = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
 
-/** Reserves `micro` against today's cap, runs `pay`, and gives the reservation back unless the door answered 200. */
-async function capped(d: Deps, micro: bigint, pay: () => Promise<Answer>): Promise<Answer> {
+/** A price as the door states it: whole micro-USDC, more than nothing. Anything else is refused before a payment. */
+export function price(raw: unknown): bigint {
+  const t = String(raw ?? '');
+  if (!/^\d{1,12}$/.test(t) || BigInt(t) <= 0n) throw new Error(`the door states no usable price (${JSON.stringify(raw)}); nothing was paid`);
+  return BigInt(t);
+}
+
+/**
+ * Reserves `micro` against today's cap, then runs `pay` with `micro` as the most it may sign. The
+ * reservation is given back only when nothing was signed, or the signed payment was refused with a 402.
+ */
+async function capped(d: Deps, micro: bigint, pay: (limit: bigint) => Promise<Answer>): Promise<Answer> {
   const today = day(d.now());
-  const spent = d.spend.spent(today);
-  if (spent + micro > d.spend.maxDay) {
+  if (!d.spend.reserve(today, micro)) {
     throw new CapError(
-      `the day's cap is reached: ${microToUsdc(spent)} of ${microToUsdc(d.spend.maxDay)} USDC spent today (UTC) and this call costs ${microToUsdc(micro)}. The operator raises it with CHARTER_MAX_USDC_PER_DAY.`,
+      `the day's cap is reached: ${microToUsdc(d.spend.spent(today))} of ${microToUsdc(d.spend.maxDay)} USDC spent today (UTC) and this call costs ${microToUsdc(micro)}. The operator raises it with CHARTER_MAX_USDC_PER_DAY.`,
     );
   }
-  d.spend.add(today, micro);
-  // A throw keeps the reservation: the request may have left with a signed payment, so the book errs
-  // toward having spent. Only the door's own non-200 answer, which never settles, gives it back.
-  const r = await pay();
-  if (r.status !== 200) d.spend.add(today, -micro);
+  let r: Answer;
+  try {
+    r = await pay(micro);
+  } catch (e) {
+    if (e instanceof PayError && !e.signed) d.spend.release(today, micro);
+    throw e;
+  }
+  if (r.status !== 200 && (r.signed === false || (r.status === 402 && !r.tx))) d.spend.release(today, micro);
   return r;
 }
 
@@ -128,7 +167,7 @@ export async function cheapestOffer(d: Pick<Deps, 'get'>, job: Job): Promise<Off
   const r = await d.get('/v1/offers');
   if (r.status !== 200 || !Array.isArray(r.body)) throw new Error(`GET /v1/offers answered ${r.status}: cannot read the price, nothing paid`);
   const image = IMAGE_OF(job);
-  const fits = (r.body as Offer[]).filter((o) => Array.isArray(o.images) && o.images.includes(image) && /^\d+$/.test(String(o.tickPrice)));
+  const fits = (r.body as Offer[]).filter((o) => Array.isArray(o?.images) && o.images.includes(image) && /^\d{1,12}$/.test(String(o.tickPrice)) && BigInt(o.tickPrice) > 0n);
   if (fits.length === 0) throw new Error(`no machine on sale runs ${image} right now (GET /v1/offers lists ${r.body.length}). Try again later; nothing was paid.`);
   return fits.reduce((a, b) => (BigInt(b.tickPrice) < BigInt(a.tickPrice) ? b : a));
 }
@@ -142,14 +181,14 @@ function refusal(what: string, r: Answer): Error {
   const error = typeof r.body?.error === 'string' ? r.body.error : `status ${r.status}`;
   const why =
     r.status === 402
-      ? `the payment was refused${r.reason ? ` (${r.reason})` : ''}. Most often the wallet holds too little USDC on Base: call charter_wallet`
+      ? `the wallet's payment was turned down${r.reason ? ` (${r.reason})` : ''}. Most often the wallet holds too little USDC on Base: call charter_wallet for the balance and the address to fund`
       : error === 'busy'
         ? 'the machine is busy (every slot is taken). Try again in a few minutes'
         : error === 'payer_blocked'
           ? 'this wallet is blocked by the door because an earlier payment from it failed to settle'
           : error;
   const unpaid = r.body?.leaseId ? ` The lease ${r.body.leaseId} exists unpaid and lapses by itself in 90 seconds.` : '';
-  return new Error(`${what} refused: ${why}. A refused call never settles, so nothing was charged.${unpaid}`);
+  return new Error(`${what} was refused: ${why}. A refused call never settles, so nothing was charged.${unpaid}`);
 }
 
 export interface Rented {
@@ -164,16 +203,16 @@ export interface Rented {
 export async function rent(d: Deps, job: Job): Promise<Rented> {
   const pay = needWallet(d);
   const offer = await cheapestOffer(d, job);
-  const price = BigInt(offer.tickPrice);
-  if (price > d.maxHour) {
-    throw new CapError(`one interval costs ${microToUsdc(price)} USDC, over this server's cap of ${microToUsdc(d.maxHour)} (CHARTER_MAX_USDC_PER_HOUR). Nothing was paid.`);
+  const cost = price(offer.tickPrice);
+  if (cost > d.maxHour) {
+    throw new CapError(`one interval costs ${microToUsdc(cost)} USDC, over this server's cap of ${microToUsdc(d.maxHour)} (CHARTER_MAX_USDC_PER_HOUR). Nothing was paid.`);
   }
-  const r = await capped(d, price, () => pay('/v1/rent', { ...job, offerId: offer.offerId }));
+  const r = await capped(d, cost, (limit) => pay('/v1/rent', { ...job, offerId: offer.offerId }, limit));
   if (r.status !== 200 || !LEASE_ID.test(String(r.body?.leaseId))) throw refusal('the rent', r);
   return {
     leaseId: r.body.leaseId,
     offerId: offer.offerId,
-    paidUsdc: microToUsdc(price),
+    paidUsdc: microToUsdc(cost),
     paidThrough: iso(r.body.paidThrough),
     ...(r.tx ? { tx: r.tx } : {}),
   };
@@ -225,7 +264,7 @@ export async function lease(d: Pick<Deps, 'get' | 'now'>, leaseId: string): Prom
           },
         }
       : {}),
-    outputParts: Number(l.outputParts ?? 0),
+    outputParts: Number.isSafeInteger(l.outputParts) && l.outputParts > 0 ? l.outputParts : 0,
     ...(r.body.stopped ? { note: 'stopped by the door' } : {}),
   };
   return { view, raw: r.body };
@@ -233,11 +272,16 @@ export async function lease(d: Pick<Deps, 'get' | 'now'>, leaseId: string): Prom
 
 /** A finished job's output, decoded: a python job's streams and exit code, or a fetch job's pages without the screenshots. */
 export async function output(d: Pick<Deps, 'get'>, leaseId: string, parts: number): Promise<unknown> {
+  if (!Number.isSafeInteger(parts) || parts < 1 || parts > MAX_PARTS) throw new Error(`the lease names ${parts} output parts; at most ${MAX_PARTS} are read`);
   const chunks: Buffer[] = [];
+  let bytes = 0;
   for (let n = 0; n < parts; n++) {
     const r = await d.get(`/v1/leases/${leaseId}/output/${n}`);
     if (r.status !== 200 || typeof r.body?.data !== 'string') throw new Error(`output part ${n} answered ${r.status}`);
-    chunks.push(Buffer.from(r.body.data, 'base64'));
+    const chunk = Buffer.from(r.body.data, 'base64');
+    bytes += chunk.length;
+    if (bytes > MAX_OUTPUT_BYTES) throw new Error(`the output is over ${MAX_OUTPUT_BYTES} bytes; not read further`);
+    chunks.push(chunk);
   }
   const text = Buffer.concat(chunks).toString('utf8');
   let out: any;
@@ -317,8 +361,8 @@ export async function extend(d: Deps, leaseId: string, hours: number): Promise<E
   if (first.view.state === 'done' || first.view.state === 'closed') {
     throw new Error(`the lease is over (${first.view.closedReason ?? first.view.state}); nothing to extend and nothing was paid. A home opens again with the same keys.`);
   }
-  const price = BigInt(String(first.raw.offer?.tickPrice ?? ''));
-  if (price > d.maxHour) throw new CapError(`one interval costs ${microToUsdc(price)} USDC, over this server's cap of ${microToUsdc(d.maxHour)}. Nothing was paid.`);
+  const cost = price(first.raw.offer?.tickPrice);
+  if (cost > d.maxHour) throw new CapError(`one interval costs ${microToUsdc(cost)} USDC, over this server's cap of ${microToUsdc(d.maxHour)}. Nothing was paid.`);
   let index = first.view.paidIntervals;
   let paid = 0;
   let through = first.view.paidThrough;
@@ -327,7 +371,7 @@ export async function extend(d: Deps, leaseId: string, hours: number): Promise<E
   for (; paid < hours; paid++, index++) {
     let r: Answer;
     try {
-      r = await capped(d, price, () => pay(`/v1/leases/${leaseId}/ticks`, { index }));
+      r = await capped(d, cost, (limit) => pay(`/v1/leases/${leaseId}/ticks`, { index }, limit));
     } catch (e) {
       if (paid === 0) throw e;
       stopped = (e as Error).message;
@@ -341,5 +385,5 @@ export async function extend(d: Deps, leaseId: string, hours: number): Promise<E
     if (r.tx) txs.push(r.tx);
     through = iso(r.body?.paidThrough);
   }
-  return { leaseId, hoursPaid: paid, paidUsdc: microToUsdc(price * BigInt(paid)), paidThrough: through, txs, ...(stopped ? { stopped } : {}) };
+  return { leaseId, hoursPaid: paid, paidUsdc: microToUsdc(cost * BigInt(paid)), paidThrough: through, txs, ...(stopped ? { stopped } : {}) };
 }
