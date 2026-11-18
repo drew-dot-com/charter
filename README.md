@@ -44,6 +44,8 @@ channel. Each interval after that is signed by the page, silently. What you do n
 when the lease ends.
 
 From an agent over HTTP, with an x402 client and USDC on Base: https://charter.mainnet.toonprotocol.dev/agents
+
+From any MCP client (Claude Code, Claude Desktop, Cursor and others): `claude mcp add charter -- npx -y charter-mcp`. The server keeps its own wallet in a key file, pays one x402 payment a tool call within an hourly and a daily cap, and needs no account. Source and the full tool list: [mcp/](mcp/).
 walks through every call and every price; https://charter.mainnet.toonprotocol.dev/llms.txt is the
 summary a model reads first. Only the tick is paid over x402; the door pays the host for the open and
 the reads. `scripts/bazaar-tick.mjs` is a worked example: one python lease, one tick paid with

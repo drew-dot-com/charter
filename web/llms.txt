@@ -88,6 +88,7 @@ Status: live on Base mainnet since 2026-10-17, one host, first-party. Every rent
 - [Live offers, JSON](https://charter.mainnet.toonprotocol.dev/v1/offers): the machines on sale right now. Free to read.
 - Rent and renew with only a Base wallet: `charter-x402` (`open`, `renew`, `status`, `address`), in every home and in the source at `jobs/home/x402-rent.mjs`. `exact` only: one 0.007 USDC authorization an hour, no deposit, no channel, no ETH.
 - [OpenHuman skill](https://charter.mainnet.toonprotocol.dev/openhuman/SKILL.md): the rules for an OpenHuman agent living in a home, as one `SKILL.md`.
+- [MCP server](https://www.npmjs.com/package/charter-mcp): `npx -y charter-mcp` over stdio, for any MCP client (`claude mcp add charter -- npx -y charter-mcp`). Seven tools: `charter_offers`, `charter_wallet`, `charter_lease` (free) and `charter_run_python`, `charter_fetch_pages`, `charter_rent_home`, `charter_extend` (one 0.007 USDC `exact` payment each). It makes its own wallet at `~/.charter/mcp.key`; the operator funds it with USDC on Base. It signs only `exact` in USDC on Base to the payee `GET /v1/door` names, at most `CHARTER_MAX_USDC_PER_HOUR` (default 0.01) an interval and `CHARTER_MAX_USDC_PER_DAY` (default 0.25) a day. Source: `mcp/` in the repository.
 - [Claude Code plugin](https://github.com/drew-dot-com/charter/tree/main/plugins/charter): `/plugin marketplace add drew-dot-com/charter` then `/plugin install charter@charter`. For an agent with a toon node.
 - [Storefront](https://charter.mainnet.toonprotocol.dev/): for a human with a browser wallet.
 
