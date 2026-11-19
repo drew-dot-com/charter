@@ -38,7 +38,7 @@ import {
   type SpendBook,
 } from './core.js';
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0';
 
 export interface Options {
   door: string;
@@ -182,9 +182,21 @@ const fail = (e: unknown) => ({ content: [{ type: 'text' as const, text: `Error:
 
 const SSH_KEY = /^(ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa) [A-Za-z0-9+/=]+( .*)?$/;
 
+/** What the server can do, as plain functions: the MCP tools and the command line both call these. */
+export interface Actions {
+  offers(): Promise<unknown>;
+  wallet(): Promise<unknown>;
+  runPython(script: string, waitSeconds?: number): Promise<unknown>;
+  fetchPages(urls: string[], waitSeconds?: number): Promise<unknown>;
+  rentHome(sshKeys: string[], image?: string): Promise<unknown>;
+  lease(leaseId: string): Promise<unknown>;
+  extend(leaseId: string, hours: number): Promise<unknown>;
+}
+
 export interface Built {
   server: McpServer;
   address: string | undefined;
+  actions: Actions;
 }
 
 /** The server with its tools, not yet connected to a transport. `fetchFn` is the network (a test hands in a fake door). */
@@ -297,6 +309,93 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
     };
   };
 
+  const wait = (n: number | undefined): number => {
+    const w = n ?? 40;
+    if (!Number.isInteger(w) || w < 10 || w > 240) throw new Error('the wait is 10 to 240 seconds; nothing was paid');
+    return w;
+  };
+
+  const actions: Actions = {
+    offers: async () => {
+      const r = await get('/v1/offers');
+      if (r.status !== 200 || !Array.isArray(r.body)) throw new Error(`GET /v1/offers answered ${r.status}`);
+      return {
+        offers: r.body.map((x: any) => ({
+          offerId: x.offerId,
+          usdcPerInterval: /^\d+$/.test(String(x.tickPrice)) ? microToUsdc(x.tickPrice) : x.tickPrice,
+          intervalSeconds: x.intervalSeconds,
+          cpu: x.cpu,
+          memoryMiB: x.memoryMiB,
+          images: x.images,
+          home: x.home ?? null,
+        })),
+        docs: `${o.door}/agents`,
+        ...caps(),
+      };
+    },
+    wallet: async () => {
+      if (!account) {
+        return { address: null, paidTools: 'off', why: `no key at ${o.keyFile} and CHARTER_MCP_NO_NEW_KEY is set. Put a key there (0x and 64 hex digits, mode 600) or unset the variable to have one made.`, ...caps() };
+      }
+      const usdc = await balance().catch((e: Error) => `unavailable (${e.message.slice(0, 80)})`);
+      return {
+        address: account.address,
+        usdcOnBase: usdc,
+        ...caps(),
+        keyFile: o.keyFile,
+        fund: `Send USDC on Base (chain id 8453, token ${BASE_USDC}) to ${account.address}. No ETH is needed. 0.007 USDC buys one hour; 1 USDC is about 6 days of a home. Keep only what the rent needs in this wallet: the key is a plain file on this machine.`,
+        pays: 'Only Charter: exact USDC on Base, to the payee the door names, within the caps above. The operator changes the caps with CHARTER_MAX_USDC_PER_HOUR and CHARTER_MAX_USDC_PER_DAY.',
+      };
+    },
+    runPython: async (script, waitSeconds) => {
+      if (typeof script !== 'string' || script.length === 0) throw new Error('the script is empty; nothing was paid');
+      if (Buffer.byteLength(script, 'utf8') > 8192) throw new Error('the script is over 8192 bytes; nothing was paid');
+      return runJob(deps, { python: { script } }, wait(waitSeconds));
+    },
+    fetchPages: async (urls, waitSeconds) => {
+      if (!Array.isArray(urls) || urls.length < 1 || urls.length > 5) throw new Error('give one to five URLs; nothing was paid');
+      for (const u of urls) {
+        if (typeof u !== 'string' || !/^https?:\/\//i.test(u) || !URL.canParse(u)) throw new Error(`not an http or https URL: ${String(u).slice(0, 80)}; nothing was paid`);
+      }
+      return runJob(deps, { urls }, wait(waitSeconds));
+    },
+    rentHome: async (sshKeys, image) => {
+      const keys = (Array.isArray(sshKeys) ? sshKeys : []).map((k) => String(k).trim()).filter(Boolean);
+      if (keys.length < 1 || keys.length > 8) throw new Error('give 1 to 8 SSH public keys; nothing was paid');
+      const bad = keys.find((k) => k.length > 1023 || !SSH_KEY.test(k));
+      if (bad !== undefined) {
+        throw new Error(
+          /PRIVATE KEY/.test(bad)
+            ? 'that is a private key. Pass the PUBLIC key line only (the .pub file); nothing was sent or paid'
+            : 'each key must be one public key line starting with ssh-ed25519, ecdsa-sha2-nistp256/384/521 or ssh-rsa; nothing was paid',
+        );
+      }
+      if (image !== undefined && image !== 'charter-home' && image !== 'charter-hermes') throw new Error('the image is charter-home or charter-hermes; nothing was paid');
+      const rented = await rent(deps, { home: { sshKeys: keys, ...(image ? { image } : {}) } });
+      return {
+        ...rented,
+        next: 'Read the lease about once a minute until it shows ssh (the onion address is published within about a minute). Pay more time before paidThrough; a home that lapses keeps its disk 7 days and opens again with the same keys.',
+      };
+    },
+    lease: async (leaseId) => {
+      const { view } = await lease(deps, leaseId);
+      if ((view.state === 'done' || view.state === 'closed') && view.outputParts > 0) return { lease: view, output: await output(deps, leaseId, view.outputParts) };
+      return { lease: view };
+    },
+    extend: async (leaseId, hours) => {
+      if (!Number.isInteger(hours) || hours < 1 || hours > 24) throw new Error('pay 1 to 24 intervals at a time; nothing was paid');
+      return extend(deps, leaseId, hours);
+    },
+  };
+
+  const answer = async (run: () => Promise<unknown>) => {
+    try {
+      return text(await run());
+    } catch (e) {
+      return fail(e);
+    }
+  };
+
   const server = new McpServer({ name: 'charter', version: VERSION });
   const cost = 'Costs one interval of the cheapest machine: 0.007 USDC on the live host (see charter_offers), paid from this server\'s own wallet in USDC on Base.';
 
@@ -309,27 +408,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async () => {
-      try {
-        const r = await get('/v1/offers');
-        if (r.status !== 200 || !Array.isArray(r.body)) throw new Error(`GET /v1/offers answered ${r.status}`);
-        return text({
-          offers: r.body.map((x: any) => ({
-            offerId: x.offerId,
-            usdcPerInterval: /^\d+$/.test(String(x.tickPrice)) ? microToUsdc(x.tickPrice) : x.tickPrice,
-            intervalSeconds: x.intervalSeconds,
-            cpu: x.cpu,
-            memoryMiB: x.memoryMiB,
-            images: x.images,
-            home: x.home ?? null,
-          })),
-          docs: `${o.door}/agents`,
-          ...caps(),
-        });
-      } catch (e) {
-        return fail(e);
-      }
-    },
+    () => answer(actions.offers),
   );
 
   server.registerTool(
@@ -341,24 +420,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async () => {
-      try {
-        if (!account) {
-          return text({ address: null, paidTools: 'off', why: `no key at ${o.keyFile} and CHARTER_MCP_NO_NEW_KEY is set. Put a key there (0x and 64 hex digits, mode 600) or unset the variable to have one made.`, ...caps() });
-        }
-        const usdc = await balance().catch((e: Error) => `unavailable (${e.message.slice(0, 80)})`);
-        return text({
-          address: account.address,
-          usdcOnBase: usdc,
-          ...caps(),
-          keyFile: o.keyFile,
-          fund: `Send USDC on Base (chain id 8453, token ${BASE_USDC}) to ${account.address}. No ETH is needed. 0.007 USDC buys one hour; 1 USDC is about 6 days of a home. Keep only what the rent needs in this wallet: the key is a plain file on this machine.`,
-          pays: 'Only Charter: exact USDC on Base, to the payee the door names, within the caps above. The operator changes the caps with CHARTER_MAX_USDC_PER_HOUR and CHARTER_MAX_USDC_PER_DAY.',
-        });
-      } catch (e) {
-        return fail(e);
-      }
-    },
+    () => answer(actions.wallet),
   );
 
   server.registerTool(
@@ -372,14 +434,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    async ({ script, waitSeconds }) => {
-      try {
-        if (Buffer.byteLength(script, 'utf8') > 8192) throw new Error('the script is over 8192 bytes; nothing was paid');
-        return text(await runJob(deps, { python: { script } }, waitSeconds ?? 40));
-      } catch (e) {
-        return fail(e);
-      }
-    },
+    ({ script, waitSeconds }) => answer(() => actions.runPython(script, waitSeconds)),
   );
 
   server.registerTool(
@@ -393,13 +448,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    async ({ urls, waitSeconds }) => {
-      try {
-        return text(await runJob(deps, { urls }, waitSeconds ?? 40));
-      } catch (e) {
-        return fail(e);
-      }
-    },
+    ({ urls, waitSeconds }) => answer(() => actions.fetchPages(urls, waitSeconds)),
   );
 
   server.registerTool(
@@ -413,26 +462,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    async ({ sshKeys, image }) => {
-      try {
-        const keys = sshKeys.map((k) => k.trim());
-        const bad = keys.find((k) => !SSH_KEY.test(k));
-        if (bad !== undefined) {
-          throw new Error(
-            /PRIVATE KEY/.test(bad)
-              ? 'that is a private key. Pass the PUBLIC key line only (the .pub file); nothing was sent or paid'
-              : 'each key must be one public key line starting with ssh-ed25519, ecdsa-sha2-nistp256/384/521 or ssh-rsa; nothing was paid',
-          );
-        }
-        const rented = await rent(deps, { home: { sshKeys: keys, ...(image ? { image } : {}) } });
-        return text({
-          ...rented,
-          next: 'Call charter_lease with this leaseId about once a minute until it shows ssh (the onion address is published within about a minute). Pay more time with charter_extend before paidThrough; a home that lapses keeps its disk 7 days and opens again with the same keys.',
-        });
-      } catch (e) {
-        return fail(e);
-      }
-    },
+    ({ sshKeys, image }) => answer(() => actions.rentHome(sshKeys, image)),
   );
 
   server.registerTool(
@@ -444,15 +474,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
       inputSchema: { leaseId: z.string().regex(/^[0-9a-f]{32}$/).describe('the 32 hex character leaseId a paid tool returned') },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ leaseId }) => {
-      try {
-        const { view } = await lease(deps, leaseId);
-        if ((view.state === 'done' || view.state === 'closed') && view.outputParts > 0) return text({ lease: view, output: await output(deps, leaseId, view.outputParts) });
-        return text({ lease: view });
-      } catch (e) {
-        return fail(e);
-      }
-    },
+    ({ leaseId }) => answer(() => actions.lease(leaseId)),
   );
 
   server.registerTool(
@@ -467,16 +489,10 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    async ({ leaseId, hours }) => {
-      try {
-        return text(await extend(deps, leaseId, hours));
-      } catch (e) {
-        return fail(e);
-      }
-    },
+    ({ leaseId, hours }) => answer(() => actions.extend(leaseId, hours)),
   );
 
-  return { server, address: account?.address };
+  return { server, address: account?.address, actions };
 }
 
 export async function run(env: NodeJS.ProcessEnv): Promise<void> {

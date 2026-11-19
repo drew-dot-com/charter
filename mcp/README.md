@@ -51,6 +51,23 @@ Until the wallet is funded the free tools work and the paid ones answer with the
 
 A job tool waits up to 40 seconds by default, under most clients' tool timeout. A job still running then hands back its `leaseId`, and `charter_lease` collects the output for free.
 
+## From a shell
+
+The same seven actions, one command each, for an agent that runs commands instead of speaking MCP. Each prints one JSON document; a failure is `{"error": "..."}` with a non-zero exit code.
+
+```bash
+npx -y charter-mcp offers
+npx -y charter-mcp wallet
+npx -y charter-mcp run-python job.py
+echo 'print(2 + 2)' | npx -y charter-mcp run-python -
+npx -y charter-mcp fetch https://example.com --wait 120
+npx -y charter-mcp rent-home keys.pub
+npx -y charter-mcp lease <leaseId>
+npx -y charter-mcp extend <leaseId> 2
+```
+
+`run-python`, `fetch`, `rent-home` and `extend` pay; the others are free. With no command it runs as the MCP server. The wallet, the caps and the count of the day's spend are shared by both.
+
 ## What bounds the money
 
 - The server signs only `exact` payments in USDC on Base, to the payee Charter's door names at `GET /v1/door`. Anything else a 402 offers is never signed.

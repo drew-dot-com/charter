@@ -1,27 +1,34 @@
 #!/usr/bin/env node
-import { run, VERSION } from './server.js';
+import { readFileSync } from 'node:fs';
+import { cli, USAGE } from './cli.js';
+import { build, optionsFromEnv, run, VERSION, type Actions } from './server.js';
 
-const arg = process.argv[2];
+const argv = process.argv.slice(2);
+const arg = argv[0];
+const die = (e: unknown): never => {
+  process.stderr.write(`charter-mcp: ${String((e as Error)?.message ?? e)}\n`);
+  process.exit(1);
+};
+
 if (arg === '--version' || arg === '-v') {
   console.log(VERSION);
-} else if (arg === '--help' || arg === '-h') {
-  console.log(`charter-mcp ${VERSION}: an MCP server (stdio) that rents Charter machines and pays for them in USDC on Base.
-
-  claude mcp add charter -- npx -y charter-mcp
-
-Environment, all optional:
-  CHARTER_MAX_USDC_PER_HOUR   the most one interval may cost (default 0.01)
-  CHARTER_MAX_USDC_PER_DAY    the most one UTC day may cost (default 0.25)
-  CHARTER_MCP_KEY_FILE        the wallet key file (default ~/.charter/mcp.key, made on first run)
-  CHARTER_MCP_NO_NEW_KEY      set to never make a key: with no key file the paid tools stay off
-  CHARTER_MCP_SPEND_FILE      where the day's spend is kept (default ~/.charter/mcp-spend.json)
-  CHARTER_BASE_RPC            Base RPC for the balance read
-  CHARTER_DOOR_URL            the door (default https://charter.mainnet.toonprotocol.dev)
-
-Docs: https://charter.mainnet.toonprotocol.dev/agents`);
+} else if (arg === '--help' || arg === '-h' || arg === 'help') {
+  console.log(`charter-mcp ${VERSION}: rent a Charter machine and pay for it in USDC on Base, as an MCP server or from the shell.\n\n${USAGE}`);
+} else if (arg === undefined) {
+  // No command: the MCP server, as an MCP client starts it.
+  run(process.env).catch(die);
 } else {
-  run(process.env).catch((e) => {
-    process.stderr.write(`charter-mcp: ${String((e as Error)?.message ?? e)}\n`);
-    process.exit(1);
-  });
+  let actions: Actions | undefined;
+  cli(argv, {
+    actions: () => (actions ??= build(optionsFromEnv(process.env), (line) => void process.stderr.write(`charter-mcp: ${line}\n`)).actions),
+    readFile: (path) => readFileSync(path, 'utf8'),
+    readStdin: async () => {
+      const chunks: Buffer[] = [];
+      for await (const c of process.stdin) chunks.push(c as Buffer);
+      return Buffer.concat(chunks).toString('utf8');
+    },
+  }).then((r) => {
+    console.log(r.out);
+    process.exitCode = r.code;
+  }, die);
 }
