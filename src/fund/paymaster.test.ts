@@ -1191,10 +1191,20 @@ test('judgeOne: a pitch at the attempt limit is declined with no model call (a p
   assert.equal(j.door.g(id).reason, 'The judge could not read this pitch.');
 });
 
+test('judgeOne: a queued pitch Drew stopped is declined as unreadable with no model call, and the queue moves on', async () => {
+  const j = attemptsRig(() => new Error('invalid request'));
+  const stuck = j.door.grant({ state: 'queued', createdAt: T0 - 10 });
+  j.state.stopped = [stuck];
+  await j.one();
+  assert.equal(j.calls(), 0);
+  assert.equal(j.door.g(stuck).state, 'declined');
+  assert.equal(j.door.g(stuck).reason, 'The judge could not read this pitch.');
+});
+
 test('judgeOne: an unavailable API is not counted against the pitch', async () => {
   const j = attemptsRig(() => new Error('overloaded'));
   const id = j.door.grant({ state: 'queued' });
-  for (let i = 0; i < 5; i++) await assert.rejects(j.one(), /overloaded/);
+  for (let i = 0; i < 5; i++) await assert.rejects(j.one(), new RegExp(`grant ${id}: .*not counted.*overloaded`));
   assert.equal(j.state.judgeAttempts[id], undefined);
   assert.equal(j.door.g(id).state, 'queued');
 });

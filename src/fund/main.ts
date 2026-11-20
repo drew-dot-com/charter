@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import { join } from 'node:path';
 import { privateKeyToAccount } from 'viem/accounts';
 import { doorClient, usdcBalance, type DoorClient } from './door-client.js';
-import { judge, transientJudgeError } from './judge.js';
+import { judge, uncountedJudgeError } from './judge.js';
 import { cycle, GRANT_HOURS, makeJudgeOne, MAX_TICK_MICRO, type CycleDeps } from './paymaster.js';
 import { emptyState, loadState, saveState, type FundState } from './state.js';
 
@@ -324,7 +324,7 @@ async function run(env: NodeJS.ProcessEnv): Promise<void> {
     slots: async () => (await readOffers(door).catch(() => undefined))?.slots ?? 0,
     state,
     save: () => saveState(join(dir, 'state.json'), state),
-    transient: transientJudgeError,
+    transient: uncountedJudgeError,
   });
   const signal = { stopped: false };
   let wake: (() => void) | undefined;

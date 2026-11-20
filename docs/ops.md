@@ -393,7 +393,15 @@ docker exec charter-fund node dist/fund/main.js status           # JSON, never t
 ```
 
 A stop takes effect at the start of the next cycle (within a minute). `grantId` is the 32 hex characters
-`status` lists. Removing `stopAll` means editing `data/stops.json` by hand.
+`status` lists. Removing `stopAll` means editing `data/stops.json` by hand. A stop on a pitch still queued
+declines it as unreadable when it reaches the front of the queue, with no model call.
+
+**Judge problems.** A judge call that fails leaves the pitch queued and names the full grant id in the
+problem. An unavailable API (no connection, 429, 5xx) and an operator fault (every other 4xx but 413: an
+account out of credit, a bad key, a retired model) are never counted against the pitch, so they alert every
+cycle and decline nothing: top up the Anthropic account or fix the key, and judging resumes. Any other failure
+counts, and the third declines the pitch as unreadable. A pitch that keeps failing without being counted is
+cleared with `stop <grantId>`.
 
 **Reading status.** `address` and `balanceMicro` are the last report; `grantsLeft` and `open` are what the door
 shows. Each grant lists its `id`, `state` (waiting, active, completed, ended), `fundTicks` (hours paid, at most

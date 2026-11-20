@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { cut, judge, MAX_TOKENS, RUBRIC, transientJudgeError, type PitchIn } from './judge.js';
+import { cut, judge, MAX_TOKENS, operatorJudgeError, RUBRIC, transientJudgeError, uncountedJudgeError, type PitchIn } from './judge.js';
 
 const DECLINE = 'The judge could not read this pitch.';
 const pitch: PitchIn = {
@@ -67,12 +67,45 @@ test('cut never splits a surrogate pair and falls back to a hard cut with no spa
   assert.equal(cut('one two three', 9), 'one two');
 });
 
-test('a 400 from the API declines at once with the fixed reason', async () => {
-  const c = fake(() => {
-    throw new Anthropic.BadRequestError(400, { type: 'error', error: { type: 'invalid_request_error', message: 'bad' } }, 'bad', new Headers());
-  });
-  const v = await judge(c, pitch, ctx);
-  assert.deepEqual(v, { decision: 'decline', summary: '', reason: DECLINE });
+test('an API error is thrown, never turned into a decline (a 400 included)', async () => {
+  const h = new Headers();
+  const credit = { type: 'error', error: { type: 'invalid_request_error', message: 'Your credit balance is too low to access the Anthropic API.' } };
+  for (const e of [
+    new Anthropic.BadRequestError(400, credit, 'Your credit balance is too low', h),
+    new Anthropic.BadRequestError(400, {}, 'bad', h),
+    new Anthropic.AuthenticationError(401, {}, 'invalid x-api-key', h),
+    new Anthropic.NotFoundError(404, {}, 'model not found', h),
+  ]) {
+    const c = fake(() => {
+      throw e;
+    });
+    await assert.rejects(judge(c, pitch, ctx), (got) => got === e);
+  }
+});
+
+test('operatorJudgeError: every 4xx but 413 and 429 is the operator\'s problem, not the pitch\'s', () => {
+  const h = new Headers();
+  assert.equal(operatorJudgeError(new Anthropic.BadRequestError(400, {}, 'Your credit balance is too low', h)), true);
+  assert.equal(operatorJudgeError(new Anthropic.BadRequestError(400, {}, 'bad', h)), true);
+  assert.equal(operatorJudgeError(new Anthropic.AuthenticationError(401, {}, 'invalid x-api-key', h)), true);
+  assert.equal(operatorJudgeError(Anthropic.APIError.generate(402, {}, 'payment required', h)), true);
+  assert.equal(operatorJudgeError(new Anthropic.PermissionDeniedError(403, {}, 'denied', h)), true);
+  assert.equal(operatorJudgeError(new Anthropic.NotFoundError(404, {}, 'model not found', h)), true);
+  assert.equal(operatorJudgeError(Anthropic.APIError.generate(413, {}, 'too large', h)), false);
+  assert.equal(operatorJudgeError(new Anthropic.RateLimitError(429, {}, 'slow', h)), false);
+  assert.equal(operatorJudgeError(new Anthropic.InternalServerError(500, {}, 'oops', h)), false);
+  assert.equal(operatorJudgeError(new Anthropic.APIConnectionError({ message: 'down' })), false);
+  assert.equal(operatorJudgeError(new Error('anything')), false);
+});
+
+test('uncountedJudgeError: an unavailable API or an operator fault is not counted; 413 and other errors are', () => {
+  const h = new Headers();
+  assert.equal(uncountedJudgeError(new Anthropic.APIConnectionError({ message: 'down' })), true);
+  assert.equal(uncountedJudgeError(new Anthropic.InternalServerError(529, {}, 'overloaded', h)), true);
+  assert.equal(uncountedJudgeError(new Anthropic.BadRequestError(400, {}, 'Your credit balance is too low', h)), true);
+  assert.equal(uncountedJudgeError(new Anthropic.AuthenticationError(401, {}, 'invalid x-api-key', h)), true);
+  assert.equal(uncountedJudgeError(Anthropic.APIError.generate(413, {}, 'too large', h)), false);
+  assert.equal(uncountedJudgeError(new Error('anything')), false);
 });
 
 test('transientJudgeError: connection, 429 and 5xx are the API being unavailable; 400 and other errors are not', () => {

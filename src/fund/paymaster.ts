@@ -140,8 +140,9 @@ function approvedAt(g: DoorGrant): number {
  * Judges the oldest queued pitch and posts the verdict. A home (key set) that already has a grant past
  * `queued` (other than declined) is declined with a fixed reason and no model call. An error leaves the
  * pitch queued and is thrown for the cycle to record; with `state`, each failed judge call is counted per
- * grant (an error `transient` calls an unavailable API is not), and the MAX_JUDGE_TRIES-th failure declines
- * the pitch with the fixed unreadable reason, so one pitch can never stall the queue.
+ * grant (an error `transient` calls not the pitch's fault is not), and the MAX_JUDGE_TRIES-th failure declines
+ * the pitch with the fixed unreadable reason. A queued pitch Drew stopped is declined the same way with no
+ * model call: the way out for a pitch whose every judge call fails without counting.
  */
 export function makeJudgeOne(d: {
   door: DoorClient;
@@ -172,7 +173,7 @@ export function makeJudgeOne(d: {
     let verdict: { state: GrantState; summary?: string; reason: string };
     if (used) {
       verdict = { state: 'declined', reason: HOME_USED_REASON };
-    } else if (tries >= MAX_JUDGE_TRIES) {
+    } else if (tries >= MAX_JUDGE_TRIES || d.state?.stopped.includes(id)) {
       verdict = unreadable;
     } else {
       const pitch: PitchIn = { name: p.name, ...(typeof p.link === 'string' ? { link: p.link } : {}), image: p.image, pitch: p.pitch };
@@ -181,10 +182,11 @@ export function makeJudgeOne(d: {
       try {
         v = await d.judge(pitch, { live, slots: await d.slots() });
       } catch (e) {
-        if (!d.state || d.transient?.(e)) throw e;
+        // The full id, so Drew can `stop` a pitch that keeps failing without being counted.
+        if (!d.state || d.transient?.(e)) throw new Error(`grant ${id}: the judge call failed, not counted against the pitch, which stays queued: ${errText(e)}`);
         d.state.judgeAttempts[id] = tries + 1;
         d.save?.();
-        if (tries + 1 < MAX_JUDGE_TRIES) throw e;
+        if (tries + 1 < MAX_JUDGE_TRIES) throw new Error(`grant ${id}: the judge call failed (try ${tries + 1} of ${MAX_JUDGE_TRIES}): ${errText(e)}`);
         v = { decision: 'decline', summary: '', reason: UNREADABLE };
       }
       verdict = { state: v.decision === 'grant' ? 'approved_waiting' : 'declined', summary: v.summary, reason: v.reason };

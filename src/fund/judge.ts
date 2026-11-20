@@ -98,28 +98,40 @@ export function transientJudgeError(e: unknown): boolean {
   return false;
 }
 
+/**
+ * True for an error that is the operator's to fix, not the pitch's fault: every 4xx but 413 (too large) and
+ * 429 (busy). That covers an account out of credit (a 400), a bad or revoked key (401, 403), a billing stop
+ * (402), a retired model (404) and a request shape the API no longer takes (400). The pitch text is capped
+ * and escaped by the time it is sent, so no 400 is expected from a pitch; one that does keep causing it
+ * stalls the queue with a problem every cycle until Drew stops that grant (which declines it).
+ */
+export function operatorJudgeError(e: unknown): boolean {
+  if (!(e instanceof Anthropic.APIError) || typeof e.status !== 'number') return false;
+  return e.status >= 400 && e.status < 500 && e.status !== 413 && e.status !== 429;
+}
+
+/** A failed judge call that is not counted against the pitch: the API was unavailable, or the operator must act. */
+export function uncountedJudgeError(e: unknown): boolean {
+  return transientJudgeError(e) || operatorJudgeError(e);
+}
+
 export async function judge(
   client: Pick<Anthropic, 'beta'>,
   p: PitchIn,
   ctx: { live: number; slots: number },
 ): Promise<Verdict> {
   const decline: Verdict = { decision: 'decline', summary: '', reason: UNREADABLE };
-  let res: unknown;
-  try {
-    res = await client.beta.messages.create({
-      model: 'claude-opus-5-5',
-      max_tokens: MAX_TOKENS,
-      betas: ['server-side-fallback-2026-07-01'],
-      fallbacks: 'default',
-      output_config: { effort: 'medium', format: zodOutputFormat(Verdict) },
-      system: RUBRIC,
-      messages: [{ role: 'user', content: userMessage(p, ctx) }],
-    } as Parameters<typeof client.beta.messages.create>[0]);
-  } catch (e) {
-    // 400: the API refuses this request as sent, and would every time. Declined at once, not retried.
-    if (e instanceof Anthropic.BadRequestError) return decline;
-    throw e;
-  }
+  // Every API error is thrown, a 400 included: the caller decides whether it counts against the pitch,
+  // and the cycle records it as a problem, so an account out of credit alerts instead of declining pitches.
+  const res: unknown = await client.beta.messages.create({
+    model: 'claude-opus-5-5',
+    max_tokens: MAX_TOKENS,
+    betas: ['server-side-fallback-2026-07-01'],
+    fallbacks: 'default',
+    output_config: { effort: 'medium', format: zodOutputFormat(Verdict) },
+    system: RUBRIC,
+    messages: [{ role: 'user', content: userMessage(p, ctx) }],
+  } as Parameters<typeof client.beta.messages.create>[0]);
   const msg = res as { stop_reason?: string | null; content?: Array<{ type: string; text?: string }> };
   if (msg.stop_reason === 'refusal' || msg.stop_reason === 'max_tokens') return decline;
   const block = msg.content?.find((b) => b.type === 'text');
