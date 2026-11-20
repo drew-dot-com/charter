@@ -4,6 +4,7 @@
 # CHARTER_FUND_HOME (default /root/charter-fund), owned by uid 1000 (the image's `node` user), mode 700:
 #   fund.env          CHARTER_FUND_DOOR_URL, optional (fund.env.example)
 #   data/             state.json (what the fund paid: back it up), stops.json, health.json, public.json
+#                     (charter-backup-stream.sh sends state.json and stops.json in the nightly backup)
 #   secrets/          fund-key (0400, from new-fund-key.mjs: the fund's Base wallet, holds the pot),
 #                     fund-token (0400, the same token the door reads as CHARTER_FUND_TOKEN_FILE),
 #                     judge-key (0400, an Anthropic API key), rpc-url (0400, a Base RPC URL)
@@ -28,6 +29,9 @@ services:
       - ${CHARTER_FUND_HOME:-/root/charter-fund}/secrets:/secrets:ro
     networks: [relay_deploy_net]
     restart: unless-stopped
+    # A cycle can be inside a paid call (a rent or tick through x402, cut off at 60 s). The default
+    # 10 s would SIGKILL it mid-call; the markers make that safe, but 90 s lets the cycle finish cleanly.
+    stop_grace_period: 90s
 
 networks:
   relay_deploy_net:

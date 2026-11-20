@@ -1,11 +1,13 @@
 #!/bin/bash
-# charter-backup-pull: nightly on the Air. Pulls /root/charter-door/data from the box
-# as one dated tarball, verifies it, keeps KEEP_DAYS days.
+# charter-backup-pull: nightly on the Air. Pulls /root/charter-door/data from the box, with the
+# grant fund's charter-fund/data/state.json and stops.json, as one dated tarball, verifies it,
+# keeps KEEP_DAYS days.
 #
 #   charter-backup-pull.sh            pull now
 #   charter-backup-pull.sh --list     list what is kept
 #   charter-backup-pull.sh --restore <tarball> <path inside data/> [dest dir]
-#                                     extract one file (default dest: $BACKUP_DIR/restore/)
+#                                     extract one file (default dest: $BACKUP_DIR/restore/);
+#                                     a fund file is named whole: charter-fund/data/state.json
 #
 # Needs: the backup key (BACKUP_KEY) whose public half sits in the box's
 # authorized_keys with command="/usr/local/bin/charter-backup-stream.sh".
@@ -25,7 +27,8 @@ case "${1:-}" in
   --restore)
     tgz="${2:?tarball}"; inner="${3:?path inside data/, e.g. channels.json}"; dest="${4:-$BACKUP_DIR/restore}"
     mkdir -p "$dest"
-    tar -xzf "$tgz" -C "$dest" "data/$inner" && echo "restored $dest/data/$inner" && ls -la "$dest/data/$inner"; exit $? ;;
+    case "$inner" in charter-fund/*) member="$inner" ;; *) member="data/$inner" ;; esac
+    tar -xzf "$tgz" -C "$dest" "$member" && echo "restored $dest/$member" && ls -la "$dest/$member"; exit $? ;;
 esac
 
 stamp="$(date -u +%Y%m%d-%H%M%S)"
@@ -38,9 +41,11 @@ rm -f "$tmp.err"
 if ! tar -tzf "$tmp" > "$tmp.list" 2>/dev/null || ! grep -q '^data/channels.json$' "$tmp.list"; then
   log "FAIL: tarball unreadable or missing data/channels.json"; rm -f "$tmp" "$tmp.list"; exit 1
 fi
+fund="no fund state"
+grep -q '^charter-fund/data/state.json$' "$tmp.list" && fund="fund state.json included"
 mv "$tmp" "$out"
 n=$(wc -l < "$tmp.list" | tr -d ' '); rm -f "$tmp.list"
-log "ok $out $(stat -f %z "$out" 2>/dev/null || stat -c %s "$out") bytes, $n entries"
+log "ok $out $(stat -f %z "$out" 2>/dev/null || stat -c %s "$out") bytes, $n entries, $fund"
 # rotation: drop tarballs older than KEEP_DAYS
 find "$BACKUP_DIR" -maxdepth 1 -name 'door-data-*.tgz' -mtime +"$KEEP_DAYS" -print -delete | while read -r f; do log "rotated out $f"; done
 exit 0

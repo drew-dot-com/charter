@@ -132,6 +132,13 @@ Nightly at 03:40 Air local, `charter-backup-pull.sh` on the Air pulls `/root/cha
 `~/charter-backups/door-data-<UTC stamp>.tgz` (the ledger and its `.payments`, `.unpaid`, `.unblocks`
 sidecars, `channels.json`, `channels.peers.json`, `x402-channels/`, `output/`; never `secrets/`), checks that
 the tarball lists `data/channels.json`, and deletes tarballs older than 30 days. Zero cost, no account.
+The same tarball carries the grant fund's `data/state.json` and `data/stops.json` (under
+`charter-fund/data/`, only when they exist; never the fund's `secrets/`), and `pull.log` says `fund state.json
+included` or `no fund state` on each run. `charter-backup-stream.sh` on the box is what adds them, so after
+this change re-run `deploy/ops/install-box.sh` (it copies the script to `/usr/local/bin/`), and copy the new
+`charter-backup-pull.sh` to `~/bin/` on the Air. Restore one with
+`charter-backup-pull.sh --restore <tgz> charter-fund/data/state.json`; stop the fund first, copy it to
+`/root/charter-fund/data/state.json` owned by uid 1000, mode 600, then start it.
 
 Access is a dedicated key, not the `toon_node` key: the Air did not have that key, and a forced command is
 safer than a root shell on the box. The box's `authorized_keys` carries
@@ -343,16 +350,24 @@ door (`POST /v1/grants`); the fund process judges them, opens the home and pays 
 `exact` USDC on Base from its own wallet, to the door only, never more than 10000 micro-USDC a tick.
 
 **What runs where.** The container `charter-fund` on the Hetzner box, beside `charter-door` (compose
-`deploy/fund/docker-compose.yml`, image built from the repo root, no ports). Files under
-`/root/charter-fund` (uid 1000, mode 700):
+`deploy/fund/docker-compose.yml`, image built from the repo root, no ports, `stop_grace_period: 90s` so a
+stop lets a paid call of up to 60 s finish). Files under `/root/charter-fund` (uid 1000, mode 700):
 
 - `fund.env`: `CHARTER_FUND_DOOR_URL` only, optional (`deploy/fund/fund.env.example`).
 - `secrets/fund-key` (the fund's Base wallet key, from `node deploy/fund/new-fund-key.mjs <file>`, which prints
   the address to fund with USDC), `secrets/fund-token` (the same token the door reads as
   `CHARTER_FUND_TOKEN_FILE`), `secrets/judge-key` (an Anthropic API key), `secrets/rpc-url` (a Base RPC URL).
   The door's `door.env` also needs `CHARTER_FUND_ADDRESS` set to the fund's address.
+- `new-fund-key.mjs` imports `viem`, so it runs only where the repo's `node_modules` is installed: either on
+  the box from the repo checkout after `npm ci` (`cd <checkout> && node deploy/fund/new-fund-key.mjs
+  /root/charter-fund/secrets/fund-key`), or on the Mac from the repo, then copy the key file to
+  `/root/charter-fund/secrets/fund-key` over SSH and delete the Mac's copy. It writes the key 0400 and refuses
+  to overwrite one.
+- After creating the files, give them to the container's user and lock the directory:
+  `chown -R 1000:1000 /root/charter-fund && chmod 700 /root/charter-fund`. The container runs as uid 1000
+  (`node`) and each secret is 0400, so a key left owned by root cannot be read and the fund stops at boot.
 - `data/state.json`: what the fund paid. Back it up; if it is lost the fund can pay a grant twice, and a file
-  that does not parse stops the fund at boot instead of starting fresh.
+  that does not parse stops the fund at boot instead of starting fresh. The nightly backup carries it (below).
 - `data/stops.json`: what Drew stopped. Only the stop commands write it; the loop reads it at the start of
   every cycle, so a stop issued while the fund runs is never overwritten.
 - `data/health.json`: `{ at, problems: [{ key, msg, at }] }`, written every cycle. A problem is dropped an
@@ -362,8 +377,12 @@ door (`POST /v1/grants`); the fund process judges them, opens the home and pays 
 **The loop.** Every 60 seconds: judge one queued pitch, open the oldest approved grant when a home is free and
 the balance covers it, pay each live home its next hour (never further ahead than half an interval), then
 report the pot to the door (`PUT /v1/fund/public`). The fund is `open` while it is not stopped and
-`floor(balance / (720 x tick x 1.1))` minus the live grants is above zero. With no report the door answers
-`503 fund_closed` to new pitches. A cycle that fails is a problem in `health.json`; the process keeps going.
+`floor(balance / (720 x tick x 1.1))` minus the live grants is above zero; while it is not open it reports 0
+grants left. With no report, or a last report more than 10 minutes old (the door stamps each one with its own
+clock as `reportedAt`), the door shows the fund closed and answers `503 fund_closed` to new pitches, so a dead
+fund never leaves intake open. Each grant has its own day cap of 24 x tick x 1.5 per UTC day. A pitch the
+judge fails on 3 times (an unreachable API is not counted) is declined with `The judge could not read this
+pitch.` A cycle that fails is a problem in `health.json`; the process keeps going.
 
 **Stopping.** From the box:
 
