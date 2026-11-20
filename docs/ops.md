@@ -7,9 +7,10 @@ What watches the door, what backs it up, and what to do when something fires. Sc
 
 | what | where | schedule | alerts |
 | --- | --- | --- | --- |
-| door canary + door headroom + daily spend + host channel (`charter-ops-check.sh`) | the Hetzner box, `charter-ops.timer` | every 5 min | Telegram DM to Drew from the Edison bot, once down, once back |
+| door canary + door headroom + daily spend + host channel + grant fund (`charter-ops-check.sh`) | the Hetzner box, `charter-ops.timer` | every 5 min | Telegram DM to Drew from the Edison bot, once down, once back |
 | door data backup (`charter-backup-pull.sh`) | the Air, launchd `com.drew.charter-backup` | nightly 03:40 Air local | none yet: `~/charter-backups/pull.log` records each run |
 | the host (`charter-host`, `CHARTER_MAX_LEASES=2`) | the `toon2` VM on the Air | always on | the canary sees its offer vanish |
+| the grant fund (`charter-fund`, container) | the Hetzner box, beside `charter-door` | loop, one cycle every 60 s | `charter-fund-check.sh`, in the 5 minute check |
 | home watch (`charter-home-watch.sh`) | the `toon2` VM, user timer `charter-home-watch.timer` | every 5 min | Telegram DM to Drew: a late tick, a lapse, a recovery |
 
 Box side: `/usr/local/bin/charter-*.sh`, config `/etc/charter-ops/env` (template `deploy/ops/env.example`),
@@ -334,6 +335,61 @@ With the node down the host cannot publish its offer or sell a tick, so every le
 Keep at least 1 USDC idle in that wallet: a host-channel top-up must not drain it below 1. Check:
 `journalctl --user -u toon-agent-node -b | grep -m1 "not funded"`; after funding,
 `systemctl --user reset-failed toon-agent-node && systemctl --user start toon-agent-node`.
+
+## Grant fund
+
+The fund gives a free month (720 hours) of a home to a pitch its judge approves. Pitches arrive free at the
+door (`POST /v1/grants`); the fund process judges them, opens the home and pays each hour with plain x402
+`exact` USDC on Base from its own wallet, to the door only, never more than 10000 micro-USDC a tick.
+
+**What runs where.** The container `charter-fund` on the Hetzner box, beside `charter-door` (compose
+`deploy/fund/docker-compose.yml`, image built from the repo root, no ports). Files under
+`/root/charter-fund` (uid 1000, mode 700):
+
+- `fund.env`: `CHARTER_FUND_DOOR_URL` only, optional (`deploy/fund/fund.env.example`).
+- `secrets/fund-key` (the fund's Base wallet key, from `node deploy/fund/new-fund-key.mjs <file>`, which prints
+  the address to fund with USDC), `secrets/fund-token` (the same token the door reads as
+  `CHARTER_FUND_TOKEN_FILE`), `secrets/judge-key` (an Anthropic API key), `secrets/rpc-url` (a Base RPC URL).
+  The door's `door.env` also needs `CHARTER_FUND_ADDRESS` set to the fund's address.
+- `data/state.json`: what the fund paid. Back it up; if it is lost the fund can pay a grant twice, and a file
+  that does not parse stops the fund at boot instead of starting fresh.
+- `data/stops.json`: what Drew stopped. Only the stop commands write it; the loop reads it at the start of
+  every cycle, so a stop issued while the fund runs is never overwritten.
+- `data/health.json`: `{ at, problems: [{ key, msg, at }] }`, written every cycle. A problem is dropped an
+  hour after it was last reported.
+- `data/public.json`: the last pot report sent to the door (address, balance, grants left, open).
+
+**The loop.** Every 60 seconds: judge one queued pitch, open the oldest approved grant when a home is free and
+the balance covers it, pay each live home its next hour (never further ahead than half an interval), then
+report the pot to the door (`PUT /v1/fund/public`). The fund is `open` while it is not stopped and
+`floor(balance / (720 x tick x 1.1))` minus the live grants is above zero. With no report the door answers
+`503 fund_closed` to new pitches. A cycle that fails is a problem in `health.json`; the process keeps going.
+
+**Stopping.** From the box:
+
+```
+docker exec charter-fund node dist/fund/main.js stop <grantId>   # one grant: nothing more is paid, its lease is left to lapse
+docker exec charter-fund node dist/fund/main.js stop-all         # no new pitch is judged, no new grant opened, no tick paid
+docker exec charter-fund node dist/fund/main.js status           # JSON, never the key
+```
+
+A stop takes effect at the start of the next cycle (within a minute). `grantId` is the 32 hex characters
+`status` lists. Removing `stopAll` means editing `data/stops.json` by hand.
+
+**Reading status.** `address` and `balanceMicro` are the last report; `grantsLeft` and `open` are what the door
+shows. Each grant lists its `id`, `state` (waiting, active, completed, ended), `fundTicks` (hours paid, at most
+720), `opening` (an open sent and not yet answered), `openUnknown` and the first 8 characters of its lease.
+`problems` repeats `health.json`.
+
+**`open-unknown`.** The fund sent an open, never got the answer, and the retry came back `home_in_use`: a home
+on that grant's keys may already be running and paid for, but the fund cannot see it. It pays nothing more on
+that grant. Drew checks the host (toon2: `jq . ~/.local/share/charter/homes.json`, and `docker ps`) for a home on that
+grant's keys, then stops the grant. The grant keeps producing a problem every cycle, so the ops check keeps
+alerting until it is stopped; that is intended.
+
+**Alerts.** `charter-fund-check.sh` (in `charter-ops-check.sh`) alerts under key `fund` when `problems` is not
+empty or `health.json` is older than 10 minutes (the process is down: `docker logs charter-fund`). Run it by
+hand: `charter-fund-check.sh` prints the state and alerts nothing; `--alert` alerts.
 
 ## Still open for Drew
 

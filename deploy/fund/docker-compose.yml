@@ -1,0 +1,34 @@
+# charter-fund on Drew's node (Hetzner), beside charter-door. It listens on nothing: it calls the door over
+# https and the Base RPC, and Drew's commands reach it with `docker exec`.
+#
+# CHARTER_FUND_HOME (default /root/charter-fund), owned by uid 1000 (the image's `node` user), mode 700:
+#   fund.env          CHARTER_FUND_DOOR_URL, optional (fund.env.example)
+#   data/             state.json (what the fund paid: back it up), stops.json, health.json, public.json
+#   secrets/          fund-key (0400, from new-fund-key.mjs: the fund's Base wallet, holds the pot),
+#                     fund-token (0400, the same token the door reads as CHARTER_FUND_TOKEN_FILE),
+#                     judge-key (0400, an Anthropic API key), rpc-url (0400, a Base RPC URL)
+#
+# Losing data/state.json lets the fund pay a grant twice: back it up.
+services:
+  charter-fund:
+    build:
+      context: ../..
+      dockerfile: deploy/fund/Dockerfile
+    image: charter-fund:local
+    container_name: charter-fund
+    env_file: ${CHARTER_FUND_HOME:-/root/charter-fund}/fund.env
+    environment:
+      CHARTER_FUND_DATA_DIR: /data
+      CHARTER_FUND_KEY_FILE: /secrets/fund-key
+      CHARTER_FUND_TOKEN_FILE: /secrets/fund-token
+      CHARTER_JUDGE_KEY_FILE: /secrets/judge-key
+      CHARTER_FUND_RPC_URL_FILE: /secrets/rpc-url
+    volumes:
+      - ${CHARTER_FUND_HOME:-/root/charter-fund}/data:/data
+      - ${CHARTER_FUND_HOME:-/root/charter-fund}/secrets:/secrets:ro
+    networks: [relay_deploy_net]
+    restart: unless-stopped
+
+networks:
+  relay_deploy_net:
+    external: true
