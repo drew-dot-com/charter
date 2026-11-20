@@ -35,6 +35,17 @@ export interface FundGrant {
    */
   nextReadAt?: number;
   renewedByGrantee?: boolean;
+  /**
+   * An open (or the re-open) sent whose outcome is not known yet: set and saved before `POST /v1/rent`,
+   * cleared on a definite answer. While it is set, any retry goes to the same offer only, so the host's
+   * one-home-per-key-set check (`home_in_use`) stops a second home.
+   */
+  opening?: { offerId: string; at: number };
+  /**
+   * Set when `home_in_use` answered a retry of an unanswered open: the fund may have paid for a home it
+   * cannot see. Nothing more is paid for this grant until Drew stops it.
+   */
+  openUnknown?: number;
   /** A tick sent whose answer never came: counted once the host's paidIntervals passes `index`. */
   inflight?: { leaseId: string; index: number; price: string };
   pending?: DoorPatch;
@@ -67,7 +78,9 @@ function check(s: unknown): string | undefined {
     if (!isCount(g.fundTicks) || typeof g.reopened !== 'boolean') return `grant ${id} counts`;
     if (g.leaseId !== undefined && typeof g.leaseId !== 'string') return `grant ${id} leaseId`;
     if (g.leaseTicks !== undefined && !isCount(g.leaseTicks)) return `grant ${id} leaseTicks`;
-    if (![g.lastPaidAt, g.endedAt, g.watchUntil, g.backoffUntil, g.nextReadAt].every(isTime)) return `grant ${id} times`;
+    if (![g.lastPaidAt, g.endedAt, g.watchUntil, g.backoffUntil, g.nextReadAt, g.openUnknown].every(isTime)) return `grant ${id} times`;
+    const o = g.opening;
+    if (o !== undefined && !(isObj(o) && typeof o.offerId === 'string' && typeof o.at === 'number' && Number.isFinite(o.at))) return `grant ${id} opening`;
     const f = g.inflight;
     if (f !== undefined && !(isObj(f) && typeof f.leaseId === 'string' && isCount(f.index) && typeof f.price === 'string' && /^\d+$/.test(f.price))) return `grant ${id} inflight`;
   }

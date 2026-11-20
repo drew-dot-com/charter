@@ -78,6 +78,29 @@ function readOffer(o: unknown): Offer | undefined {
   return { offerId: o.offerId, images: o.images.filter((i: unknown) => typeof i === 'string'), intervalSeconds: o.intervalSeconds, tick, free };
 }
 
+/**
+ * What a `POST /v1/rent` answer means for the fund. `retry` is true when an earlier open of the same
+ * grant got no answer (its `opening` marker was still set):
+ * - `opened`: 200, a lease is open and its first hour paid.
+ * - `lost`: no answer (network error or the client's timeout); the door may still have opened and settled.
+ * - `held`: `home_in_use` after an unanswered open: that open may be the running home. Nothing more is paid.
+ * - `in_use`: `home_in_use` on a first try: another home with these keys is running.
+ * - `refused`: a definite refusal; nothing of this grant's runs on that host.
+ * - `refused_still_unknown`: a door-level refusal of a retry (it never reached the host), so the earlier
+ *   unanswered open is still unknown.
+ */
+type RentOutcome = 'opened' | 'lost' | 'held' | 'in_use' | 'refused' | 'refused_still_unknown';
+
+function rentOutcome(a: Answer | Error, retry: boolean): RentOutcome {
+  if (a instanceof Error) return 'lost';
+  if (a.status === 200) return 'opened';
+  const body = isObj(a.body) ? a.body : {};
+  if (body.error === 'home_in_use' || body.closedReason === 'home_in_use') return retry ? 'held' : 'in_use';
+  // A `closedReason` means the host itself answered the open, after its home_in_use check passed.
+  if (!retry || typeof body.closedReason === 'string') return 'refused';
+  return 'refused_still_unknown';
+}
+
 /** A grant as `GET /v1/fund/grants` lists it, with only what the paymaster reads. */
 interface DoorGrant { grantId: string; state: string; image?: unknown; sshKeys?: unknown; decidedAt?: unknown; createdAt?: unknown }
 
@@ -203,6 +226,17 @@ class Pass {
     for (const g of Object.values(this.s.grants)) {
       if (g.watchUntil !== undefined && g.watchUntil > this.t && !g.renewedByGrantee) await this.safe('lease', () => this.watch(g), `grant ${short(g.grantId)}: `);
     }
+    for (const g of Object.values(this.s.grants)) {
+      if (g.openUnknown !== undefined && g.endedAt === undefined) this.heldProblem(g);
+    }
+  }
+
+  private heldProblem(g: FundGrant): void {
+    const when = new Date(g.opening?.at ?? g.openUnknown!).toISOString();
+    this.problem(
+      'open-unknown',
+      `grant ${g.grantId}: an open on offer ${g.opening?.offerId ?? 'unknown'} at ${when} got no answer, and the host now says a home with these keys is running. The fund may have paid for it and pays nothing more for this grant. Drew: look at the grant and stop it.`,
+    );
   }
 
   // -- local records --
@@ -219,7 +253,14 @@ class Pass {
   }
 
   private mayPay(g: FundGrant): boolean {
-    return !this.s.stopAll && !this.s.stopped.includes(g.grantId) && g.endedAt === undefined && g.watchUntil === undefined && g.fundTicks < GRANT_HOURS;
+    return (
+      !this.s.stopAll &&
+      !this.s.stopped.includes(g.grantId) &&
+      g.endedAt === undefined &&
+      g.watchUntil === undefined &&
+      g.openUnknown === undefined &&
+      g.fundTicks < GRANT_HOURS
+    );
   }
 
   private rollDay(): void {
@@ -367,7 +408,7 @@ class Pass {
   private async expire(waiting: DoorGrant[]): Promise<void> {
     for (const w of waiting) {
       const rec = this.s.grants[w.grantId];
-      if (rec && (rec.leaseId !== undefined || rec.endedAt !== undefined || rec.watchUntil !== undefined)) continue;
+      if (rec && (rec.leaseId !== undefined || rec.endedAt !== undefined || rec.watchUntil !== undefined || rec.openUnknown !== undefined)) continue;
       if (this.t - approvedAt(w) > WAIT_MS) await this.end(rec ?? this.record(w.grantId), 'expired');
     }
   }
@@ -414,6 +455,7 @@ class Pass {
 
   /** A paid open whose answer carries no usable lease id: the hour is counted as spent, the grant ends. */
   private async paidUnusable(g: FundGrant, price: bigint): Promise<void> {
+    delete g.opening;
     g.fundTicks += 1;
     g.lastPaidAt = this.t;
     this.addSpend(price);
@@ -426,7 +468,7 @@ class Pass {
     const ready = waiting
       .filter((w) => {
         const rec = this.s.grants[w.grantId];
-        return !rec || (rec.leaseId === undefined && rec.endedAt === undefined && rec.watchUntil === undefined);
+        return !rec || (rec.leaseId === undefined && rec.endedAt === undefined && rec.watchUntil === undefined && rec.openUnknown === undefined);
       })
       .filter((w) => !this.s.stopped.includes(w.grantId))
       .sort((a, b) => approvedAt(a) - approvedAt(b));
@@ -438,8 +480,16 @@ class Pass {
     if (!home) return this.problem('open', `grant ${w.grantId} has no usable keys or image; not opening it`);
     const offers = await this.offers();
     if (!offers) return;
-    const offer = offers.find((o) => o.free > 0 && o.images.includes(home.image));
-    if (!offer) return;
+    // After an unanswered open, only the same offer: its host refuses a second home on these keys.
+    // That retry does not need a free slot, since the host checks home_in_use before it counts slots.
+    const pinned = rec0?.opening;
+    const offer = pinned
+      ? offers.find((o) => o.offerId === pinned.offerId && o.images.includes(home.image))
+      : offers.find((o) => o.free > 0 && o.images.includes(home.image));
+    if (!offer) {
+      if (pinned) this.problem('open', `grant ${short(w.grantId)}: an earlier open on offer ${pinned.offerId} got no answer and that offer is not listed now; waiting for it, not opening anywhere else`);
+      return;
+    }
     const bal = await this.balance();
     if (bal === undefined) return;
     const live = this.live();
@@ -452,27 +502,41 @@ class Pass {
 
     const g = rec0 ?? this.record(w.grantId);
     g.home = home;
+    // Saved before the request: an answer lost to a timeout or a crash leaves this marker behind.
+    g.opening = { offerId: offer.offerId, at: pinned?.at ?? this.t };
     this.d.save();
     const a = await this.rent(g, offer, home);
-    if (a instanceof Error) {
-      this.backOff(g);
-      return this.problem('open', `grant ${short(g.grantId)}: the open got no answer (${errText(a)}); trying again in 5 minutes`);
+    switch (rentOutcome(a, pinned !== undefined)) {
+      case 'opened': {
+        const ok = a as Answer;
+        delete g.opening;
+        offer.free -= 1;
+        const leaseId = isObj(ok.body) ? ok.body.leaseId : undefined;
+        if (typeof leaseId !== 'string' || !ID.test(leaseId)) return this.paidUnusable(g, offer.tick);
+        g.leaseId = leaseId;
+        g.leaseTicks = 0;
+        this.readAgainAt(g, ok.body.paidThrough, offer.intervalSeconds);
+        return this.counted(g, offer.tick, { state: 'active', leaseId });
+      }
+      case 'lost':
+        this.backOff(g);
+        return this.problem('open', `grant ${short(g.grantId)}: the open on offer ${offer.offerId} got no answer (${errText(a)}); trying that offer again in 5 minutes`);
+      case 'held':
+        g.openUnknown = this.t;
+        this.d.save();
+        return this.heldProblem(g);
+      case 'in_use':
+        delete g.opening;
+        this.problem('open', `grant ${short(g.grantId)}: a home with these keys is already running; the grant ends`);
+        return this.end(g, 'ended_early');
+      case 'refused':
+        delete g.opening;
+        this.backOff(g);
+        return this.problem('open', `grant ${short(g.grantId)}: the open answered ${(a as Answer).status} ${errOf(a as Answer)}; trying again in 5 minutes`);
+      case 'refused_still_unknown':
+        this.backOff(g);
+        return this.problem('open', `grant ${short(g.grantId)}: the retry answered ${(a as Answer).status} ${errOf(a as Answer)}; the earlier open is still unknown, trying offer ${offer.offerId} again in 5 minutes`);
     }
-    if (a.status === 200) {
-      offer.free -= 1;
-      const leaseId = isObj(a.body) ? a.body.leaseId : undefined;
-      if (typeof leaseId !== 'string' || !ID.test(leaseId)) return this.paidUnusable(g, offer.tick);
-      g.leaseId = leaseId;
-      g.leaseTicks = 0;
-      this.readAgainAt(g, a.body.paidThrough, offer.intervalSeconds);
-      return this.counted(g, offer.tick, { state: 'active', leaseId });
-    }
-    if (isObj(a.body) && (a.body.error === 'home_in_use' || a.body.closedReason === 'home_in_use')) {
-      this.problem('open', `grant ${short(g.grantId)}: a home with these keys is already running; the grant ends`);
-      return this.end(g, 'ended_early');
-    }
-    this.backOff(g);
-    this.problem('open', `grant ${short(g.grantId)}: the open answered ${a.status} ${errOf(a)}; trying again in 5 minutes`);
   }
 
   /** Reads a live grant's lease (when a read is due), then re-opens it, ends it, or pays its next hour. */
@@ -506,7 +570,8 @@ class Pass {
     }
 
     if (lease.state === 'closed' || lease.state === 'done') {
-      if (g.reopened) return this.end(g, 'ended_early');
+      // A re-open whose answer was lost is tried again on its offer; otherwise the second close ends it.
+      if (g.reopened && g.opening === undefined) return this.end(g, 'ended_early');
       return this.reopen(g, r.body.offer);
     }
     if (r.body.stopped === true) {
@@ -555,7 +620,10 @@ class Pass {
     this.problem('tick', `grant ${short(g.grantId)} tick ${index} answered ${a.status} ${errOf(a)}; trying again in 5 minutes`);
   }
 
-  /** The one re-open a grant gets after its lease closes, with the same keys; any refusal ends the grant. */
+  /**
+   * The one re-open a grant gets after its lease closes, with the same keys. A definite refusal ends the
+   * grant; a lost answer is tried again on the same offer only, as an open is.
+   */
   private async reopen(g: FundGrant, leaseOffer: unknown): Promise<void> {
     if (!this.mayPay(g)) return;
     const home = g.home;
@@ -565,33 +633,63 @@ class Pass {
     }
     const offers = await this.offers();
     if (!offers) return;
-    const fits = offers.filter((o) => o.free > 0 && o.images.includes(home.image));
-    const same = isObj(leaseOffer) ? leaseOffer.offerId : undefined;
-    const offer = fits.find((o) => o.offerId === same) ?? fits[0];
+    const pinned = g.opening;
+    let offer: Offer | undefined;
+    if (pinned) {
+      offer = offers.find((o) => o.offerId === pinned.offerId && o.images.includes(home.image));
+    } else {
+      const fits = offers.filter((o) => o.free > 0 && o.images.includes(home.image));
+      const same = isObj(leaseOffer) ? leaseOffer.offerId : undefined;
+      offer = fits.find((o) => o.offerId === same) ?? fits[0];
+    }
     if (!offer) {
       g.nextReadAt = this.t + BACKOFF_MS;
-      return this.problem('open', `grant ${short(g.grantId)}: its lease closed and no offer has a free home slot; waiting to re-open`);
+      return this.problem(
+        'open',
+        pinned
+          ? `grant ${short(g.grantId)}: an earlier re-open on offer ${pinned.offerId} got no answer and that offer is not listed now; waiting for it, not opening anywhere else`
+          : `grant ${short(g.grantId)}: its lease closed and no offer has a free home slot; waiting to re-open`,
+      );
     }
     if (!dayCapOk(this.spent(), this.live().length, offer.tick, offer.tick)) {
       g.nextReadAt = this.t + BACKOFF_MS;
       return this.problem('daycap', `grant ${short(g.grantId)}: the day cap leaves no room to re-open today`);
     }
-    // Saved before the request: a crash after it can never re-open a second time.
+    // Saved before the request: a crash or a lost answer can never lead to a re-open somewhere else.
     g.reopened = true;
+    g.opening = { offerId: offer.offerId, at: pinned?.at ?? this.t };
     this.d.save();
     const a = await this.rent(g, offer, home);
-    if (!(a instanceof Error) && a.status === 200) {
-      offer.free -= 1;
-      const leaseId = isObj(a.body) ? a.body.leaseId : undefined;
-      if (typeof leaseId !== 'string' || !ID.test(leaseId)) return this.paidUnusable(g, offer.tick);
-      g.leaseId = leaseId;
-      g.leaseTicks = 0;
-      this.readAgainAt(g, a.body.paidThrough, offer.intervalSeconds);
-      return this.counted(g, offer.tick, { leaseId });
+    switch (rentOutcome(a, pinned !== undefined)) {
+      case 'opened': {
+        const ok = a as Answer;
+        delete g.opening;
+        offer.free -= 1;
+        const leaseId = isObj(ok.body) ? ok.body.leaseId : undefined;
+        if (typeof leaseId !== 'string' || !ID.test(leaseId)) return this.paidUnusable(g, offer.tick);
+        g.leaseId = leaseId;
+        g.leaseTicks = 0;
+        this.readAgainAt(g, ok.body.paidThrough, offer.intervalSeconds);
+        return this.counted(g, offer.tick, { leaseId });
+      }
+      case 'lost':
+        this.backOff(g);
+        return this.problem('open', `grant ${short(g.grantId)}: the re-open on offer ${offer.offerId} got no answer (${errText(a)}); trying that offer again in 5 minutes`);
+      case 'held':
+        g.openUnknown = this.t;
+        this.d.save();
+        return this.heldProblem(g);
+      case 'refused_still_unknown':
+        this.backOff(g);
+        return this.problem('open', `grant ${short(g.grantId)}: the re-open retry answered ${(a as Answer).status} ${errOf(a as Answer)}; the earlier re-open is still unknown, trying offer ${offer.offerId} again in 5 minutes`);
+      case 'in_use':
+      case 'refused': {
+        delete g.opening;
+        const r = a as Answer;
+        this.problem('open', `grant ${short(g.grantId)}: the re-open answered ${r.status} ${errOf(r)}; ending the grant`);
+        return this.end(g, 'ended_early');
+      }
     }
-    const why = a instanceof Error ? `got no answer (${errText(a)})` : `answered ${a.status} ${errOf(a)}`;
-    this.problem('open', `grant ${short(g.grantId)}: the re-open ${why}; ending the grant`);
-    return this.end(g, 'ended_early');
   }
 
   /** After completion: read the lease about once an hour, only to see whether the grantee renewed. */

@@ -17,7 +17,7 @@ const hex = () => randomBytes(16).toString('hex');
 const KEYS = ['ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeKeyForTestsOnly0000000000000000000000 a@b'];
 const ADDRESS = '0x2222222222222222222222222222222222222222';
 
-interface FakeLease { state: string; paidIntervals: number; paidThrough?: number; closedReason?: string; keys: string }
+interface FakeLease { state: string; paidIntervals: number; paidThrough?: number; closedReason?: string; keys: string; offerId?: string }
 
 function offer(o: Record<string, unknown> = {}) {
   return {
@@ -111,7 +111,13 @@ class FakeDoor implements DoorClient {
   }
 
   async pay(path: string, json: any): Promise<Answer> {
-    let a = this.onPay?.(path, json);
+    let a: Answer | undefined;
+    try {
+      a = this.onPay?.(path, json);
+    } catch (e) {
+      this.pays.push({ path, json, status: 0 }); // sent, answer lost
+      throw e;
+    }
     if (!a) a = this.answerPay(path, json);
     this.pays.push({ path, json, status: a.status });
     return a;
@@ -122,12 +128,13 @@ class FakeDoor implements DoorClient {
       const o = this.offers.find((x) => x.offerId === json.offerId);
       if (!o) return { status: 404, body: { error: 'not_found' } };
       const keys = json.home.sshKeys.join('\n');
-      if ([...this.leases.values()].some((l) => l.keys === keys && l.state === 'running')) {
+      // One host, one disk per key set: home_in_use is that host's own check, as in host/server.ts.
+      if ([...this.leases.values()].some((l) => l.keys === keys && l.state === 'running' && (l.offerId ?? 'hostpub:offer1') === json.offerId)) {
         return { status: 502, body: { error: 'home_in_use', leaseId: hex(), state: 'closed', closedReason: 'home_in_use' } };
       }
       const leaseId = hex();
       const paidThrough = this.clock.t + o.intervalSeconds * 1000;
-      this.leases.set(leaseId, { state: 'running', paidIntervals: 1, paidThrough, keys });
+      this.leases.set(leaseId, { state: 'running', paidIntervals: 1, paidThrough, keys, offerId: json.offerId });
       return { status: 200, body: { leaseId, state: 'running', paidIntervals: 1, paidThrough, duplicate: false, next: { path: `/v1/leases/${leaseId}/ticks`, index: 1 }, offer: o } };
     }
     const m = /^\/v1\/leases\/([0-9a-f]{32})\/ticks$/.exec(path);
@@ -354,6 +361,164 @@ test('the door answering offers as { offers } is read too', async () => {
   r.door.onGet = (p) => (p === '/v1/offers' ? { status: 200, body: { offers: list } } : undefined);
   const id = r.door.grant();
   await r.run();
+  assert.equal(r.door.g(id).state, 'active');
+});
+
+// ---- unanswered opens ----
+
+const B = 'hostpub:offerB';
+const freeOffer = (offerId: string, free: number) => offer({ offerId, home: { diskGiB: 2, retentionDays: 7, slots: 2, free } });
+
+test('a timed-out open is retried on the same offer only', async () => {
+  const r = rig();
+  r.door.offers = [freeOffer('hostpub:offer1', 1), freeOffer(B, 1)];
+  let lose = true;
+  r.door.onPay = (path) => {
+    if (path === '/v1/rent' && lose) throw new Error('The operation was aborted due to timeout');
+    return undefined;
+  };
+  const id = r.door.grant();
+  await r.run();
+  assert.deepEqual(r.state.grants[id]!.opening, { offerId: 'hostpub:offer1', at: T0 });
+  assert.ok(r.problems.some((p) => p.key === 'open'));
+  // offer1 now shows no free slot and offerB does: the retry still goes to offer1 only
+  lose = false;
+  r.door.offers = [freeOffer(B, 1), freeOffer('hostpub:offer1', 0)];
+  r.clock.t += 5 * 60_000;
+  await r.run();
+  const rents = r.door.pays.filter((p) => p.path === '/v1/rent');
+  assert.equal(rents.length, 2);
+  assert.ok(rents.every((p) => p.json.offerId === 'hostpub:offer1'), rents.map((p) => p.json.offerId).join(','));
+  assert.equal(r.door.g(id).state, 'active');
+  assert.equal(r.state.grants[id]!.opening, undefined, 'a 200 clears the marker');
+});
+
+test('home_in_use after an unanswered open records open-unknown and does not end the grant', async () => {
+  const r = rig();
+  r.door.offers = [freeOffer('hostpub:offer1', 1), freeOffer(B, 1)];
+  let lose = true;
+  r.door.onPay = (path, json) => {
+    if (path !== '/v1/rent' || !lose) return undefined;
+    // the door opens the home and settles, then the answer is lost
+    const l = hex();
+    r.door.leases.set(l, { state: 'running', paidIntervals: 1, paidThrough: r.clock.t + HOUR, keys: json.home.sshKeys.join('\n'), offerId: json.offerId });
+    throw new Error('socket hang up');
+  };
+  const id = r.door.grant();
+  const other = r.door.grant({ decidedAt: T0 + 1, sshKeys: ['ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtherKeyForTestsOnly000000000000000000000 c@d'] });
+  await r.run();
+  lose = false;
+  r.clock.t += 5 * 60_000;
+  await r.run();
+  const f = r.state.grants[id]!;
+  assert.equal(r.door.g(id).state, 'approved_waiting', 'not ended');
+  assert.equal(f.openUnknown, r.clock.t);
+  assert.equal(f.opening?.offerId, 'hostpub:offer1', 'the marker is kept');
+  assert.ok(r.problems.some((p) => p.key === 'open-unknown' && p.msg.includes(id)));
+  const rentsFor = () => r.door.pays.filter((p) => p.path === '/v1/rent' && p.json.home.sshKeys[0] === KEYS[0]);
+  assert.equal(rentsFor().length, 2);
+  assert.ok(rentsFor().every((p) => p.json.offerId === 'hostpub:offer1'));
+  // it neither blocks the next grant nor gets paid, expired or retried later
+  r.problems.length = 0;
+  for (const step of [5 * 60_000, HOUR, 15 * DAY]) {
+    r.clock.t += step;
+    await r.run();
+  }
+  assert.equal(r.door.g(other).state, 'active');
+  assert.equal(rentsFor().length, 2, 'nothing more paid for it');
+  assert.equal(r.door.g(id).state, 'approved_waiting');
+  assert.ok(r.problems.some((p) => p.key === 'open-unknown'), 'still reported each cycle');
+  // Drew's stop ends it
+  r.state.stopped.push(id);
+  r.clock.t += 60_000;
+  await r.run();
+  assert.equal(r.door.g(id).state, 'stopped');
+});
+
+test('a crash after a 200 open (marker saved, leaseId not) does not open a second home on another offer', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fund-state-'));
+  const file = join(dir, 'state.json');
+  let state = loadState(file);
+  let crashed = false;
+  const r = rig({
+    state,
+    save: () => {
+      if (crashed) throw new Error('process killed');
+      saveState(file, state);
+    },
+  });
+  r.door.offers = [freeOffer('hostpub:offer1', 1), freeOffer(B, 1)];
+  r.door.onPay = (path) => {
+    if (path === '/v1/rent') crashed = true; // the process dies once the door has answered 200
+    return undefined;
+  };
+  const id = r.door.grant();
+  await r.run();
+  assert.equal(r.door.paid().length, 1);
+  // restart from the file: the marker is there, the lease id is not
+  state = loadState(file);
+  assert.equal(state.grants[id]!.leaseId, undefined);
+  assert.equal(state.grants[id]!.opening?.offerId, 'hostpub:offer1');
+  r.door.onPay = undefined;
+  r.door.offers = [freeOffer(B, 1), freeOffer('hostpub:offer1', 0)];
+  r.clock.t += 2 * 60_000;
+  await r.run({ state, save: () => saveState(file, state) });
+  assert.equal(r.door.paid().length, 1, 'no second home');
+  assert.ok(r.door.pays.filter((p) => p.path === '/v1/rent').every((p) => p.json.offerId === 'hostpub:offer1'));
+  assert.equal(r.door.g(id).state, 'approved_waiting');
+  assert.ok(r.problems.some((p) => p.key === 'open-unknown'));
+  assert.ok(loadState(file).grants[id]!.openUnknown !== undefined, 'the hold is saved');
+});
+
+test('a lost re-open answer does not end the grant: it is retried on its offer, then held', async () => {
+  const r = rig();
+  const { id, leaseId } = await opened(r);
+  r.door.close(leaseId);
+  r.door.offers = [freeOffer('hostpub:offer1', 1), freeOffer(B, 1)];
+  let lose = true;
+  r.door.onPay = (path, json) => {
+    if (path !== '/v1/rent' || !lose) return undefined;
+    r.door.leases.set(hex(), { state: 'running', paidIntervals: 1, paidThrough: r.clock.t + HOUR, keys: json.home.sshKeys.join('\n'), offerId: json.offerId });
+    throw new Error('timeout');
+  };
+  r.clock.t += 2 * HOUR;
+  await r.run();
+  assert.equal(r.door.g(id).state, 'active', 'not ended on a lost answer');
+  assert.equal(r.state.grants[id]!.opening?.offerId, 'hostpub:offer1');
+  lose = false;
+  r.door.offers = [freeOffer(B, 1), freeOffer('hostpub:offer1', 0)];
+  r.clock.t += 5 * 60_000;
+  await r.run();
+  const rents = r.door.pays.filter((p) => p.path === '/v1/rent');
+  assert.equal(rents.length, 3);
+  assert.ok(rents.every((p) => p.json.offerId === 'hostpub:offer1'));
+  assert.equal(r.door.g(id).state, 'active');
+  assert.notEqual(r.state.grants[id]!.openUnknown, undefined);
+  assert.ok(r.problems.some((p) => p.key === 'open-unknown'));
+  const pays = r.door.pays.length;
+  r.clock.t += 3 * HOUR;
+  await r.run();
+  assert.equal(r.door.pays.length, pays, 'nothing paid while held');
+});
+
+test('a lost re-open whose retry opens carries on', async () => {
+  const r = rig();
+  const { id, leaseId } = await opened(r);
+  r.door.close(leaseId);
+  let lose = true;
+  r.door.onPay = (path) => {
+    if (path === '/v1/rent' && lose) throw new Error('timeout');
+    return undefined;
+  };
+  r.clock.t += 2 * HOUR;
+  await r.run();
+  lose = false;
+  r.clock.t += 5 * 60_000;
+  await r.run();
+  const f = r.state.grants[id]!;
+  assert.notEqual(f.leaseId, leaseId);
+  assert.equal(f.opening, undefined);
+  assert.equal(f.fundTicks, 2);
   assert.equal(r.door.g(id).state, 'active');
 });
 
