@@ -1,11 +1,12 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { HostError, type HostApi, type OpenResult } from '../tenant/host-api.js';
 import { findOfferExact } from '../tenant/offers.js';
-import { JOB_IMAGES, jobFromBody } from '../jobs.js';
+import { JOB_IMAGES, homeIdOf, jobFromBody } from '../jobs.js';
+import { ownerView, publicView, validatePitch, type GrantStore } from './grants.js';
 import type { JobSpec, Lease, Micro, Offer } from '../types.js';
 import { DeadlinePassedError, SendTimeoutError } from '../payer.js';
 import { offerOfSnapshot, snapshotOffer, type DoorLedger, type LossKind } from './ledger.js';
@@ -59,7 +60,15 @@ export interface DoorDeps {
   requestSink?: RequestSink;
   /** Only read when `x402` is 'free-for-tests'. */
   testHooks?: TestHooks;
+  /** The grant fund's pitch log. Left out: the /v1/grants routes are not mounted. */
+  grants?: GrantStore;
+  /** False answers a pitch `503 fund_closed`. Default: open. */
+  fundOpen?: () => boolean;
 }
+
+const PITCHES_PER_HOUR = 5;
+const QUEUE_CAP = 50;
+const LIST_CAP = 200;
 
 const OFFERS_TTL_MS = 60_000;
 const STATUS_TTL_MS = 5_000;
@@ -225,6 +234,7 @@ export function doorApp(deps: DoorDeps): express.Express {
   const allowDoorOpen = slidingLimit(now, DOOR_OPENS_PER_HOUR, HOUR_MS);
   const allowGet = slidingLimit(now, GETS_PER_MINUTE, MINUTE_MS);
   const allowTick = slidingLimit(now, TICKS_PER_MINUTE, MINUTE_MS);
+  const allowPitch = slidingLimit(now, PITCHES_PER_HOUR, HOUR_MS);
 
   /** What the door last read from the host for each lease, and any read in flight. */
   const statuses = new Map<string, { lease: Lease; at: number }>();
@@ -355,6 +365,39 @@ export function doorApp(deps: DoorDeps): express.Express {
   if (deps.x402 !== 'free-for-tests') {
     const { payTo, network } = deps.x402;
     app.get('/v1/door', (_req, res) => void res.json({ payTo, network }));
+  }
+
+  if (deps.grants) {
+    const grants = deps.grants;
+    app.post('/v1/grants', (req, res) => {
+      if (!allowPitch(req.ip ?? 'unknown')) return void res.status(429).json({ error: 'rate_limited' });
+      if (deps.fundOpen && !deps.fundOpen()) return void res.status(503).json({ error: 'fund_closed' });
+      const v = validatePitch(req.body);
+      if (!v.ok) return void res.status(400).json({ error: v.error });
+      if (grants.homeIdGranted(homeIdOf(v.pitch.sshKeys))) return void res.status(409).json({ error: 'already_granted' });
+      if (grants.queued().length >= QUEUE_CAP) return void res.status(503).json({ error: 'full' });
+      const token = randomBytes(32).toString('hex');
+      const g = grants.add(v.pitch, token);
+      res.status(201).json({ grantId: g.grantId, grantToken: token, state: g.state, next: `/v1/grants/${g.grantId}` });
+    });
+    app.get('/v1/grants/:id', (req, res) => {
+      const id = String(req.params.id);
+      const g = grants.get(id);
+      if (!g) return void res.status(404).json({ error: 'not_found' });
+      const token = req.get('x-grant-token');
+      res.json(token && grants.tokenOk(id, token) ? ownerView(g) : publicView(g));
+    });
+    app.get('/v1/grants', (_req, res) => {
+      const list = grants.all().sort((a, b) => b.createdAt - a.createdAt).slice(0, LIST_CAP).map(publicView);
+      let fund: { address: unknown; balanceMicro: unknown; grantsLeft: unknown } | null = null;
+      try {
+        const f = JSON.parse(readFileSync(join(deps.dataDir, 'fund-public.json'), 'utf8')) as Record<string, unknown>;
+        fund = { address: f.address, balanceMicro: f.balanceMicro, grantsLeft: f.grantsLeft };
+      } catch {
+        // the fund has not reported
+      }
+      res.json({ grants: list, fund });
+    });
   }
 
   /** What the door's ledger says about a host: leases with a renter-paid interval, and the newest one. */

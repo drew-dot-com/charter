@@ -14,6 +14,7 @@ import { parseCdpKey, parseClaimKey, parseDoorHosts, parseTrustProxy } from './c
 import { DoorLedger, LEDGER_FILE } from './ledger.js';
 import { fileRequestSink } from './reqlog.js';
 import { doorApp } from './server.js';
+import { GrantStore } from './grants.js';
 import { BASE_USDC, buildSchemes, facilitatorOffersBatch, type Schemes, type X402Config } from './x402.js';
 import { unblockCommand } from './unblock.js';
 
@@ -58,6 +59,18 @@ async function main(): Promise<void> {
   const trustProxy = parseTrustProxy(env.CHARTER_DOOR_TRUST_PROXY);
   const hosts = parseDoorHosts(env.CHARTER_DOOR_HOSTS);
 
+  const grants = new GrantStore(join(dataDir, 'grants.jsonl'), Date.now);
+  grants.dropOldPitches();
+  setInterval(() => grants.dropOldPitches(), 3_600_000).unref();
+  // Intake is open only while the fund says so; a fund that has not reported (no file) means closed.
+  const fundOpen = (): boolean => {
+    try {
+      return (JSON.parse(readFileSync(join(dataDir, 'fund-public.json'), 'utf8')) as { open?: unknown }).open === true;
+    } catch {
+      return false;
+    }
+  };
+
   const client = await doorPayer(env);
   // The channel is opened (or found) now, at boot, not inside the first tick's payment window.
   try {
@@ -94,6 +107,8 @@ async function main(): Promise<void> {
     reopen: () => client.warm(),
     ledger,
     dataDir,
+    grants,
+    fundOpen,
     x402,
     schemes,
     offerBatch,
