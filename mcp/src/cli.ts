@@ -3,6 +3,7 @@
  * drives a shell instead of speaking MCP. Every answer is one JSON document on stdout; a failure is
  * `{"error": "..."}` and exit code 1. The money rules are the server's own (core.ts).
  */
+import type { Pitch } from './core.js';
 import type { Actions } from './server.js';
 
 export const USAGE = `usage:
@@ -15,11 +16,17 @@ export const USAGE = `usage:
                                                 PAID, one interval: open a Linux home with these SSH public keys
   charter-mcp lease <leaseId>                   free: state, paid time left, SSH address, finished output
   charter-mcp extend <leaseId> <hours>          PAID, one interval each: pay the next 1 to 24 intervals
+  charter-mcp pitch --name <n> --keys <keys.pub> --pitch-file <file> [--image charter-home | charter-hermes] [--link <https url>]
+                                                free: pitch the grant fund for a home (30 days, paid by the fund)
+  charter-mcp grant --id <grantId> --token-file <file>
+                                                free: read your own grant (the full lease id once granted)
 
 One interval is an hour at 0.007 USDC on the live host. --wait is 10 to 240 seconds (default 40); a job
 still running then prints its leaseId, and \`lease\` collects the output for free.
 Environment: CHARTER_MAX_USDC_PER_HOUR (0.01), CHARTER_MAX_USDC_PER_DAY (0.25), CHARTER_MCP_KEY_FILE,
 CHARTER_MCP_NO_NEW_KEY, CHARTER_MCP_SPEND_FILE, CHARTER_BASE_RPC, CHARTER_DOOR_URL.
+Pitching is free and a model judges it; ask your operator first. Every decision is public at /grants on the door.
+Keep the grantToken a pitch prints: it is the only way to read your lease id.
 Docs: https://charter.mainnet.toonprotocol.dev/agents`;
 
 export interface CliIo {
@@ -105,6 +112,24 @@ export async function cli(argv: string[], io: CliIo): Promise<CliResult> {
         const { rest } = parse(args, []);
         if (rest.length !== 2 || !/^\d{1,2}$/.test(rest[1]!)) throw new UsageError('extend takes a leaseId and a number of intervals, 1 to 24');
         return ok(await io.actions().extend(rest[0]!, Number(rest[1])));
+      }
+      case 'pitch': {
+        const { rest, flags } = parse(args, ['name', 'keys', 'pitch-file', 'image', 'link']);
+        if (rest.length !== 0 || !flags.name || !flags.keys || !flags['pitch-file']) throw new UsageError('pitch takes --name, --keys <file> and --pitch-file <file>');
+        const sshKeys = io
+          .readFile(flags.keys)
+          .split('\n')
+          .map((l) => l.trim())
+          .filter((l) => l && !l.startsWith('#'));
+        const p: Pitch = { name: flags.name, pitch: io.readFile(flags['pitch-file']).trim(), sshKeys };
+        if (flags.image !== undefined) p.image = flags.image as Pitch['image'];
+        if (flags.link !== undefined) p.link = flags.link;
+        return ok(await io.actions().pitch(p));
+      }
+      case 'grant': {
+        const { rest, flags } = parse(args, ['id', 'token-file']);
+        if (rest.length !== 0 || !flags.id || !flags['token-file']) throw new UsageError('grant takes --id <grantId> and --token-file <file>');
+        return ok(await io.actions().grantStatus(flags.id, io.readFile(flags['token-file']).trim()));
       }
       default:
         throw new UsageError(cmd === undefined ? 'no command' : `unknown command ${cmd}`);

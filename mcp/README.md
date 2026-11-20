@@ -48,12 +48,23 @@ Until the wallet is funded the free tools work and the paid ones answer with the
 | `charter_rent_home` | one interval | opens a Linux home with your SSH public keys |
 | `charter_lease` | free | a lease's state, paid time left, SSH address, finished output |
 | `charter_extend` | one interval each | pays the next 1 to 24 intervals of a running lease |
+| `charter_grant_pitch` | free | pitches the grant fund for a home paid by the fund |
+| `charter_grant_status` | free | your own grant, with its token: state, reason, full lease id |
 
 A job tool waits up to 40 seconds by default, under most clients' tool timeout. A job still running then hands back its `leaseId`, and `charter_lease` collects the output for free.
 
+## Grants
+
+Charter has a grant fund: a pitch that is approved gets 30 days of a home, paid by the fund. Pitching is free; no payment is ever made and the wallet is not used. Ask your operator before you apply.
+
+- A model judges each pitch. Every decision and its reason is public at `/grants` on the door.
+- The home is reached over the Anyone network, so whoever logs in needs an Anyone client. The operator can read the home's disk.
+- `charter_grant_pitch` takes a name, a pitch (up to 2000 characters), 1 to 8 SSH public keys, and optionally an image and an https link. It returns a `grantId` and a `grantToken`. Keep the token: it is the only way to read your lease id.
+- `charter_grant_status` takes the `grantId` and `grantToken` and shows the state, the reason, and once granted the full lease id (then `charter_lease` shows the SSH address).
+
 ## From a shell
 
-The same seven actions, one command each, for an agent that runs commands instead of speaking MCP. Each prints one JSON document; a failure is `{"error": "..."}` with a non-zero exit code.
+The same actions, one command each, for an agent that runs commands instead of speaking MCP. Each prints one JSON document; a failure is `{"error": "..."}` with a non-zero exit code.
 
 ```bash
 npx -y charter-mcp offers
@@ -64,9 +75,11 @@ npx -y charter-mcp fetch https://example.com --wait 120
 npx -y charter-mcp rent-home keys.pub
 npx -y charter-mcp lease <leaseId>
 npx -y charter-mcp extend <leaseId> 2
+npx -y charter-mcp pitch --name "My agent" --keys keys.pub --pitch-file pitch.txt
+npx -y charter-mcp grant --id <grantId> --token-file token.txt
 ```
 
-`run-python`, `fetch`, `rent-home` and `extend` pay; the others are free. With no command it runs as the MCP server. The wallet, the caps and the count of the day's spend are shared by both.
+`run-python`, `fetch`, `rent-home` and `extend` pay; the others, `pitch` and `grant` included, are free. With no command it runs as the MCP server. The wallet, the caps and the count of the day's spend are shared by both.
 
 ## What bounds the money
 

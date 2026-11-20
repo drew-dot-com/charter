@@ -9,10 +9,12 @@ import {
   PayError,
   cheapestOffer,
   extend,
+  grantStatus,
   lease,
   microToUsdc,
   onlyDoorExact,
   output,
+  pitch,
   rent,
   runJob,
   usdcToMicro,
@@ -44,6 +46,9 @@ function book(maxDay = 250_000n): SpendBook & { days: Map<string, bigint> } {
 interface Fake extends Deps {
   paid: { path: string; json: any; limit: bigint }[];
   gets: string[];
+  posts: { path: string; json: any }[];
+  grantHeaders: (Record<string, string> | undefined)[];
+  postAnswer: Answer;
   spend: ReturnType<typeof book>;
 }
 
@@ -53,12 +58,20 @@ function fake(routes: Record<string, Answer | (() => Answer)>, onPay?: (path: st
   const f: Fake = {
     paid: [],
     gets: [],
+    posts: [],
+    grantHeaders: [],
+    postAnswer: { status: 201, body: { grantId: 'g1', grantToken: 'tok', state: 'queued', next: 'wait' } },
     spend: book(o.maxDay),
     maxHour: o.maxHour ?? 10_000n,
     now: () => t,
     sleep: async (ms) => void (t += ms),
-    get: async (path) => {
+    post: async (path, json) => {
+      f.posts.push({ path, json });
+      return f.postAnswer;
+    },
+    get: async (path, headers) => {
       f.gets.push(path);
+      f.grantHeaders.push(headers);
       const r = routes[path];
       if (!r) return { status: 404, body: { error: 'not_found' } };
       return typeof r === 'function' ? r() : r;
@@ -299,4 +312,53 @@ test('extend refuses a lease that is over and pays nothing', async () => {
   const d = fake({ [`/v1/leases/${ID}`]: { status: 200, body: { lease: { state: 'closed', closedReason: 'missed_tick', paidIntervals: 4 }, offer: OFFER } } }, rentOk);
   await assert.rejects(extend(d, ID, 1), /the lease is over \(missed_tick\)/);
   assert.equal(d.paid.length, 0);
+});
+
+const KEY = 'ssh-ed25519 AAAA one';
+
+test('pitch posts to /v1/grants and returns the token', async () => {
+  const d = fake({}, rentOk);
+  const r = await pitch(d, { name: 'Ada', pitch: 'I run a small bot', sshKeys: [KEY], image: 'charter-hermes', link: 'https://example.com/a' });
+  assert.deepEqual(r, { grantId: 'g1', grantToken: 'tok', next: 'wait' });
+  assert.deepEqual(d.posts, [{ path: '/v1/grants', json: { name: 'Ada', pitch: 'I run a small bot', sshKeys: [KEY], image: 'charter-hermes', link: 'https://example.com/a' } }]);
+  assert.equal(d.paid.length, 0, 'a pitch never pays');
+  assert.equal(d.spend.spent('2026-11-18'), 0n);
+});
+
+test('pitch checks its input before any request and names the door error when refused', async () => {
+  const d = fake({});
+  const base = { name: 'Ada', pitch: 'x', sshKeys: [KEY] };
+  for (const bad of [
+    { ...base, name: '' },
+    { ...base, name: 'n'.repeat(81) },
+    { ...base, pitch: '' },
+    { ...base, pitch: 'p'.repeat(2001) },
+    { ...base, sshKeys: [] },
+    { ...base, sshKeys: [KEY, KEY, KEY, KEY, KEY, KEY, KEY, KEY, KEY] },
+    { ...base, sshKeys: ['-----BEGIN OPENSSH PRIVATE KEY-----'] },
+    { ...base, image: 'other' as any },
+    { ...base, link: 'http://example.com' },
+    { ...base, link: 'https://e.com/' + 'a'.repeat(200) },
+  ]) await assert.rejects(pitch(d, bad), Error);
+  assert.deepEqual(d.posts, []);
+  const cases: [number, string, RegExp][] = [
+    [503, 'fund_closed', /the fund is closed right now \(fund_closed\)/],
+    [503, 'full', /the queue is full right now \(full\)/],
+    [409, 'already_granted', /already_granted/],
+    [429, 'rate_limited', /rate_limited/],
+    [400, 'bad_keys', /bad_keys/],
+  ];
+  for (const [status, error, re] of cases) {
+    d.postAnswer = { status, body: { error } };
+    await assert.rejects(pitch(d, base), re);
+  }
+});
+
+test('grantStatus reads GET /v1/grants/:id with the token header', async () => {
+  const d = fake({ '/v1/grants/g1': { status: 200, body: { grantId: 'g1', state: 'approved', leaseId: ID } } });
+  const r = await grantStatus(d, 'g1', 'tok');
+  assert.equal((r as any).leaseId, ID);
+  assert.deepEqual(d.grantHeaders, [{ 'x-grant-token': 'tok' }]);
+  await assert.rejects(grantStatus(d, 'nope', 'tok'), /404|unknown|know/);
+  await assert.rejects(grantStatus(d, '../x', 'tok'), /grantId/);
 });

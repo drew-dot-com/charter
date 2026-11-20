@@ -93,15 +93,15 @@ const done = (stdout: string) => ({
   [`/v1/leases/${ID}/output/0`]: { part: 0, parts: 1, data: Buffer.from(JSON.stringify({ kind: 'python', exitCode: 0, stdout, stderr: '' })).toString('base64') },
 });
 
-test('the server lists its seven tools, and every paid one says PAID first', async () => {
+test('the server lists its nine tools, and every paid one says PAID first', async () => {
   const { client } = await connect(options(), door({}).fetchFn);
   const { tools } = await client.listTools();
-  assert.deepEqual(tools.map((t) => t.name).sort(), ['charter_extend', 'charter_fetch_pages', 'charter_lease', 'charter_offers', 'charter_rent_home', 'charter_run_python', 'charter_wallet']);
+  assert.deepEqual(tools.map((t) => t.name).sort(), ['charter_extend', 'charter_fetch_pages', 'charter_grant_pitch', 'charter_grant_status', 'charter_lease', 'charter_offers', 'charter_rent_home', 'charter_run_python', 'charter_wallet']);
   for (const t of tools) {
     const paid = ['charter_extend', 'charter_fetch_pages', 'charter_rent_home', 'charter_run_python'].includes(t.name);
     assert.equal(t.description!.startsWith('PAID.'), paid, t.name);
     assert.equal(t.description!.startsWith('Free.'), !paid, t.name);
-    assert.equal(t.annotations?.readOnlyHint, !paid, t.name);
+    assert.equal(t.annotations?.readOnlyHint, t.name === 'charter_grant_pitch' ? false : !paid, t.name);
     assert.ok(!t.description!.includes(String.fromCharCode(0x2014)), `${t.name} has an em dash`);
   }
 });
@@ -326,4 +326,50 @@ test('options come from the environment with safe defaults and refuse a cap that
   assert.equal(o.maxDay, 1_000_000n);
   assert.equal(o.makeKey, false);
   assert.throws(() => optionsFromEnv({ CHARTER_MAX_USDC_PER_HOUR: 'lots' }), /not a USDC amount/);
+});
+
+const PITCH = { name: 'Ada', pitch: 'I run a small bot', sshKeys: ['ssh-ed25519 AAAA one'] };
+
+test('the pitch tool lists as free and passes the door error through', async () => {
+  const { client, call } = await connect(options(), door({}, { post: () => new Response(JSON.stringify({ error: 'fund_closed' }), { status: 503 }) }).fetchFn);
+  const t = (await client.listTools()).tools.find((x) => x.name === 'charter_grant_pitch')!;
+  assert.ok(t.description!.startsWith('Free.'));
+  for (const w of [/ask your operator/i, /model/, /\/grants/, /30 days/, /Anyone/, /grantToken/, /operator can read the home's disk/]) assert.match(t.description!, w);
+  assert.equal(t.annotations?.readOnlyHint, false);
+  const r = await call('charter_grant_pitch', PITCH);
+  assert.equal(r.isError, true);
+  assert.match(r.text, /the fund is closed right now \(fund_closed\)/);
+});
+
+test('a pitch is a plain POST to the door: no payment, no key made use of, and the token comes back', async () => {
+  let posted: any;
+  const d = door({}, { post: () => new Response(JSON.stringify({ grantId: 'g9', grantToken: 'secret-token', state: 'queued', next: 'read /grants' }), { status: 201 }) });
+  const o = options();
+  const inner = d.fetchFn;
+  const spy = (async (i: RequestInfo | URL, init?: RequestInit) => {
+    const req = new Request(i, init);
+    if (req.method === 'POST') {
+      posted = { url: req.url, pay: req.headers.has('payment-signature') || req.headers.has('x-payment'), body: await req.clone().json() };
+    }
+    return inner(req);
+  }) as typeof fetch;
+  const { call } = await connect(o, spy);
+  const r = await call('charter_grant_pitch', PITCH);
+  assert.equal(r.isError, false, r.text);
+  assert.equal(JSON.parse(r.text).grantToken, 'secret-token');
+  assert.deepEqual(posted, { url: `${DOOR}/v1/grants`, pay: false, body: PITCH });
+  assert.deepEqual(d.seen.signed, []);
+});
+
+test('charter_grant_status sends the token as a header and shows the owner view', async () => {
+  let token: string | null = null;
+  const fetchFn = (async (i: RequestInfo | URL, init?: RequestInit) => {
+    const req = new Request(i, init);
+    token = req.headers.get('x-grant-token');
+    return new Response(JSON.stringify({ grantId: 'g9', state: 'approved', leaseId: ID }), { status: 200 });
+  }) as typeof fetch;
+  const { call } = await connect(options(), fetchFn);
+  const r = await call('charter_grant_status', { grantId: 'g9', grantToken: 'secret-token' });
+  assert.equal(token, 'secret-token');
+  assert.equal(JSON.parse(r.text).leaseId, ID);
 });

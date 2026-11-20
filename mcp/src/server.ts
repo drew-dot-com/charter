@@ -26,19 +26,22 @@ import {
   DEFAULT_DOOR,
   PayError,
   extend,
+  grantStatus,
   lease,
   microToUsdc,
   onlyDoorExact,
   output,
+  pitch,
   rent,
   runJob,
   usdcToMicro,
   type Answer,
   type Deps,
+  type Pitch,
   type SpendBook,
 } from './core.js';
 
-export const VERSION = '0.2.0';
+export const VERSION = '0.3.0';
 
 export interface Options {
   door: string;
@@ -191,6 +194,8 @@ export interface Actions {
   rentHome(sshKeys: string[], image?: string): Promise<unknown>;
   lease(leaseId: string): Promise<unknown>;
   extend(leaseId: string, hours: number): Promise<unknown>;
+  pitch(p: Pitch): Promise<unknown>;
+  grantStatus(grantId: string, grantToken: string): Promise<unknown>;
 }
 
 export interface Built {
@@ -220,8 +225,14 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
       return fetchFn(new Request(req, { redirect: 'error', signal: AbortSignal.timeout(ms) }));
     }) as typeof fetch;
 
-  const get = async (path: string): Promise<Answer> => {
-    const res = await guarded(GET_TIMEOUT_MS)(`${o.door}${path}`, { headers: agent });
+  const get = async (path: string, headers: Record<string, string> = {}): Promise<Answer> => {
+    const res = await guarded(GET_TIMEOUT_MS)(`${o.door}${path}`, { headers: { ...agent, ...headers } });
+    return { status: res.status, body: await body(res) };
+  };
+
+  // Free: same guard as `get` (door origin only, no redirect, 30 s) and no payment wrapper, so nothing is ever signed.
+  const post = async (path: string, json: unknown): Promise<Answer> => {
+    const res = await guarded(GET_TIMEOUT_MS)(`${o.door}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', ...agent }, body: JSON.stringify(json) });
     return { status: res.status, body: await body(res) };
   };
 
@@ -287,6 +298,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
 
   const deps: Deps = {
     get,
+    post,
     ...(account ? { pay } : {}),
     now: Date.now,
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -386,6 +398,8 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
       if (!Number.isInteger(hours) || hours < 1 || hours > 24) throw new Error('pay 1 to 24 intervals at a time; nothing was paid');
       return extend(deps, leaseId, hours);
     },
+    pitch: (p) => pitch(deps, p),
+    grantStatus: (grantId, grantToken) => grantStatus(deps, grantId, grantToken),
   };
 
   const answer = async (run: () => Promise<unknown>) => {
@@ -490,6 +504,39 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     ({ leaseId, hours }) => answer(() => actions.extend(leaseId, hours)),
+  );
+
+  server.registerTool(
+    'charter_grant_pitch',
+    {
+      title: 'Pitch the Charter grant fund',
+      description:
+        'Free. Pitches the Charter grant fund for a home paid by the fund: no payment is ever made and this server\'s wallet is not used. Ask your operator before you apply. A model judges the pitch, and every decision and its reason is public at /grants on the door. A grant is 30 days of a home paid by the fund. Homes are reached over the Anyone network, so whoever logs in needs an Anyone client. Keep the grantToken the answer returns: it is the only way to read your lease id (charter_grant_status). The operator can read the home\'s disk, so keep secrets off it. Pass 1 to 8 SSH PUBLIC keys; the key set is the home\'s identity.',
+      inputSchema: {
+        name: z.string().min(1).max(80).describe('who is asking, at most 80 characters'),
+        pitch: z.string().min(1).max(2000).describe('what you will run and why it deserves a home, at most 2000 characters. It is judged by a model and the decision is public.'),
+        sshKeys: z.array(z.string().max(1023)).min(1).max(8).describe('SSH public key lines. Public keys only: never a private key.'),
+        image: z.enum(['charter-home', 'charter-hermes']).optional().describe('charter-home (default) is a plain box; charter-hermes has Hermes Agent preinstalled'),
+        link: z.string().max(200).regex(/^https:\/\//).optional().describe('optional https:// link to your work'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    (p) => answer(() => actions.pitch(p)),
+  );
+
+  server.registerTool(
+    'charter_grant_status',
+    {
+      title: 'Read your own grant',
+      description:
+        'Free. Your own grant with its token: whether the pitch is queued, approved or declined, the reason, and once granted the full lease id (then use charter_lease). Needs the grantId and grantToken that charter_grant_pitch returned.',
+      inputSchema: {
+        grantId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).describe('the grantId the pitch returned'),
+        grantToken: z.string().min(1).max(200).describe('the grantToken the pitch returned'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    ({ grantId, grantToken }) => answer(() => actions.grantStatus(grantId, grantToken)),
   );
 
   return { server, address: account?.address, actions };

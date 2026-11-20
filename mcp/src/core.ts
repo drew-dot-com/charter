@@ -50,8 +50,10 @@ export class PayError extends Error {
 }
 
 export interface Deps {
-  /** A free read of the door. */
-  get(path: string): Promise<Answer>;
+  /** A free read of the door. `headers` is for the one read that carries a token (a grant's owner view). */
+  get(path: string, headers?: Record<string, string>): Promise<Answer>;
+  /** A free POST of JSON to the door (a grant pitch). Never carries a payment; same origin, redirect and timeout rules as `get`. */
+  post(path: string, json: unknown): Promise<Answer>;
   /**
    * A paid POST that signs at most `limit` micro-USDC. Throws PayError when no answer came back.
    * Undefined when the server has no wallet.
@@ -386,4 +388,54 @@ export async function extend(d: Deps, leaseId: string, hours: number): Promise<E
     through = iso(r.body?.paidThrough);
   }
   return { leaseId, hoursPaid: paid, paidUsdc: microToUsdc(cost * BigInt(paid)), paidThrough: through, txs, ...(stopped ? { stopped } : {}) };
+}
+
+const SSH_KEY = /^(ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa) [A-Za-z0-9+/=]+( .*)?$/;
+const GRANT_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+export interface Pitch {
+  name: string;
+  pitch: string;
+  sshKeys: string[];
+  image?: 'charter-home' | 'charter-hermes';
+  link?: string;
+}
+
+const GRANT_ERRORS: Record<string, string> = {
+  fund_closed: 'the fund is closed right now',
+  full: 'the queue is full right now',
+  already_granted: 'these keys already have a grant',
+  rate_limited: 'the door is rate limiting pitches; wait and try again later',
+};
+
+function grantRefusal(r: Answer): Error {
+  const code = typeof r.body?.error === 'string' ? r.body.error.slice(0, 60) : `status ${r.status}`;
+  return new Error(`${GRANT_ERRORS[code] ?? 'the door refused the pitch'} (${code}). Pitching is free; nothing was paid.`);
+}
+
+/** Pitches the grant fund: one free POST. Checks the input first so a mistake costs no request. */
+export async function pitch(d: Pick<Deps, 'post'>, p: Pitch): Promise<{ grantId: string; grantToken: string; next: string }> {
+  const name = typeof p.name === 'string' ? p.name.trim() : '';
+  if (name.length < 1 || name.length > 80) throw new Error('the name is 1 to 80 characters');
+  const text = typeof p.pitch === 'string' ? p.pitch.trim() : '';
+  if (text.length < 1 || text.length > 2000) throw new Error('the pitch is 1 to 2000 characters');
+  const keys = (Array.isArray(p.sshKeys) ? p.sshKeys : []).map((k) => String(k).trim()).filter(Boolean);
+  if (keys.length < 1 || keys.length > 8) throw new Error('give 1 to 8 SSH public keys');
+  const bad = keys.find((k) => k.length > 1023 || !SSH_KEY.test(k));
+  if (bad !== undefined) throw new Error(/PRIVATE KEY/.test(bad) ? 'that is a private key. Pass the PUBLIC key line only (the .pub file); nothing was sent' : 'each key must be one public key line starting with ssh-ed25519, ecdsa-sha2-nistp256/384/521 or ssh-rsa');
+  if (p.image !== undefined && p.image !== 'charter-home' && p.image !== 'charter-hermes') throw new Error('the image is charter-home or charter-hermes');
+  if (p.link !== undefined && (typeof p.link !== 'string' || p.link.length > 200 || !/^https:\/\//.test(p.link) || !URL.canParse(p.link))) throw new Error('the link is optional, https:// only, at most 200 characters');
+  const r = await d.post('/v1/grants', { name, pitch: text, sshKeys: keys, ...(p.image ? { image: p.image } : {}), ...(p.link ? { link: p.link } : {}) });
+  if (r.status !== 201 || typeof r.body?.grantId !== 'string' || typeof r.body?.grantToken !== 'string') throw grantRefusal(r);
+  return { grantId: r.body.grantId, grantToken: r.body.grantToken, next: String(r.body.next ?? '') };
+}
+
+/** The owner's view of one grant (free): needs the token the pitch returned, and shows the full leaseId once granted. */
+export async function grantStatus(d: Pick<Deps, 'get'>, grantId: string, grantToken: string): Promise<unknown> {
+  if (!GRANT_ID.test(grantId)) throw new Error('a grantId is letters, digits, - and _ only');
+  if (typeof grantToken !== 'string' || grantToken.trim().length < 1) throw new Error('the grantToken is the one the pitch returned');
+  const r = await d.get(`/v1/grants/${grantId}`, { 'x-grant-token': grantToken.trim() });
+  if (r.status === 404 || r.status === 403) throw new Error(`the door does not show this grant with this token (status ${r.status})`);
+  if (r.status !== 200) throw new Error(`the grant read answered ${r.status}`);
+  return r.body;
 }

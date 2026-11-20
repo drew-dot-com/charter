@@ -23,6 +23,8 @@ function io(files: Record<string, string> = {}, stdin = '') {
     rentHome: rec('rentHome'),
     lease: rec('lease'),
     extend: rec('extend'),
+    pitch: rec('pitch'),
+    grantStatus: rec('grantStatus'),
   } as unknown as Actions;
   const i: CliIo = {
     actions: () => {
@@ -112,4 +114,26 @@ test('the usage text marks every paid command and has no em dash', () => {
   }
   assert.equal((USAGE.match(/PAID/g) ?? []).length, 4);
   assert.ok(!USAGE.includes(String.fromCharCode(0x2014)));
+});
+
+test('cli pitch reads keys and pitch from files', async () => {
+  const t = io({ 'keys.pub': '# mine\nssh-ed25519 AAAA one\n', 'pitch.txt': 'I run a bot.\nIt needs a home.\n', 'tok.txt': 'secret\n' });
+  const run = async (...argv: string[]) => {
+    const r = await cli(argv, t.i);
+    assert.equal(r.code, 0, r.out);
+  };
+  await run('pitch', '--name', 'Ada', '--keys', 'keys.pub', '--pitch-file', 'pitch.txt');
+  await run('pitch', '--name', 'Ada', '--keys', 'keys.pub', '--pitch-file', 'pitch.txt', '--image', 'charter-hermes', '--link', 'https://example.com');
+  await run('grant', '--id', 'g1', '--token-file', 'tok.txt');
+  assert.deepEqual(t.calls, [
+    ['pitch', { name: 'Ada', pitch: 'I run a bot.\nIt needs a home.', sshKeys: ['ssh-ed25519 AAAA one'] }],
+    ['pitch', { name: 'Ada', pitch: 'I run a bot.\nIt needs a home.', sshKeys: ['ssh-ed25519 AAAA one'], image: 'charter-hermes', link: 'https://example.com' }],
+    ['grantStatus', 'g1', 'secret'],
+  ]);
+  for (const argv of [['pitch', '--name', 'Ada'], ['pitch', '--keys', 'keys.pub', '--pitch-file', 'pitch.txt'], ['grant', '--id', 'g1'], ['grant', '--token-file', 'tok.txt']]) {
+    const r = await cli(argv, t.i);
+    assert.equal(r.code, 2, argv.join(' '));
+  }
+  assert.ok(!USAGE.includes('PAID, one interval: pitch'));
+  assert.match(USAGE, /charter-mcp pitch[^\n]*\n\s+free: pitch/);
 });
