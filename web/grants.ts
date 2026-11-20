@@ -17,7 +17,7 @@ export interface GrantRow {
 }
 export interface GrantsData {
   grants: GrantRow[];
-  fund: { address: string; balanceMicro: string | number; grantsLeft: number } | null;
+  fund: { address: string; balanceMicro: string | number; grantsLeft: number; open: boolean } | null;
 }
 
 export function esc(v: unknown): string {
@@ -45,15 +45,19 @@ function day(ms: number): string {
 function row(g: GrantRow): string {
   const link = typeof g.link === 'string' && g.link.startsWith('https://') ? ` <a href="${esc(g.link)}" rel="nofollow noopener noreferrer">link</a>` : '';
   const note = [g.summary, g.reason].filter((s): s is string => typeof s === 'string' && s !== '').map((s) => `<p>${esc(s)}</p>`).join('');
-  const own = g.renewedByGrantee ? '<p><strong>renewed on its own money</strong></p>' : '';
+  const own = g.renewedByGrantee ? '<p><strong>paid at least one hour with its own money</strong></p>' : '';
   const hours = g.paidHours > 0 ? `<br>${esc(g.paidHours)} hours paid` : '';
   return `<tr><td class="mono">${esc(day(g.createdAt))}</td><td>${esc(g.name)}${link}${note}${own}</td><td>${esc(g.state)}${hours}</td></tr>`;
 }
 
 export function renderGrants(data: GrantsData): string {
-  const f = data.fund;
+  // A fund block without a string address is no report at all.
+  const f = data.fund && typeof data.fund.address === 'string' ? data.fund : null;
+  const state = f?.open === true
+    ? `The fund is <strong>open</strong>: pitches are taken. Grants left: <strong>${esc(f.grantsLeft)}</strong>.`
+    : 'The fund is <strong>closed</strong>: a pitch answers 503 <code>fund_closed</code>. No grants left right now.';
   const fund = f
-    ? `<p>Fund address on Base: <code>${esc(f.address)}</code></p><p>Balance: <strong>${esc(formatBalance(f.balanceMicro))} USDC</strong>. Grants left: <strong>${esc(f.grantsLeft)}</strong>.</p>`
+    ? `<p>${state}</p><p>Fund address on Base: <code>${esc(f.address)}</code></p><p>Balance: <strong>${esc(formatBalance(f.balanceMicro))} USDC</strong>.</p>`
     : '<p>The fund is not open yet. No grants can be made until it reports.</p>';
   const rows = data.grants.length
     ? `<table class="recent"><tr><th>date</th><th>grant</th><th>state</th></tr>${data.grants.map(row).join('')}</table>`

@@ -6,7 +6,7 @@ import express from 'express';
 import { HostError, type HostApi, type OpenResult } from '../tenant/host-api.js';
 import { findOfferExact } from '../tenant/offers.js';
 import { JOB_IMAGES, homeIdOf, jobFromBody } from '../jobs.js';
-import { ALLOWED_MOVES, BadMove, ownerView, publicView, validatePitch, type Grant, type GrantState, type GrantStore } from './grants.js';
+import { ALLOWED_MOVES, BadMove, ownerView, publicView, readFundPublic, validatePitch, type Grant, type GrantState, type GrantStore } from './grants.js';
 import type { JobSpec, Lease, Micro, Offer } from '../types.js';
 import { DeadlinePassedError, SendTimeoutError } from '../payer.js';
 import { offerOfSnapshot, snapshotOffer, type DoorLedger, type LossKind } from './ledger.js';
@@ -388,18 +388,16 @@ export function doorApp(deps: DoorDeps): express.Express {
       const id = String(req.params.id);
       const g = grants.get(id);
       if (!g) return void res.status(404).json({ error: 'not_found' });
+      // No token header: the public view. A token that does not match: 403, so a client can say so.
       const token = req.get('x-grant-token');
-      res.json(token && grants.tokenOk(id, token) ? ownerView(g) : publicView(g));
+      if (token === undefined) return void res.json(publicView(g));
+      if (!grants.tokenOk(id, token)) return void res.status(403).json({ error: 'bad_token' });
+      res.json(ownerView(g));
     });
     app.get('/v1/grants', (_req, res) => {
       const list = grants.all().sort((a, b) => b.createdAt - a.createdAt).slice(0, LIST_CAP).map(publicView);
-      let fund: { address: unknown; balanceMicro: unknown; grantsLeft: unknown } | null = null;
-      try {
-        const f = JSON.parse(readFileSync(join(deps.dataDir, 'fund-public.json'), 'utf8')) as Record<string, unknown>;
-        fund = { address: f.address, balanceMicro: f.balanceMicro, grantsLeft: f.grantsLeft };
-      } catch {
-        // the fund has not reported
-      }
+      // null until the fund has reported; `open` is false once its report is older than 10 minutes.
+      const fund = readFundPublic(join(deps.dataDir, 'fund-public.json'), now());
       res.json({ grants: list, fund });
     });
   }
@@ -456,7 +454,8 @@ export function doorApp(deps: DoorDeps): express.Express {
         && typeof b.grantsLeft === 'number' && Number.isInteger(b.grantsLeft) && b.grantsLeft >= 0
         && typeof b.open === 'boolean';
       if (!ok) return void res.status(400).json({ error: 'address, balanceMicro (digits), grantsLeft (integer) and open (boolean) are required' });
-      const pub = { address: b.address, balanceMicro: b.balanceMicro, grantsLeft: b.grantsLeft, open: b.open };
+      // reportedAt is the door's clock: a report older than 10 minutes reads as closed (readFundPublic).
+      const pub = { address: b.address, balanceMicro: b.balanceMicro, grantsLeft: b.grantsLeft, open: b.open, reportedAt: now() };
       const file = join(deps.dataDir, 'fund-public.json');
       mkdirSync(deps.dataDir, { recursive: true, mode: 0o700 });
       writeFileSync(`${file}.tmp`, JSON.stringify(pub), { mode: 0o600 });

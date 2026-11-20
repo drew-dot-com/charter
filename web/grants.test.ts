@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { formatBalance, renderGrants, type GrantsData } from './grants.js';
 
 const base = { grantId: 'g1', state: 'approved', name: 'Agent', image: 'charter-home', createdAt: 1_700_000_000_000, leaseId: 'abcd1234', paidHours: 3, renewedByGrantee: false, updatedAt: 1_700_000_000_000 };
-const fund = { address: '0x1111111111111111111111111111111111111111', balanceMicro: '12345678', grantsLeft: 4 };
+const fund = { address: '0x1111111111111111111111111111111111111111', balanceMicro: '12345678', grantsLeft: 4, open: true };
 const data = (g: Record<string, unknown>[], f: GrantsData['fund'] = fund): GrantsData => ({ grants: g as GrantsData['grants'], fund: f });
 
 test('renderGrants escapes HTML in name, summary and reason', () => {
@@ -15,9 +15,9 @@ test('renderGrants escapes HTML in name, summary and reason', () => {
   assert.ok(html.includes('&quot;a&quot; &amp; &#39;b&#39; &lt;i&gt;'));
 });
 
-test('renderGrants shows renewed on own money only when true', () => {
-  assert.ok(!renderGrants(data([base])).includes('renewed on its own money'));
-  assert.ok(renderGrants(data([{ ...base, renewedByGrantee: true }])).includes('renewed on its own money'));
+test('renderGrants shows the grantee paying its own hour only when true', () => {
+  assert.ok(!renderGrants(data([base])).includes('paid at least one hour with its own money'));
+  assert.ok(renderGrants(data([{ ...base, renewedByGrantee: true }])).includes('paid at least one hour with its own money'));
 });
 
 test('renderGrants links only https and marks the anchor', () => {
@@ -33,11 +33,36 @@ test('renderGrants with no fund says it is not open yet', () => {
   assert.ok(renderGrants(data([], null)).includes('not open yet'));
 });
 
-test('renderGrants shows the fund address, balance and grants left', () => {
+test('renderGrants shows the fund open, its address, balance and grants left', () => {
   const html = renderGrants(data([]));
+  assert.ok(html.includes('The fund is <strong>open</strong>'));
   assert.ok(html.includes(fund.address));
   assert.ok(html.includes('12.345678 USDC'));
   assert.ok(html.includes('Grants left: <strong>4</strong>'));
+});
+
+test('renderGrants shows a closed fund as closed and never its grants left', () => {
+  const html = renderGrants(data([], { ...fund, open: false, grantsLeft: 7 }));
+  assert.ok(html.includes('The fund is <strong>closed</strong>'));
+  assert.ok(html.includes('fund_closed'));
+  assert.ok(!html.includes('<strong>7</strong>'));
+  assert.ok(html.includes(fund.address), 'the address and balance still show');
+  // a block with no open field (an older door) reads as closed
+  const { open: _o, ...noOpen } = fund;
+  assert.ok(renderGrants(data([], noOpen as GrantsData['fund'])).includes('<strong>closed</strong>'));
+});
+
+test('renderGrants treats a fund block without a string address as no report', () => {
+  for (const bad of [{ ...fund, address: undefined }, { ...fund, address: 7 }]) {
+    const html = renderGrants(data([], bad as unknown as GrantsData['fund']));
+    assert.ok(html.includes('not open yet'));
+    assert.ok(!html.includes('undefined'));
+  }
+});
+
+test('renderGrants never shows a homeId', () => {
+  const html = renderGrants(data([{ ...base, homeId: 'deadbeefcafe0123' }]));
+  assert.ok(!html.includes('deadbeefcafe0123'));
 });
 
 test('formatBalance is exact', () => {

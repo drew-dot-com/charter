@@ -14,7 +14,7 @@ import { parseCdpKey, parseClaimKey, parseDoorHosts, parseTrustProxy } from './c
 import { DoorLedger, LEDGER_FILE } from './ledger.js';
 import { fileRequestSink } from './reqlog.js';
 import { doorApp } from './server.js';
-import { GrantStore } from './grants.js';
+import { GrantStore, readFundPublic } from './grants.js';
 import { BASE_USDC, buildSchemes, facilitatorOffersBatch, type Schemes, type X402Config } from './x402.js';
 import { unblockCommand } from './unblock.js';
 
@@ -62,14 +62,9 @@ async function main(): Promise<void> {
   const grants = new GrantStore(join(dataDir, 'grants.jsonl'), Date.now);
   grants.dropOldPitches();
   setInterval(() => grants.dropOldPitches(), 3_600_000).unref();
-  // Intake is open only while the fund says so; a fund that has not reported (no file) means closed.
-  const fundOpen = (): boolean => {
-    try {
-      return (JSON.parse(readFileSync(join(dataDir, 'fund-public.json'), 'utf8')) as { open?: unknown }).open === true;
-    } catch {
-      return false;
-    }
-  };
+  // Intake is open only while the fund says so and its last report is under 10 minutes old; a fund that
+  // has not reported (no file) or has stopped reporting means closed.
+  const fundOpen = (): boolean => readFundPublic(join(dataDir, 'fund-public.json'), Date.now())?.open === true;
 
   const fundTokenFile = env.CHARTER_FUND_TOKEN_FILE?.trim();
   const fundToken = fundTokenFile ? readFileSync(fundTokenFile, 'utf8').trim() : undefined;

@@ -435,7 +435,8 @@ export async function grantStatus(d: Pick<Deps, 'get'>, grantId: string, grantTo
   if (!GRANT_ID.test(grantId)) throw new Error('a grantId is letters, digits, - and _ only');
   if (typeof grantToken !== 'string' || grantToken.trim().length < 1) throw new Error('the grantToken is the one the pitch returned');
   const r = await d.get(`/v1/grants/${grantId}`, { 'x-grant-token': grantToken.trim() });
-  if (r.status === 404 || r.status === 403) throw new Error(`the door does not show this grant with this token (status ${r.status})`);
+  if (r.status === 403) throw new Error('the token does not match this grant (status 403). Use the grantToken the pitch returned.');
+  if (r.status === 404) throw new Error('the door does not know this grant (status 404)');
   if (r.status !== 200) throw new Error(`the grant read answered ${r.status}`);
   return r.body;
 }

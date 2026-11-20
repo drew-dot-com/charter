@@ -53,12 +53,22 @@ export const PITCH_KEEP_MS = 30 * 86_400_000;
 
 type NewPitch = { name: string; pitch: string; sshKeys: string[]; image: Grant['image']; link?: string };
 
+/** False for a string holding a lone UTF-16 surrogate, which no JSON encoder downstream (the judge's API) accepts. */
+export function wellFormed(s: string): boolean {
+  return !/[\uD800-\uDFFF]/u.test(s);
+}
+
 export function validatePitch(body: unknown): { ok: true; pitch: NewPitch } | { ok: false; error: string } {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return { ok: false, error: 'body must be a JSON object' };
   const b = body as Record<string, unknown>;
+  for (const k of ['name', 'pitch', 'link'] as const) {
+    if (typeof b[k] === 'string' && !wellFormed(b[k] as string)) return { ok: false, error: `${k} is not well-formed text (a lone UTF-16 surrogate)` };
+  }
   if (typeof b.name !== 'string' || b.name.trim().length < 1 || b.name.length > MAX_NAME) return { ok: false, error: `name must be 1 to ${MAX_NAME} characters` };
   if (typeof b.pitch !== 'string' || b.pitch.trim().length < 1 || b.pitch.length > MAX_PITCH) return { ok: false, error: `pitch must be 1 to ${MAX_PITCH} characters` };
-  if (b.image !== 'charter-home' && b.image !== 'charter-hermes') return { ok: false, error: 'image must be charter-home or charter-hermes' };
+  // image is optional: charter-mcp, its CLI and the docs all treat a missing one as charter-home.
+  const image = b.image === undefined ? 'charter-home' : b.image;
+  if (image !== 'charter-home' && image !== 'charter-hermes') return { ok: false, error: 'image must be charter-home or charter-hermes' };
   const keys = normalizeSshKeys(b.sshKeys);
   if (!keys) return { ok: false, error: 'sshKeys must be 1 to 8 public key lines' };
   let link: string | undefined;
@@ -73,7 +83,7 @@ export function validatePitch(body: unknown): { ok: true; pitch: NewPitch } | { 
     if (u.protocol !== 'https:') return { ok: false, error: 'link must be an https URL' };
     link = b.link;
   }
-  return { ok: true, pitch: { name: b.name.trim(), pitch: b.pitch, sshKeys: keys, image: b.image, ...(link !== undefined ? { link } : {}) } };
+  return { ok: true, pitch: { name: b.name.trim(), pitch: b.pitch, sshKeys: keys, image, ...(link !== undefined ? { link } : {}) } };
 }
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -83,15 +93,20 @@ export class GrantStore {
 
   constructor(private readonly file: string, private readonly now: () => number) {
     if (!existsSync(file)) return;
-    for (const line of readFileSync(file, 'utf8').split('\n')) {
+    const text = readFileSync(file, 'utf8');
+    for (const line of text.split('\n')) {
       if (!line.trim()) continue;
       try {
         const g = JSON.parse(line) as Grant;
+        if (typeof g !== 'object' || g === null || typeof g.grantId !== 'string') continue;
         this.grants.set(g.grantId, g);
       } catch {
-        // a torn last line: skip it
+        // a torn line: skip it
       }
     }
+    // A crash mid-write leaves a last line with no newline. Ending it here keeps the next append on a line
+    // of its own, so the next record is not glued onto the fragment and lost at the following load.
+    if (text.length > 0 && !text.endsWith('\n')) appendFileSync(file, '\n');
   }
 
   private append(g: Grant): void {
@@ -177,10 +192,37 @@ export class GrantStore {
   }
 }
 
-/** What anyone may see: no pitch, no keys, no token hash, the lease id cut to 8. */
+/** What anyone may see: no pitch, no keys, no homeId (it links a grant to a key set), no token hash, the lease id cut to 8. */
 export function publicView(g: Grant): Record<string, unknown> {
-  const { pitch: _p, sshKeys: _k, tokenHash: _t, leaseId, ...rest } = g;
+  const { pitch: _p, sshKeys: _k, homeId: _h, tokenHash: _t, leaseId, ...rest } = g;
   return { ...rest, ...(leaseId !== undefined ? { leaseId: leaseId.slice(0, 8) } : {}) };
+}
+
+/** The fund's report is stale (the fund is down or cut off) this long after the door last took it. */
+export const FUND_STALE_MS = 10 * 60_000;
+
+export interface FundPublic { address: string; balanceMicro: string; grantsLeft: number; open: boolean }
+
+/**
+ * The fund's last report (`fund-public.json`, written by `PUT /v1/fund/public`) as the public sees it, or null
+ * when there is none or it does not read. `open` is true only when the fund said so and the door took that
+ * report (its own clock, `reportedAt`) within FUND_STALE_MS: a fund that stops reporting closes intake. Grants
+ * left is 0 whenever the fund is not open.
+ */
+export function readFundPublic(file: string, now: number): FundPublic | null {
+  let f: unknown;
+  try {
+    f = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+  if (typeof f !== 'object' || f === null || Array.isArray(f)) return null;
+  const r = f as Record<string, unknown>;
+  if (typeof r.address !== 'string' || typeof r.balanceMicro !== 'string') return null;
+  const fresh = typeof r.reportedAt === 'number' && Number.isFinite(r.reportedAt) && now - r.reportedAt <= FUND_STALE_MS;
+  const open = r.open === true && fresh;
+  const left = typeof r.grantsLeft === 'number' && Number.isSafeInteger(r.grantsLeft) && r.grantsLeft > 0 ? r.grantsLeft : 0;
+  return { address: r.address, balanceMicro: r.balanceMicro, grantsLeft: open ? left : 0, open };
 }
 
 /** What the grant's owner sees: the public view plus the full lease id. */

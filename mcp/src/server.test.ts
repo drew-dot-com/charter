@@ -373,3 +373,11 @@ test('charter_grant_status sends the token as a header and shows the owner view'
   assert.equal(token, 'secret-token');
   assert.equal(JSON.parse(r.text).leaseId, ID);
 });
+
+test('charter_grant_status with a token the door refuses says the token does not match', async () => {
+  const fetchFn = (async () => new Response(JSON.stringify({ error: 'bad_token' }), { status: 403 })) as typeof fetch;
+  const { call } = await connect(options(), fetchFn);
+  const r = await call('charter_grant_status', { grantId: 'g9', grantToken: 'wrong-token' });
+  assert.equal(r.isError, true);
+  assert.match(r.text, /the token does not match this grant/);
+});

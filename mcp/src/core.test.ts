@@ -360,5 +360,7 @@ test('grantStatus reads GET /v1/grants/:id with the token header', async () => {
   assert.equal((r as any).leaseId, ID);
   assert.deepEqual(d.grantHeaders, [{ 'x-grant-token': 'tok' }]);
   await assert.rejects(grantStatus(d, 'nope', 'tok'), /404|unknown|know/);
+  const bad = fake({ '/v1/grants/g1': { status: 403, body: { error: 'bad_token' } } });
+  await assert.rejects(grantStatus(bad, 'g1', 'wrong'), /the token does not match this grant/);
   await assert.rejects(grantStatus(d, '../x', 'tok'), /grantId/);
 });

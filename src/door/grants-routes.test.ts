@@ -8,7 +8,7 @@ import { OFFER } from '../tenant/test-host.js';
 import { DoorLedger } from './ledger.js';
 import { doorApp } from './server.js';
 import { normalizeSshKeys } from '../jobs.js';
-import { GrantStore } from './grants.js';
+import { GrantStore, readFundPublic } from './grants.js';
 
 const KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl me@host';
 const keyN = (i: number) => `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${String(i).padStart(6, '0')}`;
@@ -51,6 +51,26 @@ test('a valid pitch answers 201 with a token', async () => {
   assert.match(j.grantToken, /^[0-9a-f]{64}$/);
   assert.equal(j.next, `/v1/grants/${j.grantId}`);
   assert.ok(s.grants.tokenOk(j.grantId, j.grantToken));
+  s.close();
+});
+
+test('a pitch without image answers 201 and gets charter-home', async () => {
+  const s = await start();
+  const { image: _i, ...noImage } = body();
+  const r = await s.post(noImage);
+  assert.equal(r.status, 201);
+  const j = (await r.json()) as { grantId: string };
+  assert.equal(s.grants.get(j.grantId)!.image, 'charter-home');
+  s.close();
+});
+
+test('a pitch with a lone surrogate answers 400', async () => {
+  const s = await start();
+  // JSON.stringify writes a lone surrogate as an escape, so it reaches the door as one.
+  const r = await s.post(body({ pitch: 'bad \uD800 text' }));
+  assert.equal(r.status, 400);
+  assert.match(((await r.json()) as { error: string }).error, /well-formed/);
+  assert.equal(s.grants.all().length, 0);
   s.close();
 });
 
@@ -106,17 +126,20 @@ test('fundOpen false answers 503 fund_closed', async () => {
   s.close();
 });
 
-test('GET with the token shows the full leaseId, without it 8 characters', async () => {
+test('GET with the token shows the full leaseId, without it 8 characters, a wrong token 403', async () => {
   const s = await start();
   const g = s.grants.add({ name: 'n', pitch: 'p', sshKeys: [KEY], image: 'charter-home' }, 'tok');
   s.grants.update(g.grantId, { leaseId: 'f'.repeat(32) });
   const own = (await (await s.get(`/v1/grants/${g.grantId}`, { 'x-grant-token': 'tok' })).json()) as { leaseId: string };
   assert.equal(own.leaseId, 'f'.repeat(32));
-  for (const h of [{}, { 'x-grant-token': 'wrong' }]) {
-    const r = await s.get(`/v1/grants/${g.grantId}`, h);
-    assert.equal(r.status, 200);
-    assert.equal(((await r.json()) as { leaseId: string }).leaseId, 'f'.repeat(8));
-  }
+  const r = await s.get(`/v1/grants/${g.grantId}`);
+  assert.equal(r.status, 200);
+  const pub = (await r.json()) as { leaseId: string; homeId?: string };
+  assert.equal(pub.leaseId, 'f'.repeat(8));
+  assert.equal(pub.homeId, undefined);
+  const bad = await s.get(`/v1/grants/${g.grantId}`, { 'x-grant-token': 'wrong' });
+  assert.equal(bad.status, 403);
+  assert.deepEqual(await bad.json(), { error: 'bad_token' });
   assert.equal((await s.get('/v1/grants/' + 'e'.repeat(32))).status, 404);
   s.close();
 });
@@ -132,12 +155,41 @@ test('GET /v1/grants never contains pitch text, lists newest first, and shows th
   let j = JSON.parse(text) as { grants: { name: string }[]; fund: unknown };
   assert.deepEqual(j.grants.map((g) => g.name), ['Bob', 'Ada']);
   assert.equal(j.fund, null);
-  writeFileSync(join(s.dir, 'fund-public.json'), JSON.stringify({ address: '0xabc', balanceMicro: '5000000', grantsLeft: 3, open: true, extra: 'x' }));
+  assert.ok(!text.includes('homeId'), 'no homeId in the public list');
+  writeFileSync(join(s.dir, 'fund-public.json'), JSON.stringify({ address: '0xabc', balanceMicro: '5000000', grantsLeft: 3, open: true, reportedAt: s.clock.t, extra: 'x' }));
   r = await s.get('/v1/grants');
   text = await r.text();
   j = JSON.parse(text);
-  assert.deepEqual(j.fund, { address: '0xabc', balanceMicro: '5000000', grantsLeft: 3 });
+  assert.deepEqual(j.fund, { address: '0xabc', balanceMicro: '5000000', grantsLeft: 3, open: true });
+  // closed: grants left reads 0 whatever the file says
+  writeFileSync(join(s.dir, 'fund-public.json'), JSON.stringify({ address: '0xabc', balanceMicro: '5000000', grantsLeft: 3, open: false, reportedAt: s.clock.t }));
+  j = JSON.parse(await (await s.get('/v1/grants')).text());
+  assert.deepEqual(j.fund, { address: '0xabc', balanceMicro: '5000000', grantsLeft: 0, open: false });
+  // a file with no address string is no report
+  writeFileSync(join(s.dir, 'fund-public.json'), JSON.stringify({ balanceMicro: '5', grantsLeft: 1, open: true, reportedAt: s.clock.t }));
+  j = JSON.parse(await (await s.get('/v1/grants')).text());
+  assert.equal(j.fund, null);
   s.close();
+});
+
+test('a fund report older than 10 minutes reads closed: no pitches, open false, 0 grants left', async () => {
+  const s = await start({ fundToken: TOKEN, fundOpen: () => readFundPublic(join(s.dir, 'fund-public.json'), s.clock.t)?.open === true });
+  try {
+    const pub = { address: '0x' + 'ab'.repeat(20), balanceMicro: '5000000', grantsLeft: 3, open: true };
+    assert.equal((await jpost(s, '/v1/fund/public', pub, auth, 'PUT')).status, 200);
+    s.clock.t += 10 * 60_000;
+    assert.equal(((await (await s.get('/v1/grants')).json()) as { fund: { open: boolean } }).fund.open, true, 'exactly 10 minutes is still fresh');
+    s.clock.t += 1;
+    const j = (await (await s.get('/v1/grants')).json()) as { fund: Record<string, unknown> };
+    assert.equal(j.fund.open, false);
+    assert.equal(j.fund.grantsLeft, 0);
+    assert.deepEqual(await (await s.post(body())).json(), { error: 'fund_closed' });
+    // a fresh report opens it again
+    assert.equal((await jpost(s, '/v1/fund/public', pub, auth, 'PUT')).status, 200);
+    assert.equal((await s.post(body())).status, 201);
+  } finally {
+    s.close();
+  }
 });
 
 const TOKEN = 'fund-secret-token';
@@ -231,13 +283,13 @@ test('a bad move answers 409, an unknown id 404, a bad field 400', async () => {
 
 test('PUT public with open false makes POST /v1/grants answer fund_closed, and open true reopens it without a restart', async () => {
   const { readFileSync, statSync, existsSync } = await import('node:fs');
-  const s = await start({ fundToken: TOKEN, fundOpen: () => { try { return JSON.parse(readFileSync(join(s.dir, 'fund-public.json'), 'utf8')).open === true; } catch { return false; } } });
+  const s = await start({ fundToken: TOKEN, fundOpen: () => readFundPublic(join(s.dir, 'fund-public.json'), s.clock.t)?.open === true });
   try {
     assert.equal((await s.post(body())).status, 503);
     const pub = { address: '0x' + 'ab'.repeat(20), balanceMicro: '5000000', grantsLeft: 3, open: true };
     assert.equal((await jpost(s, '/v1/fund/public', pub, auth, 'PUT')).status, 200);
     const f = join(s.dir, 'fund-public.json');
-    assert.deepEqual(JSON.parse(readFileSync(f, 'utf8')), pub);
+    assert.deepEqual(JSON.parse(readFileSync(f, 'utf8')), { ...pub, reportedAt: s.clock.t }, 'stamped with the door clock');
     assert.equal(statSync(f).mode & 0o777, 0o600);
     assert.equal(existsSync(f + '.tmp'), false);
     assert.equal((await s.post(body())).status, 201);

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BadMove, GrantStore, ownerView, publicView, validatePitch } from './grants.js';
@@ -52,6 +52,24 @@ test('validatePitch refuses nine keys', () => {
 test('validatePitch refuses an unknown image', () => {
   assert.equal(validatePitch({ ...good(), image: 'ubuntu' }).ok, false);
   assert.equal(validatePitch({ ...good(), image: 'charter-hermes' }).ok, true);
+});
+
+test('validatePitch defaults a missing image to charter-home', () => {
+  const { image: _i, ...noImage } = good();
+  const v = validatePitch(noImage);
+  assert.equal(v.ok, true);
+  if (v.ok) assert.equal(v.pitch.image, 'charter-home');
+  assert.equal(validatePitch({ ...good(), image: null }).ok, false, 'null is not a missing image');
+});
+
+test('validatePitch refuses text that is not well-formed (a lone surrogate)', () => {
+  for (const k of ['name', 'pitch']) {
+    const v = validatePitch({ ...good(), [k]: 'ok \uD800 then' });
+    assert.equal(v.ok, false, k);
+    if (!v.ok) assert.match(v.error, /well-formed/);
+  }
+  assert.equal(validatePitch({ ...good(), link: 'https://example.com/\uDC00' }).ok, false);
+  assert.equal(validatePitch({ ...good(), pitch: 'a pair is fine: \uD83D\uDE00' }).ok, true);
 });
 
 test('validatePitch refuses a private key line', () => {
@@ -126,6 +144,26 @@ test('queued lists only queued grants', () => {
   assert.deepEqual(s.queued().map((g) => g.grantId), [b.grantId]);
 });
 
+test('a torn last line is ended at load, so the next record survives the following load', () => {
+  const { s, file, now } = store();
+  const a = s.add(pitch(good()), 'a');
+  appendFileSync(file, '{"grantId":"torn","sta'); // a crash mid-write
+  const s2 = new GrantStore(file, () => now.t);
+  assert.equal(s2.get('torn'), undefined);
+  const b = s2.add(pitch({ ...good(), sshKeys: [KEY2] }), 'b');
+  const s3 = new GrantStore(file, () => now.t);
+  assert.ok(s3.get(a.grantId));
+  assert.ok(s3.get(b.grantId), 'the record written after the torn line is kept');
+});
+
+test('a line that parses but is not a grant is skipped at load', () => {
+  const { s, file, now } = store();
+  const a = s.add(pitch(good()), 'a');
+  appendFileSync(file, '42\nnull\n{"state":"queued"}\n');
+  const s2 = new GrantStore(file, () => now.t);
+  assert.deepEqual(s2.all().map((g) => g.grantId), [a.grantId]);
+});
+
 test('publicView has no pitch, keys or full leaseId', () => {
   const { s } = store();
   const g = s.add(pitch(good()), 'tok');
@@ -134,6 +172,7 @@ test('publicView has no pitch, keys or full leaseId', () => {
   const pub = publicView(act) as Record<string, unknown>;
   assert.equal(pub.pitch, undefined);
   assert.equal(pub.sshKeys, undefined);
+  assert.equal(pub.homeId, undefined, 'homeId links a grant to a key set');
   assert.equal(pub.tokenHash, undefined);
   assert.equal(pub.leaseId, 'abcdef01');
   assert.equal(pub.grantId, act.grantId);
