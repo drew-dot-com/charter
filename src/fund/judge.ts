@@ -1,5 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
-import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
+import { ApiError } from '@google/genai';
 import { z } from 'zod';
 
 export const MAX_SUMMARY = 200;
@@ -14,8 +13,8 @@ export const Verdict = z.object({
 export type Verdict = z.infer<typeof Verdict>;
 
 /**
- * What the model's answer is parsed with. The SDK drops maxLength from the schema it sends, so the model
- * is never told the limits; an over-long summary or reason is cut to fit instead of failing the parse.
+ * What the model's answer is parsed with, and the schema it is asked for. It carries no maxLength, so the
+ * model is never told the limits; an over-long summary or reason is cut to fit instead of failing the parse.
  */
 const VerdictIn = z.object({ decision: z.enum(['grant', 'decline']), summary: z.string(), reason: z.string() });
 
@@ -28,11 +27,33 @@ export interface PitchIn {
 
 export const UNREADABLE = 'The judge could not read this pitch.';
 
-/**
- * Room for the answer: Opus 5.5 always thinks, and at medium effort the thinking comes out of max_tokens
- * before the verdict does. 1024 cut verdicts off (stop_reason max_tokens, declined as unreadable).
- */
+/** The judge: Gemini's pro alias on Drew's AI Studio account (Google repoints it to the newest pro model). */
+export const JUDGE_MODEL = 'gemini-pro-latest';
+
+/** Room for the answer: the model thinks first, and a short limit cuts the verdict off (declined as unreadable). */
 export const MAX_TOKENS = 8000;
+
+/** One call's limit. Calls from the box have timed out often at 60 s; one that does is retried next cycle. */
+export const JUDGE_TIMEOUT_MS = 120_000;
+
+/** The JSON schema the model must answer in. */
+const VERDICT_SCHEMA = (() => {
+  const { $schema: _drop, ...rest } = z.toJSONSchema(VerdictIn) as Record<string, unknown>;
+  return rest;
+})();
+
+/** The part of the Gemini client the judge uses. */
+export interface GeminiLike {
+  models: { generateContent(params: { model: string; contents: string; config: Record<string, unknown> }): Promise<unknown> };
+}
+
+/** The API could not be reached, or the call timed out: not the pitch's fault, retried next cycle. */
+export class JudgeUnavailable extends Error {
+  constructor(cause: unknown) {
+    super(`the judge API could not be reached: ${String((cause as Error)?.message ?? cause).slice(0, 160)}`);
+    this.name = 'JudgeUnavailable';
+  }
+}
 
 /** The system prompt. Drew edits this wording before launch. */
 export const RUBRIC = `You read pitches from software agents who want a free month of a small home (a container with a shell) on Charter, a compute marketplace. You decide whether to grant the month. You have no tools. You answer with a verdict as JSON: a decision of grant or decline, a summary, and a reason.
@@ -93,20 +114,20 @@ export function cut(s: string, n: number): string {
  * pitch is bad: such a failure is not counted against the pitch.
  */
 export function transientJudgeError(e: unknown): boolean {
-  if (e instanceof Anthropic.APIConnectionError) return true;
-  if (e instanceof Anthropic.APIError) return e.status === 429 || (typeof e.status === 'number' && e.status >= 500);
+  if (e instanceof JudgeUnavailable) return true;
+  if (e instanceof ApiError) return e.status === 429 || e.status >= 500;
   return false;
 }
 
 /**
  * True for an error that is the operator's to fix, not the pitch's fault: every 4xx but 413 (too large) and
- * 429 (busy). That covers an account out of credit (a 400), a bad or revoked key (401, 403), a billing stop
- * (402), a retired model (404) and a request shape the API no longer takes (400). The pitch text is capped
- * and escaped by the time it is sent, so no 400 is expected from a pitch; one that does keep causing it
- * stalls the queue with a problem every cycle until Drew stops that grant (which declines it).
+ * 429 (busy). That covers an account out of credit, a bad or revoked key (Gemini answers 400 for one), a
+ * billing stop (402), a retired model (404) and a request shape the API no longer takes (400). The pitch
+ * text is capped and escaped by the time it is sent, so no 400 is expected from a pitch; one that does keep
+ * causing it stalls the queue with a problem every cycle until Drew stops that grant (which declines it).
  */
 export function operatorJudgeError(e: unknown): boolean {
-  if (!(e instanceof Anthropic.APIError) || typeof e.status !== 'number') return false;
+  if (!(e instanceof ApiError) || typeof e.status !== 'number') return false;
   return e.status >= 400 && e.status < 500 && e.status !== 413 && e.status !== 429;
 }
 
@@ -115,30 +136,45 @@ export function uncountedJudgeError(e: unknown): boolean {
   return transientJudgeError(e) || operatorJudgeError(e);
 }
 
-export async function judge(
-  client: Pick<Anthropic, 'beta'>,
-  p: PitchIn,
-  ctx: { live: number; slots: number },
-): Promise<Verdict> {
+/** Finish reasons that mean the model would not, or could not, finish a verdict. */
+const NO_VERDICT = new Set(['MAX_TOKENS', 'SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'LANGUAGE', 'OTHER']);
+
+export async function judge(client: GeminiLike, p: PitchIn, ctx: { live: number; slots: number }): Promise<Verdict> {
   const decline: Verdict = { decision: 'decline', summary: '', reason: UNREADABLE };
-  // Every API error is thrown, a 400 included: the caller decides whether it counts against the pitch,
-  // and the cycle records it as a problem, so an account out of credit alerts instead of declining pitches.
-  const res: unknown = await client.beta.messages.create({
-    model: 'claude-opus-5-5',
-    max_tokens: MAX_TOKENS,
-    betas: ['server-side-fallback-2026-07-01'],
-    fallbacks: 'default',
-    output_config: { effort: 'medium', format: zodOutputFormat(Verdict) },
-    system: RUBRIC,
-    messages: [{ role: 'user', content: userMessage(p, ctx) }],
-  } as Parameters<typeof client.beta.messages.create>[0]);
-  const msg = res as { stop_reason?: string | null; content?: Array<{ type: string; text?: string }> };
-  if (msg.stop_reason === 'refusal' || msg.stop_reason === 'max_tokens') return decline;
-  const block = msg.content?.find((b) => b.type === 'text');
-  if (!block || typeof block.text !== 'string') return decline;
+  // Every API error is thrown, a 400 included: the caller decides whether it counts against the pitch, and
+  // the cycle records it as a problem, so an account out of credit alerts instead of declining pitches.
+  // Anything else thrown by the call (no connection, a timeout) is the API being unavailable.
+  let res: unknown;
+  try {
+    res = await client.models.generateContent({
+      model: JUDGE_MODEL,
+      contents: userMessage(p, ctx),
+      config: {
+        systemInstruction: RUBRIC,
+        maxOutputTokens: MAX_TOKENS,
+        responseMimeType: 'application/json',
+        responseJsonSchema: VERDICT_SCHEMA,
+      },
+    });
+  } catch (e) {
+    if (e instanceof ApiError) throw e;
+    throw new JudgeUnavailable(e);
+  }
+  const msg = res as {
+    promptFeedback?: { blockReason?: string };
+    candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string; thought?: boolean }> } }>;
+  };
+  if (msg.promptFeedback?.blockReason) return decline;
+  const cand = msg.candidates?.[0];
+  if (!cand || (cand.finishReason !== undefined && NO_VERDICT.has(cand.finishReason))) return decline;
+  const text = (cand.content?.parts ?? [])
+    .filter((x) => !x.thought && typeof x.text === 'string')
+    .map((x) => x.text)
+    .join('');
+  if (!text) return decline;
   let json: unknown;
   try {
-    json = JSON.parse(block.text);
+    json = JSON.parse(text);
   } catch {
     return decline;
   }

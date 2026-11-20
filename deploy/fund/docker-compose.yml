@@ -7,7 +7,7 @@
 #                     (charter-backup-stream.sh sends state.json and stops.json in the nightly backup)
 #   secrets/          fund-key (0400, from new-fund-key.mjs: the fund's Base wallet, holds the pot),
 #                     fund-token (0400, the same token the door reads as CHARTER_FUND_TOKEN_FILE),
-#                     judge-key (0400, an Anthropic API key), rpc-url (0400, a Base RPC URL)
+#                     judge-key (0400, a Gemini API key from AI Studio), rpc-url (0400, a Base RPC URL)
 #
 # Losing data/state.json lets the fund pay a grant twice: back it up.
 services:

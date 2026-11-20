@@ -356,7 +356,7 @@ stop lets a paid call of up to 60 s finish). Files under `/root/charter-fund` (u
 - `fund.env`: `CHARTER_FUND_DOOR_URL` only, optional (`deploy/fund/fund.env.example`).
 - `secrets/fund-key` (the fund's Base wallet key, from `node deploy/fund/new-fund-key.mjs <file>`, which prints
   the address to fund with USDC), `secrets/fund-token` (the same token the door reads as
-  `CHARTER_FUND_TOKEN_FILE`), `secrets/judge-key` (an Anthropic API key), `secrets/rpc-url` (a Base RPC URL).
+  `CHARTER_FUND_TOKEN_FILE`), `secrets/judge-key` (a Gemini API key from AI Studio, billed to Drew's prepay; the judge is `gemini-pro-latest`), `secrets/rpc-url` (a Base RPC URL).
   The door's `door.env` also needs `CHARTER_FUND_ADDRESS` set to the fund's address.
 - `new-fund-key.mjs` imports `viem`, so it runs only where the repo's `node_modules` is installed: either on
   the box from the repo checkout after `npm ci` (`cd <checkout> && node deploy/fund/new-fund-key.mjs
@@ -399,7 +399,7 @@ declines it as unreadable when it reaches the front of the queue, with no model 
 **Judge problems.** A judge call that fails leaves the pitch queued and names the full grant id in the
 problem. An unavailable API (no connection, 429, 5xx) and an operator fault (every other 4xx but 413: an
 account out of credit, a bad key, a retired model) are never counted against the pitch, so they alert every
-cycle and decline nothing: top up the Anthropic account or fix the key, and judging resumes. Any other failure
+cycle and decline nothing: top up the AI Studio prepay or fix the key, and judging resumes. A call that runs past 120 s counts as unavailable. Any other failure
 counts, and the third declines the pitch as unreadable. A pitch that keeps failing without being counted is
 cleared with `stop <grantId>`.
 

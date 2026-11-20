@@ -3,12 +3,12 @@
 // `stop <grantId>`, `stop-all` and `status` are the operator's commands, run with `docker exec`.
 // The commands never touch the key, the token or the network: stops go into stops.json, which the loop
 // re-reads at the start of every cycle, and status reads the files the loop wrote.
-import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenAI } from '@google/genai';
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { privateKeyToAccount } from 'viem/accounts';
 import { doorClient, usdcBalance, type DoorClient } from './door-client.js';
-import { judge, uncountedJudgeError } from './judge.js';
+import { judge, JUDGE_TIMEOUT_MS, uncountedJudgeError } from './judge.js';
 import { cycle, GRANT_HOURS, makeJudgeOne, MAX_TICK_MICRO, type CycleDeps } from './paymaster.js';
 import { emptyState, loadState, saveState, type FundState } from './state.js';
 
@@ -317,10 +317,11 @@ async function run(env: NodeJS.ProcessEnv): Promise<void> {
   const state = existsSync(join(dir, 'state.json')) ? loadState(join(dir, 'state.json')) : emptyState();
 
   const door = await doorClient({ doorUrl: env.CHARTER_FUND_DOOR_URL?.trim() || DEFAULT_DOOR, key, fundToken, maxTickMicro: MAX_TICK_MICRO });
-  const anthropic = new Anthropic({ apiKey: judgeKey });
+  // No SDK retries: a failed call is retried by the next cycle, so one call never outlasts its timeout.
+  const gemini = new GoogleGenAI({ apiKey: judgeKey, httpOptions: { timeout: JUDGE_TIMEOUT_MS, retryOptions: { attempts: 1 } } });
   const judgeOne = makeJudgeOne({
     door,
-    judge: (p, ctx) => judge(anthropic, p, ctx),
+    judge: (p, ctx) => judge(gemini, p, ctx),
     slots: async () => (await readOffers(door).catch(() => undefined))?.slots ?? 0,
     state,
     save: () => saveState(join(dir, 'state.json'), state),
