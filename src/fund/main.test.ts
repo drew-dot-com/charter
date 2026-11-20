@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { Answer, DoorClient } from './door-client.js';
-import { grantsLeft, parseFundKey, parseArgs, readStops, runLoop, runOnce, statusReport, stopCommand, updateHealth } from './main.js';
+import { usdcBalance } from './door-client.js';
+import { addSecrets, redact, grantsLeft, parseFundKey, parseArgs, readStops, runLoop, runOnce, statusReport, stopCommand, updateHealth } from './main.js';
 import { emptyState, loadState, saveState, type FundState } from './state.js';
 
 const hex = () => randomBytes(16).toString('hex');
@@ -219,4 +220,30 @@ test('the loop never overlaps cycles and stops after the current one', async () 
   });
   assert.equal(n, 3);
   assert.equal(max, 1);
+});
+
+const URL_WITH_KEY = 'https://base-mainnet.rpc.example/v2/SECRETAPIKEY123';
+
+test('a balance error carrying the RPC URL never reaches health.json', async () => {
+  const d = dir();
+  const balance = () => usdcBalance(ADDRESS, URL_WITH_KEY, (async () => { throw new Error(`HTTP request failed. URL: ${URL_WITH_KEY}`); }) as never);
+  await runOnce({
+    dir: d, state: emptyState(), door: fakeDoor([]), address: ADDRESS, balance, now: () => T0,
+    judgeOne: async () => {},
+    runCycle: async (c) => { try { await c.balance(); } catch (e) { c.problem('balance', `the balance read failed: ${(e as Error).message}`); } },
+  });
+  const text = readFileSync(join(d, 'health.json'), 'utf8');
+  assert.match(text, /balance/);
+  assert.doesNotMatch(text, /SECRETAPIKEY123|rpc\.example/);
+});
+
+test('redact strips registered secrets from any problem text, even one that slips through', async () => {
+  const d = dir();
+  addSecrets(URL_WITH_KEY);
+  assert.equal(redact(`boom ${URL_WITH_KEY}`), 'boom [redacted]');
+  await runOnce({
+    dir: d, state: emptyState(), door: fakeDoor([]), address: ADDRESS, balance: async () => 1n, now: () => T0,
+    judgeOne: async () => {}, runCycle: async (c) => { c.problem('x', `leak ${URL_WITH_KEY}`); throw new Error(`and ${URL_WITH_KEY}`); },
+  });
+  assert.doesNotMatch(readFileSync(join(d, 'health.json'), 'utf8'), /SECRETAPIKEY123/);
 });

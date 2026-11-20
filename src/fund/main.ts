@@ -17,7 +17,17 @@ export const PROBLEM_MS = 3_600_000;
 const GRANT_ID = /^[0-9a-f]{32}$/;
 const DEFAULT_DOOR = 'https://charter.mainnet.toonprotocol.dev';
 
-const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const secrets = new Set<string>();
+/** Strings (the RPC URL, the tokens, the keys) that must never reach health.json, logs or the door. */
+export function addSecrets(...s: string[]): void {
+  for (const x of s) if (x.length >= 8) secrets.add(x);
+}
+export function redact(text: string, list: Iterable<string> = secrets): string {
+  let out = text;
+  for (const s of list) if (s) out = out.split(s).join('[redacted]');
+  return out;
+}
+const errText = (e: unknown) => redact(e instanceof Error ? e.message : String(e));
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 
 // ---- files in the data dir ----
@@ -128,7 +138,7 @@ export interface OnceDeps {
 export async function runOnce(d: OnceDeps): Promise<void> {
   const t = d.now();
   const problems: { key: string; msg: string }[] = [];
-  const problem = (key: string, msg: string) => void problems.push({ key, msg });
+  const problem = (key: string, msg: string) => void problems.push({ key, msg: redact(msg) });
   try {
     let stops: Stops | undefined;
     try {
@@ -284,6 +294,7 @@ async function run(env: NodeJS.ProcessEnv): Promise<void> {
   const judgeKey = readSecret(env, 'CHARTER_JUDGE_KEY_FILE');
   const rpcUrl = readSecret(env, 'CHARTER_FUND_RPC_URL_FILE');
   const address = privateKeyToAccount(key).address;
+  addSecrets(rpcUrl, fundToken, judgeKey, key, key.slice(2));
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const state = existsSync(join(dir, 'state.json')) ? loadState(join(dir, 'state.json')) : emptyState();
 

@@ -117,5 +117,10 @@ type Read = (a: { address: `0x${string}`; abi: typeof erc20Abi; functionName: 'b
 /** USDC balance (6 decimals) of `address` on Base. `read` is injectable for tests. */
 export async function usdcBalance(address: string, rpcUrl: string, read?: Read): Promise<bigint> {
   const reader: Read = read ?? ((a) => createPublicClient({ chain: base, transport: http(rpcUrl) }).readContract(a) as Promise<bigint>);
-  return reader({ address: BASE_USDC, abi: erc20Abi, functionName: 'balanceOf', args: [address as `0x${string}`] });
+  try {
+    return await reader({ address: BASE_USDC, abi: erc20Abi, functionName: 'balanceOf', args: [address as `0x${string}`] });
+  } catch (e) {
+    // viem's transport errors carry the request URL, which holds the provider's API key: say nothing of the original.
+    throw new Error(`balance read failed (${e instanceof Error ? e.constructor.name : typeof e})`);
+  }
 }

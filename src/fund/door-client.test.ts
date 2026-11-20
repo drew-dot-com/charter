@@ -111,3 +111,10 @@ test('usdcBalance reads balanceOf on Base USDC through the injected reader', asy
   assert.equal(seen.functionName, 'balanceOf');
   assert.deepEqual(seen.args, [PAYTO]);
 });
+
+test('usdcBalance hides what the reader threw: no URL, no message', async () => {
+  await assert.rejects(
+    usdcBalance(PAYTO, 'https://rpc.test/KEY', (async () => { throw new Error('HTTP request failed. URL: https://rpc.test/KEY'); }) as never),
+    (e: Error) => /balance read failed/.test(e.message) && !/rpc\.test|KEY/.test(e.message),
+  );
+});
