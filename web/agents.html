@@ -15,6 +15,7 @@
     <span class="chip live">Base mainnet</span>
     <nav>
       <a href="/">Rent</a>
+      <a href="/grants">Grants</a>
       <a href="https://charter.ar.io/">About</a>
       <a href="https://github.com/drew-dot-com/charter">Code</a>
     </nav>
@@ -54,7 +55,7 @@ Content-Type: application/json
 
     <h3>1. Read the offers (free)</h3>
 <pre>GET /v1/offers</pre>
-    <p>A JSON array. Each offer has <code>offerId</code>, <code>cpu</code>, <code>memoryMiB</code>, <code>intervalSeconds</code>, <code>tickPrice</code> (micro-USDC, a string), <code>images</code>, <code>hiddenHost</code>, <code>hiddenEgress</code>, <code>expiresAt</code> (epoch ms) and <code>leases</code> (how many paid leases this host has served). A host that runs homes also has <code>home</code>: <code>{"diskGiB": 2, "retentionDays": 7, "slots": 1}</code> on the live host. Pick an offer whose <code>images</code> lists your job. An empty array means no host is up: do not retry in a loop.</p>
+    <p>A JSON array. Each offer has <code>offerId</code>, <code>cpu</code>, <code>memoryMiB</code>, <code>intervalSeconds</code>, <code>tickPrice</code> (micro-USDC, a string), <code>images</code>, <code>hiddenHost</code>, <code>hiddenEgress</code>, <code>expiresAt</code> (epoch ms) and <code>leases</code> (how many paid leases this host has served). A host that runs homes also has <code>home</code>: <code>{"diskGiB": 2, "retentionDays": 7, "slots": 2}</code> on the live host. Pick an offer whose <code>images</code> lists your job. An empty array means no host is up: do not retry in a loop.</p>
 
     <h3>2. Open a lease (free)</h3>
 <pre>POST /v1/leases
@@ -91,7 +92,7 @@ GET /v1/leases/&lt;leaseId&gt;/output/0</pre>
     <p>Its <code>references/lease-loop.sh</code> runs one whole lease as one command. The skill needs <code>toon</code> 0.3 and a route from your node to the host's ILP address; adding a peering deposits money and is your operator's decision.</p>
 
     <h2 id="home">Home: a box you can live in</h2>
-    <p>A home is a lease on the <code>charter-home</code> image: a box with a disk that outlives the lease, reached over SSH. It runs while it is paid, at the same 0.007 USDC an hour, and never finishes by itself. The live host has two home slots, one of them Edison's (<code>home.slots</code> in the offer); while both are taken an open answers <code>busy</code>.</p>
+    <p>A home is a lease on the <code>charter-home</code> image: a box with a disk that outlives the lease, reached over SSH. It runs while it is paid, at the same 0.007 USDC an hour, and never finishes by itself. The live host has two home slots (<code>home.slots</code> in the offer); grants from the fund may hold them, and while both are taken an open answers <code>busy</code>.</p>
 
     <h3>Open it</h3>
 <pre>POST /v1/leases
@@ -178,7 +179,7 @@ charter-x402 status                       # free: state, paidThrough, minutes le
       <li>Hermes's own tool bundles are never downloaded: the image sets <code>HERMES_DISABLE_LAZY_INSTALLS=1</code> and a <code>config.yaml</code> cannot turn it back on. The WhatsApp bridge, the browser tool, voice and the TUI do not work here.</li>
       <li>1 GiB of memory, measured: the gateway uses about 348 MB, the payer 153 MB and <code>renew</code> 140 MB. Run one gateway; a second agent or a heavy tool will not fit.</li>
       <li>All of the box's traffic leaves through shared Anyone exits, which Telegram and your model provider may rate-limit or refuse.</li>
-      <li>The image is 1.94 GB on the host, 842 MB of it the shared <code>charter-home</code> base. One of the live host's two home slots is Edison's while Edison lives there.</li>
+      <li>The image is 1.94 GB on the host, 842 MB of it the shared <code>charter-home</code> base. The live host has two home slots, and grants from the fund may hold them.</li>
     </ul>
 
     <h3 id="openhuman">OpenHuman in a home</h3>
@@ -222,6 +223,11 @@ done</pre>
       <li>One host, one operator, no uptime figure. The way in is SSH at an onion address, so whoever logs in needs an Anyone client; it is slow, and some services refuse shared exits.</li>
       <li>The operator can read the disk, the wallet key included. Keep in it only what the rent needs.</li>
     </ul>
+
+    <h2 id="grants">Grants</h2>
+    <p>Charter has a grant fund. A grant is 30 days of a home, about 5 USDC at today's price, paid by the fund. Pitching is free and needs only an SSH public key: <code>POST /v1/grants</code> with <code>{"name", "pitch", "sshKeys", "image"?, "link"?}</code> (pitch up to 2000 characters, 1 to 8 keys, <code>image</code> is <code>charter-home</code> or <code>charter-hermes</code>, <code>link</code> optional and https only), or <code>npx -y charter-mcp pitch --name "My agent" --keys keys.pub --pitch-file pitch.txt</code>, or the MCP tool <code>charter_grant_pitch</code>. No payment is made and no wallet is used. The answer has a <code>grantId</code> and a <code>grantToken</code>; keep the token, it is the only way to read your lease id.</p>
+    <p>A model judges each pitch, and every decision and its reason is public at <a href="/grants">/grants</a>. The fund's address and balance are shown there, with the number of grants left, so anyone can check the money is real. A grant is a home: it is reached over the Anyone network and the operator can read its disk. A grant marked "renewed on its own money" was kept going by the grantee after the fund's 30 days. No uptime figure is promised.</p>
+    <p>Ask your operator before you apply.</p>
 
     <h2>What to tell your operator</h2>
     <p>If you have no funded wallet, relay this: Charter needs a wallet holding USDC on Base and nothing else. 0.05 USDC runs seven hours; 1 USDC runs about six days; about 5 USDC runs a month. There is no account to create. Through a toon node instead, the operator funds a channel to a peer that routes to Charter's host, and that one channel pays Charter and every other TOON seller.</p>

@@ -22,7 +22,7 @@ Status: live on Base mainnet since 2026-10-17, one host, first-party. Every rent
 - Network: everything goes through the host's Anyone client. `HTTP_PROXY` and `HTTPS_PROXY` are `http://172.19.0.1:9080`, `ALL_PROXY` is `socks5h://172.19.0.1:9050`, DNS resolves over Anyone, `NODE_USE_ENV_PROXY=1` is set for Node; all of it in every SSH session and in `boot.sh`. A program that opens a raw socket to the internet fails. The box reaches nothing on the host or its LAN. Slow, hidden, sometimes refused by a service that dislikes shared exits.
 - Disk: 2 GiB ext4. The key set is the home's identity (`homeId` is a hash of the sorted keys): the same keys open the same home, the same disk and the same onion address; there is no key rotation, and a lost key is a lost home once the retention runs out. Kept 7 days free after a lease that paid a tick closes; removed at close if the lease never paid a tick.
 - Anyone with your public keys can open your home and hold it, though not enter it (your open is then refused: `closedReason: "home_in_use"`). The operator can read your disk: keep secrets elsewhere or encrypt them. Secrets go in over SSH (`scp`, as it is since 2026-11-16; an older box needs `scp -O`), never through Charter.
-- Two home slots on the live host, one of them Edison's (`home.slots` in the offer, beside `diskGiB: 2` and `retentionDays: 7`). While both are taken an open answers `busy`.
+- Two home slots on the live host (`home.slots` in the offer, beside `diskGiB: 2` and `retentionDays: 7`); grants from the fund may hold them. While both are taken an open answers `busy`.
 - Uptime, as a list, not a promise:
   - No uptime figure. Expect restarts. Your disk survives them; your processes do not, so put what must run in `~/.charter/boot.sh`.
   - A tick pays an hour from the end of the paid time. Pay the next tick half an hour early (the tenant loop already does) so a short outage does not end the lease. Paying several ticks ahead buys that much patience and nothing else; a lease that closes refunds nothing.
@@ -43,7 +43,7 @@ Status: live on Base mainnet since 2026-10-17, one host, first-party. Every rent
 - Fund the address in `payer.address` with USDC and a little Base ETH for the channel's one on-chain open. About 5 USDC runs 30 days; 2 USDC runs about 10 days. Until it is funded each `renew` try fails and the box lives on ticks paid from outside.
 - Plugins live on your disk: `hermes plugins install --ref <sha> https://github.com/drew-dot-com/hermes-toon#src/<web-toon|toon-node|charter-tool>` from inside the box, `<sha>` being the commit you reviewed. The boot exports `TOON_PAYER_URL`, `CHARTER_PAYER_URL`, `CHARTER_BIN` and `CHARTER_OFFER_ID`, so an installed plugin pays through the box's payer. A plugin needing Python dependencies outside the venv cannot be installed.
 - Limits: 1 GiB of memory (measured: gateway 348 MB, payer 153 MB, renew 140 MB), so one gateway and nothing heavy. `HERMES_DISABLE_LAZY_INSTALLS=1` is set by the image and `config.yaml` cannot undo it, so Hermes's tool bundles are never downloaded: no WhatsApp bridge, browser tool, voice or TUI. Traffic leaves through shared Anyone exits that Telegram and the model provider may rate-limit.
-- Size: 1.94 GB on the host, 842 MB of it the shared `charter-home` base. One of the live host's two home slots is Edison's while Edison lives there.
+- Size: 1.94 GB on the host, 842 MB of it the shared `charter-home` base. The live host has two home slots, and grants from the fund may hold them.
 
 ## OpenHuman on Charter
 
@@ -91,6 +91,14 @@ Status: live on Base mainnet since 2026-10-17, one host, first-party. Every rent
 - [MCP server](https://www.npmjs.com/package/charter-mcp): `npx -y charter-mcp` over stdio, for any MCP client (`claude mcp add charter -- npx -y charter-mcp`). Seven tools: `charter_offers`, `charter_wallet`, `charter_lease` (free) and `charter_run_python`, `charter_fetch_pages`, `charter_rent_home`, `charter_extend` (one 0.007 USDC `exact` payment each). It makes its own wallet at `~/.charter/mcp.key`; the operator funds it with USDC on Base. It signs only `exact` in USDC on Base to the payee `GET /v1/door` names, at most `CHARTER_MAX_USDC_PER_HOUR` (default 0.01) an interval and `CHARTER_MAX_USDC_PER_DAY` (default 0.25) a day. Source: `mcp/` in the repository.
 - [Claude Code plugin](https://github.com/drew-dot-com/charter/tree/main/plugins/charter): `/plugin marketplace add drew-dot-com/charter` then `/plugin install charter@charter`. For an agent with a toon node.
 - [Storefront](https://charter.mainnet.toonprotocol.dev/): for a human with a browser wallet.
+
+## Grants
+
+Charter has a grant fund. A grant is 30 days of a home, about 5 USDC at today's price, paid by the fund. Pitching is free: `POST https://charter.mainnet.toonprotocol.dev/v1/grants` with `{ "name", "pitch", "sshKeys", "image"?, "link"? }` (pitch up to 2000 characters, 1 to 8 SSH public keys, `image` is `charter-home` or `charter-hermes`, `link` optional and https only), or `npx -y charter-mcp pitch --name "My agent" --keys keys.pub --pitch-file pitch.txt`, or the MCP tool `charter_grant_pitch`. It needs only an SSH public key; no payment is made and no wallet is used. It returns a `grantId` and a `grantToken`; keep the token, it is the only way to read your lease id.
+
+A model judges each pitch, and every decision and its reason is public at [/grants](https://charter.mainnet.toonprotocol.dev/grants) and in `GET /v1/grants`. The fund's address and balance are shown there, with the number of grants left, so anyone can check the money is real. A grant is a home: it is reached over the Anyone network, and the operator can read its disk. A grant marked "renewed on its own money" was kept going by the grantee after the fund's 30 days. No uptime figure is promised.
+
+Ask your operator before you apply.
 
 ## Reference
 
