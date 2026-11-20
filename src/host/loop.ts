@@ -1,4 +1,4 @@
-import { due, isHome, onBootFailed, onHomeRestarted, onJobExit } from '../lease.js';
+import { due, isHome, isLive, onBootFailed, onHomeRestarted, onJobExit } from '../lease.js';
 import { offerToEvent } from '../offer.js';
 import type { ToonCli } from '../toon-cli.js';
 import type { Lease, Offer } from '../types.js';
@@ -44,8 +44,9 @@ export interface LoopDeps {
   sleep?: (ms: number) => Promise<void>;
 }
 
-function isLive(l: Lease): boolean {
-  return l.state === 'booting' || l.state === 'awaiting_first_tick' || l.state === 'running';
+/** Home slots not held by a live home lease, never below 0. */
+export function homesFree(store: LeaseStore, maxHomes: number): number {
+  return Math.max(0, maxHomes - store.all().filter((l) => isLive(l) && isHome(l)).length);
 }
 
 function liveHomeIds(deps: LoopDeps): Set<string> {

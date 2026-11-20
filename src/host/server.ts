@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import express from 'express';
 import { homeIdOf, normalizeSshKeys } from '../jobs.js';
-import { isHome, LeaseError, newLease, onBootFailed, onBooted, onTick } from '../lease.js';
+import { isHome, isLive, LeaseError, newLease, onBootFailed, onBooted, onTick } from '../lease.js';
 import type { CloseReason, JobSpec, Lease, Offer } from '../types.js';
 import type { HomeStore } from './homes.js';
 import { closeAndStop, OUTPUT_PART_BYTES } from './loop.js';
@@ -75,7 +75,6 @@ export function hostApps(deps: HostDeps): { open: express.Express; tick: express
   const maxLeases = deps.maxLeases ?? 1;
   const maxHomes = deps.maxHomes ?? 0;
   const log = deps.log ?? ((msg: string) => console.error(msg));
-  const isLive = (l: Lease): boolean => l.state === 'booting' || l.state === 'awaiting_first_tick' || l.state === 'running';
   const live = (): number => store.all().filter(isLive).length;
 
   const open = newApp();

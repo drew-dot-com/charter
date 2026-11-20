@@ -173,3 +173,23 @@ test('an offer carries its home terms through the event and through JSON', () =>
   const back = offerFromJson(offerToJson({ ...o, expiresAt: 0 }));
   assert.deepEqual(back, { ...o, expiresAt: 0 });
 });
+
+test('parses home.free when 0 <= free <= slots', () => {
+  for (const free of [0, 1, 2]) {
+    const o = offer({ home: { diskGiB: 2, retentionDays: 7, slots: 2, free } });
+    assert.equal(offerFromEvent({ ...offerToEvent(o), pubkey: PUB }, 0)!.home!.free, free);
+  }
+});
+
+test('drops an offer whose home.free is negative, fractional or above slots', () => {
+  for (const free of [-1, 0.5, 3]) {
+    const o = offer({ home: { diskGiB: 2, retentionDays: 7, slots: 2, free } });
+    assert.equal(offerFromEvent({ ...offerToEvent(o), pubkey: PUB }, 0), null);
+  }
+});
+
+test('an offer without home.free still parses', () => {
+  const o = offer({ home: { diskGiB: 2, retentionDays: 7, slots: 2 } });
+  const home = offerFromEvent({ ...offerToEvent(o), pubkey: PUB }, 0)!.home!;
+  assert.equal('free' in home, false);
+});

@@ -39,6 +39,11 @@ export function newLease(id: string, offer: Offer, job: JobSpec, now: number, ho
   return l;
 }
 
+/** A lease that holds the host now: still booting, waiting for its first tick, or running. */
+export function isLive(l: Pick<Lease, 'state'>): boolean {
+  return l.state === 'booting' || l.state === 'awaiting_first_tick' || l.state === 'running';
+}
+
 export function isHome(l: Pick<Lease, 'job'>): boolean {
   return HOME_IMAGES.includes(l.job.image);
 }

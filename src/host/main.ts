@@ -5,11 +5,13 @@ import { execFileExec } from '../exec.js';
 import { offerToEvent, offerToJson } from '../offer.js';
 import { ToonCli } from '../toon-cli.js';
 import { loadConfig } from './config.js';
-import { HOME_SWEEP_MS, OFFER_LIFETIME_MS, OFFER_REPUBLISH_MS, homeSweep, landAll, offerTick, reconcile, windowTick } from './loop.js';
+import { HOME_SWEEP_MS, homesFree, OFFER_LIFETIME_MS, OFFER_REPUBLISH_MS, homeSweep, landAll, offerTick, reconcile, windowTick } from './loop.js';
 import { HomeStore } from './homes.js';
 import { dockerRunner } from './runner.js';
 import { hostApps } from './server.js';
 import { LeaseStore } from './store.js';
+
+const OFFER_FREE_CHECK_MS = 60_000;
 
 const USAGE = 'usage: charter-host run | land | offer --print';
 
@@ -102,11 +104,23 @@ async function main(argv: string[]): Promise<number> {
     apps.tick.listen(cfg.ports.tick, '127.0.0.1'),
     apps.status.listen(cfg.ports.status, '127.0.0.1'),
   ];
+  let lastFree: number | undefined;
   const publish = async () => {
-    const id = await offerTick({ cli, offer: cfg.offer, relayUrl: cfg.relayUrl, now });
+    const free = cfg.offer.home ? homesFree(store, cfg.maxHomes) : undefined;
+    const offer = cfg.offer.home && free !== undefined ? { ...cfg.offer, home: { ...cfg.offer.home, free } } : cfg.offer;
+    const id = await offerTick({ cli, offer, relayUrl: cfg.relayUrl, now });
+    lastFree = free;
     console.log(`offer published ${id}`);
   };
-  const timers = [every(1000, () => windowTick(deps), 'window tick'), every(OFFER_REPUBLISH_MS, publish, 'offer publish')];
+  // Free home slots change when a home opens or closes: say so at once, not at the next 20-minute republish.
+  const publishIfFreeChanged = async () => {
+    if (cfg.offer.home && homesFree(store, cfg.maxHomes) !== lastFree) await publish();
+  };
+  const timers = [
+    every(1000, () => windowTick(deps), 'window tick'),
+    every(OFFER_REPUBLISH_MS, publish, 'offer publish'),
+    every(OFFER_FREE_CHECK_MS, publishIfFreeChanged, 'offer free check'),
+  ];
   if (homes) timers.push(every(HOME_SWEEP_MS, () => homeSweep(deps), 'home sweep'));
   publish().catch((e) => console.error(`offer publish failed: ${String(e)}`));
   console.log(`charter-host listening on 127.0.0.1 ${cfg.ports.open},${cfg.ports.tick},${cfg.ports.status}`);

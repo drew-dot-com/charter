@@ -23,7 +23,7 @@ export interface Offer {
   /** Epoch ms. */
   expiresAt: number;
   /** Present when the host offers a durable home (the `charter-home` image). */
-  home?: { diskGiB: number; retentionDays: number; slots: number };
+  home?: { diskGiB: number; retentionDays: number; slots: number; free?: number };
 }
 
 export interface JobSpec {

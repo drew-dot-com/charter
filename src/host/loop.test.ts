@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { Lease, Offer } from '../types.js';
 import { OFFER_KIND } from '../offer.js';
 import { RunnerError, type Runner } from './runner.js';
-import { BOOT_TIMEOUT_MS, DOCKER_WAIT_MS, homeSweep, landAll, offerTick, reconcile, windowTick, type LoopDeps } from './loop.js';
+import { BOOT_TIMEOUT_MS, DOCKER_WAIT_MS, homeSweep, homesFree, landAll, offerTick, reconcile, windowTick, type LoopDeps } from './loop.js';
 import { GRACE_MS, onTick } from '../lease.js';
 import { LeaseStore } from './store.js';
 import { HOME_RETENTION_MS, HomeStore, type HomeRecord } from './homes.js';
@@ -692,4 +692,14 @@ test('reconcile leaves a lease alone when alive says docker is unavailable', asy
   assert.equal(store.get('gone')!.closedReason, 'host_restart');
   assert.deepEqual(stops, ['gone']);
   assert.ok(logs.some((m) => m.includes('h') && /docker/.test(m)));
+});
+
+test('homesFree counts only live home leases', () => {
+  const store = new LeaseStore();
+  store.put(homeLease({ id: 'h1' }));
+  store.put(homeLease({ id: 'h2', state: 'closed', closedReason: 'host_restart' }));
+  store.put(lease({ id: 'j1', job: { image: 'python:3.12', args: {} } }));
+  assert.equal(homesFree(store, 2), 1);
+  assert.equal(homesFree(store, 1), 0);
+  assert.equal(homesFree(store, 0), 0);
 });
