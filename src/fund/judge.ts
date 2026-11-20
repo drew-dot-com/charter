@@ -33,6 +33,12 @@ export const JUDGE_MODEL = 'gemini-pro-latest';
 /** Room for the answer: the model thinks first, and a short limit cuts the verdict off (declined as unreadable). */
 export const MAX_TOKENS = 8000;
 
+/**
+ * The API version the client must use. @google/genai 3.x defaults to v1, where the `-latest` aliases answer
+ * 404 (seen on the first live call, 2026-11-20); v1beta serves them.
+ */
+export const JUDGE_API_VERSION = 'v1beta';
+
 /** One call's limit. Calls from the box have timed out often at 60 s; one that does is retried next cycle. */
 export const JUDGE_TIMEOUT_MS = 120_000;
 

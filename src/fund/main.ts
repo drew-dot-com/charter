@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import { join } from 'node:path';
 import { privateKeyToAccount } from 'viem/accounts';
 import { doorClient, usdcBalance, type DoorClient } from './door-client.js';
-import { judge, JUDGE_TIMEOUT_MS, uncountedJudgeError } from './judge.js';
+import { judge, JUDGE_API_VERSION, JUDGE_TIMEOUT_MS, uncountedJudgeError } from './judge.js';
 import { cycle, GRANT_HOURS, makeJudgeOne, MAX_TICK_MICRO, type CycleDeps } from './paymaster.js';
 import { emptyState, loadState, saveState, type FundState } from './state.js';
 
@@ -318,7 +318,7 @@ async function run(env: NodeJS.ProcessEnv): Promise<void> {
 
   const door = await doorClient({ doorUrl: env.CHARTER_FUND_DOOR_URL?.trim() || DEFAULT_DOOR, key, fundToken, maxTickMicro: MAX_TICK_MICRO });
   // No SDK retries: a failed call is retried by the next cycle, so one call never outlasts its timeout.
-  const gemini = new GoogleGenAI({ apiKey: judgeKey, httpOptions: { timeout: JUDGE_TIMEOUT_MS, retryOptions: { attempts: 1 } } });
+  const gemini = new GoogleGenAI({ apiKey: judgeKey, apiVersion: JUDGE_API_VERSION, httpOptions: { timeout: JUDGE_TIMEOUT_MS, retryOptions: { attempts: 1 } } });
   const judgeOne = makeJudgeOne({
     door,
     judge: (p, ctx) => judge(gemini, p, ctx),

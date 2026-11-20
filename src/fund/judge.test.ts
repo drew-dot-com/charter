@@ -4,6 +4,7 @@ import { ApiError } from '@google/genai';
 import {
   cut,
   judge,
+  JUDGE_API_VERSION,
   JUDGE_MODEL,
   JudgeUnavailable,
   MAX_TOKENS,
@@ -49,6 +50,7 @@ test('a grant verdict parses', async () => {
   const a = seen[0];
   assert.equal(a.model, 'gemini-pro-latest');
   assert.equal(JUDGE_MODEL, 'gemini-pro-latest');
+  assert.equal(JUDGE_API_VERSION, 'v1beta', 'the -latest aliases 404 on v1');
   assert.equal(a.config.systemInstruction, RUBRIC);
   assert.equal(a.config.responseMimeType, 'application/json');
   assert.deepEqual(a.config.responseJsonSchema.required, ['decision', 'summary', 'reason']);
