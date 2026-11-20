@@ -37,7 +37,7 @@ test('renderGrants shows the fund address, balance and grants left', () => {
   const html = renderGrants(data([]));
   assert.ok(html.includes(fund.address));
   assert.ok(html.includes('12.345678 USDC'));
-  assert.ok(html.includes('4'));
+  assert.ok(html.includes('Grants left: <strong>4</strong>'));
 });
 
 test('formatBalance is exact', () => {
