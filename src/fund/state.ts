@@ -48,19 +48,33 @@ export interface FundGrant {
   openUnknown?: number;
   /** A tick sent whose answer never came: counted once the host's paidIntervals passes `index`. */
   inflight?: { leaseId: string; index: number; price: string };
+  /**
+   * A tick answered with an error the door may have given after it paid the host (a 5xx such as a host send
+   * timeout, a 402 settlement failure): the host may count the hour though the fund's payment did not settle.
+   * When the next read shows the host past `index`, that hour is the door's: it raises leaseTicks only (not
+   * fundTicks, not the day's spend), so it is never read as the grantee paying.
+   */
+  hostPaid?: { leaseId: string; index: number };
+  /** What the fund paid on this grant on one UTC day (`day` YYYY-MM-DD, `micro` decimal), for its day cap. */
+  daySpend?: { day: string; micro: string };
   pending?: DoorPatch;
 }
 
 export interface FundState {
   grants: Record<string, FundGrant>;
-  /** Spend counted toward the day cap: `day` is the UTC date (YYYY-MM-DD), `micro` a decimal string. */
+  /**
+   * The fund's whole spend on one UTC day (`day` YYYY-MM-DD, `micro` a decimal string): the sum of every
+   * grant's `daySpend`, kept for the record. The day cap itself is per grant.
+   */
   spend: { day: string; micro: string };
   stopAll: boolean;
   stopped: string[];
+  /** Failed judge calls per queued grant id; a pitch is declined as unreadable after MAX_JUDGE_TRIES. */
+  judgeAttempts: Record<string, number>;
 }
 
 export function emptyState(): FundState {
-  return { grants: {}, spend: { day: '', micro: '0' }, stopAll: false, stopped: [] };
+  return { grants: {}, spend: { day: '', micro: '0' }, stopAll: false, stopped: [], judgeAttempts: {} };
 }
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
@@ -83,7 +97,13 @@ function check(s: unknown): string | undefined {
     if (o !== undefined && !(isObj(o) && typeof o.offerId === 'string' && typeof o.at === 'number' && Number.isFinite(o.at))) return `grant ${id} opening`;
     const f = g.inflight;
     if (f !== undefined && !(isObj(f) && typeof f.leaseId === 'string' && isCount(f.index) && typeof f.price === 'string' && /^\d+$/.test(f.price))) return `grant ${id} inflight`;
+    const h = g.hostPaid;
+    if (h !== undefined && !(isObj(h) && typeof h.leaseId === 'string' && isCount(h.index))) return `grant ${id} hostPaid`;
+    const d = g.daySpend;
+    if (d !== undefined && !(isObj(d) && typeof d.day === 'string' && typeof d.micro === 'string' && /^\d+$/.test(d.micro))) return `grant ${id} daySpend`;
   }
+  const j = s.judgeAttempts;
+  if (j !== undefined && !(isObj(j) && Object.values(j).every(isCount))) return 'judgeAttempts';
   return undefined;
 }
 
@@ -98,7 +118,11 @@ export function loadState(file: string): FundState {
   }
   const bad = check(s);
   if (bad) throw new Error(`fund state ${file} is not valid (${bad}); refusing to start fresh, which could pay a grant twice`);
-  return s as FundState;
+  // A file written before judgeAttempts (and the per-grant daySpend and hostPaid, which stay optional) existed
+  // reads as no failed attempts: a deployed fund is never stranded by a newer field.
+  const out = s as FundState;
+  out.judgeAttempts ??= {};
+  return out;
 }
 
 /** Written whole to a tmp file (0600) and renamed over the old one, so a crash leaves one or the other. */

@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import { join } from 'node:path';
 import { privateKeyToAccount } from 'viem/accounts';
 import { doorClient, usdcBalance, type DoorClient } from './door-client.js';
-import { judge } from './judge.js';
+import { judge, transientJudgeError } from './judge.js';
 import { cycle, GRANT_HOURS, makeJudgeOne, MAX_TICK_MICRO, type CycleDeps } from './paymaster.js';
 import { emptyState, loadState, saveState, type FundState } from './state.js';
 
@@ -154,6 +154,7 @@ export async function runOnce(d: OnceDeps): Promise<void> {
         await (d.runCycle ?? cycle)({
           door: d.door, address: d.address, balance: d.balance, now: d.now, state: d.state,
           save: () => saveState(join(d.dir, 'state.json'), d.state), problem, judgeOne: d.judgeOne,
+          lastBalanceMicro: () => lastBalance(d.dir),
         });
       } catch (e) {
         problem('cycle', errText(e));
@@ -174,25 +175,42 @@ export async function runOnce(d: OnceDeps): Promise<void> {
   }
 }
 
+/** The balance in the last report this fund wrote (public.json), if it reads. */
+function lastBalance(dir: string): string | undefined {
+  const p = readJson(join(dir, 'public.json'));
+  return isObj(p) && typeof p.balanceMicro === 'string' && /^\d+$/.test(p.balanceMicro) ? p.balanceMicro : undefined;
+}
+
+/**
+ * Reports the pot to the door. Grants left is 0 whenever the fund is not open. A stopped fund reports
+ * closed even when the balance read fails (with the last known balance, or 0), so intake always closes.
+ */
 async function report(d: OnceDeps, stopAll: boolean): Promise<void> {
-  let balance: bigint;
+  let balance: bigint | undefined;
+  let balanceErr: Error | undefined;
   try {
     balance = await d.balance();
   } catch (e) {
-    throw new Error(`balance: ${errText(e)}`);
+    balanceErr = new Error(`balance: ${errText(e)}`);
   }
+  if (balance === undefined && !stopAll) throw balanceErr;
   let offers: Awaited<ReturnType<typeof readOffers>>;
   let offersErr: unknown;
-  try {
-    offers = await readOffers(d.door);
-  } catch (e) {
-    offersErr = e;
+  if (balance !== undefined && !stopAll) {
+    try {
+      offers = await readOffers(d.door);
+    } catch (e) {
+      offersErr = e;
+    }
   }
-  const left = offers ? grantsLeft(balance, offers.tick, liveCount(d.state)) : 0;
-  const body = { address: d.address, balanceMicro: balance.toString(), grantsLeft: left, open: !stopAll && left > 0 };
+  const left = balance !== undefined && offers ? grantsLeft(balance, offers.tick, liveCount(d.state)) : 0;
+  const open = !stopAll && left > 0;
+  const balanceMicro = balance !== undefined ? balance.toString() : lastBalance(d.dir) ?? '0';
+  const body = { address: d.address, balanceMicro, grantsLeft: open ? left : 0, open };
   writeAtomic(join(d.dir, 'public.json'), JSON.stringify(body));
   const r = await d.door.fund('PUT', '/v1/fund/public', body);
   if (r.status !== 200) throw new Error(`PUT /v1/fund/public answered ${r.status}`);
+  if (balanceErr) throw balanceErr;
   if (offersErr) throw offersErr;
 }
 
@@ -304,6 +322,9 @@ async function run(env: NodeJS.ProcessEnv): Promise<void> {
     door,
     judge: (p, ctx) => judge(anthropic, p, ctx),
     slots: async () => (await readOffers(door).catch(() => undefined))?.slots ?? 0,
+    state,
+    save: () => saveState(join(dir, 'state.json'), state),
+    transient: transientJudgeError,
   });
   const signal = { stopped: false };
   let wake: (() => void) | undefined;

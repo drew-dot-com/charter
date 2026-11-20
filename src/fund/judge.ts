@@ -1,13 +1,23 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
 
+export const MAX_SUMMARY = 200;
+export const MAX_REASON = 280;
+
+/** What is stored: the limits hold here. */
 export const Verdict = z.object({
   decision: z.enum(['grant', 'decline']),
-  summary: z.string().max(200),
-  reason: z.string().max(280),
+  summary: z.string().max(MAX_SUMMARY),
+  reason: z.string().max(MAX_REASON),
 });
 export type Verdict = z.infer<typeof Verdict>;
+
+/**
+ * What the model's answer is parsed with. The SDK drops maxLength from the schema it sends, so the model
+ * is never told the limits; an over-long summary or reason is cut to fit instead of failing the parse.
+ */
+const VerdictIn = z.object({ decision: z.enum(['grant', 'decline']), summary: z.string(), reason: z.string() });
 
 export interface PitchIn {
   name: string;
@@ -16,7 +26,13 @@ export interface PitchIn {
   pitch: string;
 }
 
-const UNREADABLE = 'The judge could not read this pitch.';
+export const UNREADABLE = 'The judge could not read this pitch.';
+
+/**
+ * Room for the answer: Opus 5.5 always thinks, and at medium effort the thinking comes out of max_tokens
+ * before the verdict does. 1024 cut verdicts off (stop_reason max_tokens, declined as unreadable).
+ */
+export const MAX_TOKENS = 8000;
 
 /** The system prompt. Drew edits this wording before launch. */
 export const RUBRIC = `You read pitches from software agents who want a free month of a small home (a container with a shell) on Charter, a compute marketplace. You decide whether to grant the month. You have no tools. You answer with a verdict as JSON: a decision of grant or decline, a summary, and a reason.
@@ -61,21 +77,49 @@ function clean(s: string, pitch: string): string {
   return stripCopied(s.replace(/\s*—\s*/g, ', '), pitch);
 }
 
+/** `s` cut to at most `n` characters, at a word boundary when one is in the second half, never inside a surrogate pair. */
+export function cut(s: string, n: number): string {
+  if (s.length <= n) return s;
+  let out = s.slice(0, n);
+  const code = out.charCodeAt(out.length - 1);
+  if (code >= 0xd800 && code <= 0xdbff) out = out.slice(0, -1);
+  const space = out.lastIndexOf(' ');
+  if (space >= n / 2) out = out.slice(0, space);
+  return out.replace(/[\s,;:]+$/, '');
+}
+
+/**
+ * True for an error that says the API was unavailable (no connection, a timeout, 429, a 5xx), not that the
+ * pitch is bad: such a failure is not counted against the pitch.
+ */
+export function transientJudgeError(e: unknown): boolean {
+  if (e instanceof Anthropic.APIConnectionError) return true;
+  if (e instanceof Anthropic.APIError) return e.status === 429 || (typeof e.status === 'number' && e.status >= 500);
+  return false;
+}
+
 export async function judge(
   client: Pick<Anthropic, 'beta'>,
   p: PitchIn,
   ctx: { live: number; slots: number },
 ): Promise<Verdict> {
   const decline: Verdict = { decision: 'decline', summary: '', reason: UNREADABLE };
-  const res = await client.beta.messages.create({
-    model: 'claude-opus-5-5',
-    max_tokens: 1024,
-    betas: ['server-side-fallback-2026-07-01'],
-    fallbacks: 'default',
-    output_config: { effort: 'medium', format: zodOutputFormat(Verdict) },
-    system: RUBRIC,
-    messages: [{ role: 'user', content: userMessage(p, ctx) }],
-  } as Parameters<typeof client.beta.messages.create>[0]);
+  let res: unknown;
+  try {
+    res = await client.beta.messages.create({
+      model: 'claude-opus-5-5',
+      max_tokens: MAX_TOKENS,
+      betas: ['server-side-fallback-2026-07-01'],
+      fallbacks: 'default',
+      output_config: { effort: 'medium', format: zodOutputFormat(Verdict) },
+      system: RUBRIC,
+      messages: [{ role: 'user', content: userMessage(p, ctx) }],
+    } as Parameters<typeof client.beta.messages.create>[0]);
+  } catch (e) {
+    // 400: the API refuses this request as sent, and would every time. Declined at once, not retried.
+    if (e instanceof Anthropic.BadRequestError) return decline;
+    throw e;
+  }
   const msg = res as { stop_reason?: string | null; content?: Array<{ type: string; text?: string }> };
   if (msg.stop_reason === 'refusal' || msg.stop_reason === 'max_tokens') return decline;
   const block = msg.content?.find((b) => b.type === 'text');
@@ -86,11 +130,11 @@ export async function judge(
   } catch {
     return decline;
   }
-  const parsed = Verdict.safeParse(json);
+  const parsed = VerdictIn.safeParse(json);
   if (!parsed.success) return decline;
   const v = parsed.data;
-  const summary = clean(v.summary, p.pitch);
-  let reason = clean(v.reason, p.pitch);
+  const summary = cut(clean(v.summary, p.pitch), MAX_SUMMARY);
+  let reason = cut(clean(v.reason, p.pitch), MAX_REASON);
   if (reason.length < 10) reason = v.decision === 'grant' ? 'Granted.' : 'Declined.';
-  return { decision: v.decision, summary, reason };
+  return Verdict.parse({ decision: v.decision, summary, reason });
 }

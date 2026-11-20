@@ -179,6 +179,47 @@ test('a stopAll fund reports closed, and one with no grant left too', async () =
   assert.equal(puts[1].open, false);
 });
 
+test('a stopped fund sends grants left 0 though the balance would cover grants', async () => {
+  const d = dir();
+  const puts: any[] = [];
+  stopCommand(d, 'all');
+  await runOnce({ dir: d, state: emptyState(), door: fakeDoor(puts), address: ADDRESS, now: () => T0, judgeOne: async () => {}, runCycle: async () => {}, balance: async () => 99_000_000n });
+  assert.deepEqual(puts[0], { address: ADDRESS, balanceMicro: '99000000', grantsLeft: 0, open: false });
+});
+
+test('a stopped fund closes intake with the last known balance when the balance read fails', async () => {
+  const d = dir();
+  const puts: any[] = [];
+  const base = { dir: d, state: emptyState(), door: fakeDoor(puts), address: ADDRESS, now: () => T0, judgeOne: async () => {}, runCycle: async () => {} };
+  await runOnce({ ...base, balance: async () => 42_000_000n });
+  stopCommand(d, 'all');
+  await runOnce({ ...base, balance: async () => { throw new Error('rpc down'); } });
+  assert.deepEqual(puts[1], { address: ADDRESS, balanceMicro: '42000000', grantsLeft: 0, open: false });
+  const h = JSON.parse(readFileSync(join(d, 'health.json'), 'utf8'));
+  assert.ok(h.problems.some((p: any) => p.key === 'public' && /rpc down/.test(p.msg)), 'the failed read is still a problem');
+  // no report ever: 0
+  const d2 = dir();
+  stopCommand(d2, 'all');
+  await runOnce({ ...base, dir: d2, balance: async () => { throw new Error('rpc down'); } });
+  assert.equal(puts[2].balanceMicro, '0');
+  assert.equal(puts[2].open, false);
+});
+
+test('an open fund whose balance read fails sends no report', async () => {
+  const d = dir();
+  const puts: any[] = [];
+  await runOnce({ dir: d, state: emptyState(), door: fakeDoor(puts), address: ADDRESS, now: () => T0, judgeOne: async () => {}, runCycle: async () => {}, balance: async () => { throw new Error('rpc down'); } });
+  assert.deepEqual(puts, []);
+});
+
+test('the cycle gets the last reported balance for closing intake', async () => {
+  const d = dir();
+  writeFileSync(join(d, 'public.json'), JSON.stringify({ address: ADDRESS, balanceMicro: '123', grantsLeft: 0, open: false }));
+  let got: string | undefined;
+  await runOnce({ dir: d, state: emptyState(), door: fakeDoor([]), address: ADDRESS, now: () => T0, judgeOne: async () => {}, balance: async () => 1n, runCycle: async (c) => { got = c.lastBalanceMicro?.(); } });
+  assert.equal(got, '123');
+});
+
 test('a cycle that throws is recorded and never escapes', async () => {
   const d = dir();
   await runOnce({

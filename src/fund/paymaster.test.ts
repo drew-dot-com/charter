@@ -7,7 +7,8 @@ import { test } from 'node:test';
 import { ALLOWED_MOVES, type GrantState } from '../door/grants.js';
 import type { Answer, DoorClient } from './door-client.js';
 import type { PitchIn, Verdict } from './judge.js';
-import { commitmentOk, cycle, dayCapOk, HOME_USED_REASON, makeJudgeOne, tickDue } from './paymaster.js';
+import { commitmentOk, cycle, dayCapOk, HOME_USED_REASON, makeJudgeOne, MAX_JUDGE_TRIES, tickDue } from './paymaster.js';
+import { writeFileSync } from 'node:fs';
 import { emptyState, loadState, saveState, type FundState } from './state.js';
 
 const HOUR = 3_600_000;
@@ -641,10 +642,81 @@ test('a tick whose answer never came is counted once the host shows it, never pa
   assert.equal(r.door.lease(leaseId).paidIntervals, 2, 'not paid twice');
 });
 
+for (const [status, error] of [[502, 'host send timed out'], [402, 'settlement_failed'], [503, 'retry_later']] as const) {
+  test(`a tick answered ${status} ${error} that the host counted is the door's hour, never the grantee's`, async () => {
+    const r = rig();
+    const { id, leaseId } = await opened(r);
+    r.door.onPay = (path, json) => {
+      if (!path.endsWith('/ticks')) return undefined;
+      // the door paid the host, then the fund's payment did not settle
+      const l = r.door.lease(leaseId);
+      l.paidIntervals = json.index + 1;
+      l.paidThrough! += HOUR;
+      return { status, body: { error } };
+    };
+    r.clock.t += HOUR / 2;
+    await r.run();
+    const f = r.state.grants[id]!;
+    assert.deepEqual(f.hostPaid, { leaseId, index: 1 });
+    assert.equal(f.backoffUntil, r.clock.t + 5 * 60_000);
+    r.door.onPay = undefined;
+    r.clock.t += 5 * 60_000;
+    await r.run();
+    assert.equal(f.renewedByGrantee ?? false, false);
+    assert.equal(r.door.g(id).renewedByGrantee, false, 'not posted as renewed');
+    assert.equal(f.hostPaid, undefined);
+    assert.equal(f.leaseTicks, 2, 'the door-paid hour is on the lease count');
+    assert.equal(f.fundTicks, 1, 'the fund did not pay it');
+    assert.equal(r.state.spend.micro, '7000', 'not day spend');
+    // and a real grantee hour afterwards is still seen
+    r.door.granteeTick(leaseId);
+    r.clock.t += HOUR;
+    await r.run();
+    assert.equal(r.door.g(id).renewedByGrantee, true);
+  });
+}
+
+test('a tick refused before the host (400) keeps no host-paid marker', async () => {
+  const r = rig();
+  const { id } = await opened(r);
+  r.door.onPay = (path) => (path.endsWith('/ticks') ? { status: 400, body: { error: 'authorization_window' } } : undefined);
+  r.clock.t += HOUR / 2;
+  await r.run();
+  assert.equal(r.state.grants[id]!.hostPaid, undefined);
+});
+
+test('409 out_of_order (the grantee paid between read and tick) is no problem, no backoff, re-read next cycle', async () => {
+  const r = rig();
+  const { id, leaseId } = await opened(r);
+  let once = true;
+  r.door.onPay = (path) => {
+    if (!path.endsWith('/ticks') || !once) return undefined;
+    once = false;
+    r.door.granteeTick(leaseId);
+    return { status: 409, body: { error: 'out_of_order', expected: 2 } };
+  };
+  r.clock.t += HOUR / 2;
+  await r.run();
+  const f = r.state.grants[id]!;
+  assert.equal(f.backoffUntil, undefined);
+  assert.equal(f.hostPaid, undefined);
+  assert.ok(!r.problems.some((p) => p.key === 'tick'), JSON.stringify(r.problems));
+  assert.equal(f.fundTicks, 1);
+  r.clock.t += 60_000;
+  await r.run();
+  assert.equal(r.door.g(id).renewedByGrantee, true, 'the grantee paid that hour');
+  // the grantee paid index 1, so the fund's next tick is index 2, an hour later
+  r.clock.t += HOUR;
+  await r.run();
+  const idx = r.door.paid().filter((p) => p.path.endsWith('/ticks')).map((p) => p.json.index);
+  assert.deepEqual(idx, [2]);
+  assert.equal(f.fundTicks, 2);
+});
+
 test('the day cap stops ticks and resets at UTC midnight', async () => {
   const r = rig();
   const { id } = await opened(r);
-  r.state.spend.micro = String(252_000n - 6_999n);
+  r.state.grants[id]!.daySpend = { day: '2026-11-20', micro: String(252_000n - 6_999n) };
   r.clock.t += HOUR / 2;
   await r.run();
   assert.equal(r.state.grants[id]!.fundTicks, 1);
@@ -655,7 +727,33 @@ test('the day cap stops ticks and resets at UTC midnight', async () => {
   await r.run();
   assert.equal(r.state.spend.day, '2026-11-21');
   assert.equal(r.state.spend.micro, '7000');
+  assert.deepEqual(r.state.grants[id]!.daySpend, { day: '2026-11-21', micro: '7000' });
   assert.equal(r.state.grants[id]!.fundTicks, 2);
+});
+
+test('the day cap is per grant: one grant completing at 18:00 UTC never blocks another', async () => {
+  const r = rig({ balance: 20_000_000n });
+  r.door.offers = [offer({ home: { diskGiB: 2, retentionDays: 7, slots: 2, free: 2 } })];
+  const a = await opened(r);
+  r.clock.t += 60_000;
+  const b = await opened(r, { sshKeys: ['ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtherKeyForTestsOnly000000000000000000000 c@d'] });
+  // A completes at its tick due before 18:00: 720 - 18 hours of the fund's earlier pay.
+  r.state.grants[a.id]!.fundTicks = 720 - 18;
+  r.state.grants[a.id]!.leaseTicks = 1;
+  const end = Date.UTC(2026, 10, 20, 23, 50);
+  while (r.clock.t < end) {
+    r.clock.t += 10 * 60_000;
+    await r.run();
+  }
+  assert.equal(r.door.g(a.id).state, 'completed');
+  assert.ok(r.state.grants[a.id]!.watchUntil! - 7 * DAY <= Date.UTC(2026, 10, 20, 18, 0), 'A completed by 18:00');
+  const fb = r.state.grants[b.id]!;
+  assert.equal(fb.fundTicks, 25, 'B paid its open and every hour of the day');
+  assert.ok(!r.problems.some((p) => p.key === 'daycap'), JSON.stringify(r.problems));
+  // the fund-wide figure is the sum of the grants' days
+  const sum = BigInt(r.state.grants[a.id]!.daySpend!.micro) + BigInt(fb.daySpend!.micro);
+  assert.equal(r.state.spend.micro, sum.toString());
+  assert.ok(sum > 252_000n, 'more than one grant\'s cap was spent in the day');
 });
 
 test('state survives a restart', async () => {
@@ -686,6 +784,51 @@ test('loadState: a missing file is a fresh state, a broken one throws', () => {
   const bad = join(dir, 'bad.json');
   saveState(bad, { ...emptyState(), spend: { day: '', micro: 'x' } } as FundState);
   assert.throws(() => loadState(bad));
+});
+
+test('loadState reads a state file written before judgeAttempts, daySpend and hostPaid existed', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fund-state-'));
+  const file = join(dir, 'state.json');
+  const id = hex();
+  // the shape the deployed fund writes today
+  const old = {
+    grants: { [id]: { grantId: id, fundTicks: 12, reopened: false, leaseId: hex(), leaseTicks: 12, lastPaidAt: T0, nextReadAt: T0, inflight: { leaseId: hex(), index: 12, price: '7000' } } },
+    spend: { day: '2026-11-20', micro: '84000' },
+    stopAll: false,
+    stopped: [],
+  };
+  writeFileSync(file, JSON.stringify(old));
+  const s = loadState(file);
+  assert.deepEqual(s.judgeAttempts, {});
+  assert.equal(s.grants[id]!.fundTicks, 12);
+  assert.equal(s.grants[id]!.daySpend, undefined);
+  assert.equal(s.spend.micro, '84000');
+  // and it is written back with the new fields, and reads again
+  s.judgeAttempts[hex()] = 2;
+  s.grants[id]!.daySpend = { day: '2026-11-20', micro: '7000' };
+  s.grants[id]!.hostPaid = { leaseId: hex(), index: 3 };
+  saveState(file, s);
+  assert.deepEqual(loadState(file), s);
+  // a broken new field still stops the fund
+  for (const bad of [{ ...old, judgeAttempts: { x: -1 } }, { ...old, grants: { [id]: { ...old.grants[id], daySpend: { day: 1, micro: '0' } } } }, { ...old, grants: { [id]: { ...old.grants[id], hostPaid: { index: 1 } } } }]) {
+    writeFileSync(file, JSON.stringify(bad));
+    assert.throws(() => loadState(file), /not valid/);
+  }
+});
+
+test('a deployed fund with a pre-upgrade state keeps paying where it left off', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fund-state-'));
+  const file = join(dir, 'state.json');
+  const r0 = rig();
+  const { id, leaseId } = await opened(r0);
+  const g = { ...r0.state.grants[id]! };
+  delete g.daySpend;
+  writeFileSync(file, JSON.stringify({ grants: { [id]: g }, spend: r0.state.spend, stopAll: false, stopped: [] }));
+  const state = loadState(file);
+  r0.clock.t += HOUR / 2;
+  await r0.run({ state, save: () => saveState(file, state) });
+  assert.equal(loadState(file).grants[id]!.fundTicks, 2);
+  assert.equal(r0.door.lease(leaseId).paidIntervals, 2);
 });
 
 test('grantee tick marks renewedByGrantee', async () => {
@@ -834,6 +977,17 @@ test('stopAll closes intake', async () => {
   assert.equal(r.door.pays.length, 1, 'nothing paid');
   assert.equal(r.door.g(id).state, 'stopped');
   assert.equal(r.door.g(waiting).state, 'stopped');
+});
+
+test('stopAll closes intake even when the balance read fails, with the last known balance or 0', async () => {
+  const r = rig();
+  r.state.stopAll = true;
+  await r.run({ balance: async () => { throw new Error('rpc down'); }, lastBalanceMicro: () => '5000000' });
+  assert.deepEqual(r.door.publicBody, { address: ADDRESS, balanceMicro: '5000000', grantsLeft: 0, open: false });
+  r.door.publicBody = undefined;
+  await r.run({ balance: async () => { throw new Error('rpc down'); } });
+  assert.deepEqual(r.door.publicBody, { address: ADDRESS, balanceMicro: '0', grantsLeft: 0, open: false });
+  assert.ok(r.problems.some((p) => p.key === 'balance'));
 });
 
 // ---- robustness ----
@@ -988,6 +1142,61 @@ test('judgeOne: an API error leaves the pitch queued', async () => {
   await assert.rejects(j.one(), /overloaded/);
   assert.equal(j.door.g(id).state, 'queued');
   assert.equal(j.door.posts.length, 0);
+});
+
+function attemptsRig(fail: () => Error | undefined) {
+  const clock = { t: T0 };
+  const door = new FakeDoor(clock);
+  const state = emptyState();
+  let calls = 0;
+  let saves = 0;
+  const judge = async () => {
+    calls++;
+    const e = fail();
+    if (e) throw e;
+    return { decision: 'grant' as const, summary: 's', reason: 'A concrete use.' };
+  };
+  const one = makeJudgeOne({ door, judge, slots: async () => 2, state, save: () => void saves++, transient: (e) => (e as Error).message === 'overloaded' });
+  return { door, state, one, calls: () => calls, saves: () => saves };
+}
+
+test('judgeOne: a pitch the judge fails on 3 times is declined as unreadable, and the queue moves on', async () => {
+  let failing = true;
+  const j = attemptsRig(() => (failing ? new Error('invalid request') : undefined));
+  const bad = j.door.grant({ state: 'queued', createdAt: T0 - 10 });
+  const next = j.door.grant({ state: 'queued', createdAt: T0 });
+  await assert.rejects(j.one(), /invalid request/);
+  await assert.rejects(j.one(), /invalid request/);
+  assert.equal(j.state.judgeAttempts[bad], 2);
+  assert.ok(j.saves() >= 2, 'each failure is saved');
+  assert.equal(j.door.g(bad).state, 'queued');
+  await j.one();
+  assert.equal(MAX_JUDGE_TRIES, 3);
+  assert.equal(j.calls(), 3);
+  assert.equal(j.door.g(bad).state, 'declined');
+  assert.equal(j.door.g(bad).reason, 'The judge could not read this pitch.');
+  assert.equal(j.state.judgeAttempts[bad], undefined, 'cleared once posted');
+  failing = false;
+  await j.one();
+  assert.equal(j.door.g(next).state, 'approved_waiting');
+});
+
+test('judgeOne: a pitch at the attempt limit is declined with no model call (a post that failed is sent again)', async () => {
+  const j = attemptsRig(() => undefined);
+  const id = j.door.grant({ state: 'queued' });
+  j.state.judgeAttempts[id] = 3;
+  await j.one();
+  assert.equal(j.calls(), 0);
+  assert.equal(j.door.g(id).state, 'declined');
+  assert.equal(j.door.g(id).reason, 'The judge could not read this pitch.');
+});
+
+test('judgeOne: an unavailable API is not counted against the pitch', async () => {
+  const j = attemptsRig(() => new Error('overloaded'));
+  const id = j.door.grant({ state: 'queued' });
+  for (let i = 0; i < 5; i++) await assert.rejects(j.one(), /overloaded/);
+  assert.equal(j.state.judgeAttempts[id], undefined);
+  assert.equal(j.door.g(id).state, 'queued');
 });
 
 test('judgeOne: an empty queue does nothing; a bad id is never posted', async () => {

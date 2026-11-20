@@ -4,7 +4,7 @@
 // `door.pay`; every id it puts in a path is checked first; one bad grant never stops the others.
 import type { GrantState } from '../door/grants.js';
 import type { Answer, DoorClient } from './door-client.js';
-import type { PitchIn, Verdict } from './judge.js';
+import { UNREADABLE, type PitchIn, type Verdict } from './judge.js';
 import type { DoorPatch, FundGrant, FundState } from './state.js';
 
 /** A grant is this many hours of a home. */
@@ -20,6 +20,8 @@ export const WATCH_MS = 7 * 86_400_000;
 /** The longest the fund goes without reading a live lease. */
 const READ_EVERY_MS = 3_600_000;
 export const HOME_USED_REASON = 'This home has had a grant before.';
+/** A pitch whose judge call failed this many times (not counting an unavailable API) is declined as unreadable. */
+export const MAX_JUDGE_TRIES = 3;
 
 const ID = /^[0-9a-f]{32}$/;
 const IMAGES = ['charter-home', 'charter-hermes'];
@@ -44,7 +46,10 @@ export function commitmentOk(balance: bigint, live: { hoursLeft: number }[], tic
   return balance * 10n >= hours * tick * 11n;
 }
 
-/** Spend today plus `cost` stays within live grants x 24 x tick x 1.5. No live grant or no price: no spend. */
+/**
+ * Spend today plus `cost` stays within `live` x 24 x tick x 1.5. The paymaster checks each grant on its own
+ * (`live` = 1, the grant's own spend today), so one grant ending never blocks another. No price: no spend.
+ */
 export function dayCapOk(spentToday: bigint, live: number, tick: bigint, cost: bigint): boolean {
   if (!Number.isSafeInteger(live) || live <= 0 || tick <= 0n || cost < 0n) return false;
   return (spentToday + cost) * 2n <= BigInt(live) * 24n * tick * 3n;
@@ -59,6 +64,16 @@ export function tickDue(lease: { state: string; paidThrough?: number }, interval
 }
 
 // ---- what the door says ----
+
+/**
+ * A tick answer the door may have given after it paid the host: a 5xx (a host send that timed out, a host
+ * error), a 402 (settlement fails after the host tick, answered `settlement_failed`), or the host's own
+ * 409 lease_done / not_running. The host may count that hour though the fund's payment did not settle.
+ */
+function mayHaveHostPaid(a: Answer): boolean {
+  if (a.status >= 500 || a.status === 402) return true;
+  return a.status === 409 && isObj(a.body) && (a.body.error === 'lease_done' || a.body.error === 'not_running');
+}
 
 interface Offer { offerId: string; images: string[]; intervalSeconds: number; tick: bigint; free: number }
 
@@ -123,13 +138,18 @@ function approvedAt(g: DoorGrant): number {
 
 /**
  * Judges the oldest queued pitch and posts the verdict. A home (key set) that already has a grant past
- * `queued` (other than declined) is declined with a fixed reason and no model call. Any error leaves the
- * pitch queued and is thrown for the cycle to record.
+ * `queued` (other than declined) is declined with a fixed reason and no model call. An error leaves the
+ * pitch queued and is thrown for the cycle to record; with `state`, each failed judge call is counted per
+ * grant (an error `transient` calls an unavailable API is not), and the MAX_JUDGE_TRIES-th failure declines
+ * the pitch with the fixed unreadable reason, so one pitch can never stall the queue.
  */
 export function makeJudgeOne(d: {
   door: DoorClient;
   judge: (p: PitchIn, ctx: { live: number; slots: number }) => Promise<Verdict>;
   slots: () => Promise<number>;
+  state?: FundState;
+  save?: () => void;
+  transient?: (e: unknown) => boolean;
 }): () => Promise<void> {
   return async () => {
     const q = await d.door.fund('GET', '/v1/fund/queue');
@@ -146,17 +166,35 @@ export function makeJudgeOne(d: {
       (g: unknown) => isObj(g) && g.grantId !== p.grantId && g.homeId === p.homeId && g.state !== 'queued' && g.state !== 'declined',
     );
 
+    const id: string = p.grantId;
+    const tries = d.state?.judgeAttempts[id] ?? 0;
+    const unreadable = { state: 'declined' as const, reason: UNREADABLE };
     let verdict: { state: GrantState; summary?: string; reason: string };
     if (used) {
       verdict = { state: 'declined', reason: HOME_USED_REASON };
+    } else if (tries >= MAX_JUDGE_TRIES) {
+      verdict = unreadable;
     } else {
       const pitch: PitchIn = { name: p.name, ...(typeof p.link === 'string' ? { link: p.link } : {}), image: p.image, pitch: p.pitch };
       const live = isCount(q.body.live) ? q.body.live : 0;
-      const v = await d.judge(pitch, { live, slots: await d.slots() });
+      let v: Verdict;
+      try {
+        v = await d.judge(pitch, { live, slots: await d.slots() });
+      } catch (e) {
+        if (!d.state || d.transient?.(e)) throw e;
+        d.state.judgeAttempts[id] = tries + 1;
+        d.save?.();
+        if (tries + 1 < MAX_JUDGE_TRIES) throw e;
+        v = { decision: 'decline', summary: '', reason: UNREADABLE };
+      }
       verdict = { state: v.decision === 'grant' ? 'approved_waiting' : 'declined', summary: v.summary, reason: v.reason };
     }
-    const r = await d.door.fund('POST', `/v1/fund/grants/${p.grantId}`, verdict);
-    if (r.status !== 200) throw new Error(`posting the verdict for grant ${short(p.grantId)} answered ${r.status} ${errOf(r)}`);
+    const r = await d.door.fund('POST', `/v1/fund/grants/${id}`, verdict);
+    if (r.status !== 200) throw new Error(`posting the verdict for grant ${short(id)} answered ${r.status} ${errOf(r)}`);
+    if (d.state && d.state.judgeAttempts[id] !== undefined) {
+      delete d.state.judgeAttempts[id];
+      d.save?.();
+    }
   };
 }
 
@@ -172,6 +210,8 @@ export interface CycleDeps {
   save: () => void;
   problem: (key: string, msg: string) => void;
   judgeOne: () => Promise<void>;
+  /** The balance last reported (decimal micro-USDC), for closing intake while the RPC is down. */
+  lastBalanceMicro?: () => string | undefined;
 }
 
 /** One pass. Never throws: every failure is a `problem` and the pass goes on with the next grant. */
@@ -263,18 +303,23 @@ class Pass {
     );
   }
 
-  private rollDay(): void {
-    const day = new Date(this.t).toISOString().slice(0, 10);
+  private today(): string {
+    return new Date(this.t).toISOString().slice(0, 10);
+  }
+
+  /** What the fund paid on `g` today, for its own day cap. */
+  private spent(g: FundGrant): bigint {
+    const day = this.today();
+    if (g.daySpend?.day !== day) g.daySpend = { day, micro: '0' };
+    return BigInt(g.daySpend.micro);
+  }
+
+  /** Books `price` to the grant's day and to the fund's whole day (the record of the sum). */
+  private addSpend(g: FundGrant, price: bigint): void {
+    g.daySpend = { day: this.today(), micro: (this.spent(g) + price).toString() };
+    const day = this.today();
     if (this.s.spend.day !== day) this.s.spend = { day, micro: '0' };
-  }
-
-  private spent(): bigint {
-    this.rollDay();
-    return BigInt(this.s.spend.micro);
-  }
-
-  private addSpend(price: bigint): void {
-    this.s.spend.micro = (this.spent() + price).toString();
+    this.s.spend.micro = (BigInt(this.s.spend.micro) + price).toString();
   }
 
   // -- the door's grant log --
@@ -334,9 +379,11 @@ class Pass {
   }
 
   private async closeIntake(): Promise<void> {
+    // Closing never waits on the RPC: with no balance read, the last known balance (or 0) goes instead.
     const bal = await this.balance();
-    if (bal === undefined) return;
-    const a = await this.d.door.fund('PUT', '/v1/fund/public', { address: this.d.address, balanceMicro: bal.toString(), grantsLeft: 0, open: false });
+    const last = this.d.lastBalanceMicro?.();
+    const balanceMicro = bal !== undefined ? bal.toString() : typeof last === 'string' && /^\d+$/.test(last) ? last : '0';
+    const a = await this.d.door.fund('PUT', '/v1/fund/public', { address: this.d.address, balanceMicro, grantsLeft: 0, open: false });
     if (a.status !== 200) this.problem('intake', `closing intake answered ${a.status} ${errOf(a)}`);
   }
 
@@ -421,7 +468,7 @@ class Pass {
     g.leaseTicks = (g.leaseTicks ?? 0) + 1;
     g.lastPaidAt = this.t;
     delete g.backoffUntil;
-    this.addSpend(price);
+    this.addSpend(g, price);
     const patch: DoorPatch = { ...extra, paidHours: g.fundTicks };
     if (g.fundTicks >= GRANT_HOURS) {
       g.watchUntil = this.t + WATCH_MS;
@@ -458,7 +505,7 @@ class Pass {
     delete g.opening;
     g.fundTicks += 1;
     g.lastPaidAt = this.t;
-    this.addSpend(price);
+    this.addSpend(g, price);
     g.endedAt = this.t;
     this.problem('open', `grant ${g.grantId}: the door took payment for an open but answered no usable lease id; ending the grant`);
     await this.change(g, { state: 'ended_early', paidHours: g.fundTicks });
@@ -496,7 +543,7 @@ class Pass {
     if (!commitmentOk(bal, live.map((g) => ({ hoursLeft: GRANT_HOURS - g.fundTicks })), offer.tick)) {
       return this.problem('commitment', `the balance (${bal} micro-USDC) cannot cover grant ${short(w.grantId)} on top of ${live.length} live; it waits`);
     }
-    if (!dayCapOk(this.spent(), live.length + 1, offer.tick, offer.tick)) {
+    if (rec0 && !dayCapOk(this.spent(rec0), 1, offer.tick, offer.tick)) {
       return this.problem('daycap', `the day cap leaves no room to open grant ${short(w.grantId)} today`);
     }
 
@@ -564,6 +611,15 @@ class Pass {
       if (!this.mayPay(g)) return;
     }
 
+    // A tick answered with an error after the door may have paid the host: if the host counted it, the
+    // hour is the door's, not the grantee's. It raises leaseTicks only; the fund did not pay it.
+    if (g.hostPaid) {
+      const h = g.hostPaid;
+      delete g.hostPaid;
+      if (h.leaseId === leaseId && paid > h.index) g.leaseTicks = (g.leaseTicks ?? g.fundTicks) + 1;
+      this.d.save();
+    }
+
     if (paid > (g.leaseTicks ?? g.fundTicks) && !g.renewedByGrantee) {
       g.renewedByGrantee = true;
       await this.change(g, { renewedByGrantee: true });
@@ -588,9 +644,9 @@ class Pass {
       this.d.save();
       return;
     }
-    if (!dayCapOk(this.spent(), this.live().length, offer.tick, offer.tick)) {
+    if (!dayCapOk(this.spent(g), 1, offer.tick, offer.tick)) {
       g.nextReadAt = this.t + BACKOFF_MS;
-      return this.problem('daycap', `grant ${short(g.grantId)}: the day cap is reached; tick ${paid} not paid`);
+      return this.problem('daycap', `grant ${short(g.grantId)}: its day cap is reached; tick ${paid} not paid`);
     }
     await this.payTick(g, leaseId, paid, offer);
   }
@@ -612,10 +668,13 @@ class Pass {
       this.readAgainAt(g, isObj(a.body) ? a.body.paidThrough : undefined, offer.intervalSeconds);
       return this.counted(g, offer.tick, {});
     }
-    if (a.status === 409 && isObj(a.body) && a.body.error === 'duplicate') {
+    // duplicate: the host already counted this index. out_of_order: the grantee paid it between this read
+    // and this tick. Either way nothing was paid and the next read has the host's new count.
+    if (a.status === 409 && isObj(a.body) && (a.body.error === 'duplicate' || a.body.error === 'out_of_order')) {
       this.d.save();
       return;
     }
+    if (mayHaveHostPaid(a)) g.hostPaid = { leaseId, index };
     this.backOff(g);
     this.problem('tick', `grant ${short(g.grantId)} tick ${index} answered ${a.status} ${errOf(a)}; trying again in 5 minutes`);
   }
@@ -651,9 +710,9 @@ class Pass {
           : `grant ${short(g.grantId)}: its lease closed and no offer has a free home slot; waiting to re-open`,
       );
     }
-    if (!dayCapOk(this.spent(), this.live().length, offer.tick, offer.tick)) {
+    if (!dayCapOk(this.spent(g), 1, offer.tick, offer.tick)) {
       g.nextReadAt = this.t + BACKOFF_MS;
-      return this.problem('daycap', `grant ${short(g.grantId)}: the day cap leaves no room to re-open today`);
+      return this.problem('daycap', `grant ${short(g.grantId)}: its day cap leaves no room to re-open today`);
     }
     // Saved before the request: a crash or a lost answer can never lead to a re-open somewhere else.
     g.reopened = true;

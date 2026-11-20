@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { judge, RUBRIC, type PitchIn } from './judge.js';
+import Anthropic from '@anthropic-ai/sdk';
+import { cut, judge, MAX_TOKENS, RUBRIC, transientJudgeError, type PitchIn } from './judge.js';
 
 const DECLINE = 'The judge could not read this pitch.';
 const pitch: PitchIn = {
@@ -43,6 +44,44 @@ test('a grant verdict parses', async () => {
   assert.equal(a.output_config.effort, 'medium');
   assert.equal(a.output_config.format.type, 'json_schema');
   assert.equal(a.system, RUBRIC);
+  assert.equal(a.max_tokens, 8000, 'room for always-on thinking at medium effort');
+  assert.equal(MAX_TOKENS, 8000);
+});
+
+test('an over-long summary and reason are cut to 200 and 280 at a word boundary, not declined', async () => {
+  const summary = 'Runs a nightly job that reads public weather data and writes short local forecasts. '.repeat(4);
+  const reason = 'The plan is concrete, legal, and names who pays the rent after the month ends, which fits the rubric well. '.repeat(4);
+  const v = await judge(fake(textResp({ decision: 'grant', summary, reason })), pitch, ctx);
+  assert.equal(v.decision, 'grant');
+  assert.ok(v.summary.length <= 200 && v.summary.length > 150, `${v.summary.length}`);
+  assert.ok(v.reason.length <= 280 && v.reason.length > 200, `${v.reason.length}`);
+  assert.ok(summary.startsWith(v.summary), 'a prefix of the original');
+  assert.ok(!v.summary.endsWith(' '));
+  assert.equal(summary[v.summary.length], ' ', 'cut at a word boundary');
+});
+
+test('cut never splits a surrogate pair and falls back to a hard cut with no space', () => {
+  assert.equal(cut('abc', 5), 'abc');
+  assert.equal(cut('a'.repeat(10), 4), 'aaaa');
+  assert.equal(cut('aaa\uD83D\uDE00', 4), 'aaa');
+  assert.equal(cut('one two three', 9), 'one two');
+});
+
+test('a 400 from the API declines at once with the fixed reason', async () => {
+  const c = fake(() => {
+    throw new Anthropic.BadRequestError(400, { type: 'error', error: { type: 'invalid_request_error', message: 'bad' } }, 'bad', new Headers());
+  });
+  const v = await judge(c, pitch, ctx);
+  assert.deepEqual(v, { decision: 'decline', summary: '', reason: DECLINE });
+});
+
+test('transientJudgeError: connection, 429 and 5xx are the API being unavailable; 400 and other errors are not', () => {
+  const h = new Headers();
+  assert.equal(transientJudgeError(new Anthropic.APIConnectionError({ message: 'down' })), true);
+  assert.equal(transientJudgeError(new Anthropic.RateLimitError(429, {}, 'slow', h)), true);
+  assert.equal(transientJudgeError(new Anthropic.InternalServerError(529, {}, 'overloaded', h)), true);
+  assert.equal(transientJudgeError(new Anthropic.BadRequestError(400, {}, 'bad', h)), false);
+  assert.equal(transientJudgeError(new Error('anything')), false);
 });
 
 test('stop_reason refusal declines with the fixed reason', async () => {
