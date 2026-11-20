@@ -15,7 +15,7 @@ const keyN = (i: number) => `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${String(i).pa
 const PITCH_TEXT = 'a-very-distinctive-pitch-sentence';
 const body = (over: Record<string, unknown> = {}) => ({ name: 'Ada', pitch: PITCH_TEXT, sshKeys: [KEY], image: 'charter-home', ...over });
 
-async function start(over: { fundOpen?: () => boolean; noGrants?: boolean } = {}) {
+async function start(over: { fundOpen?: () => boolean; noGrants?: boolean; fundToken?: string; fundAddress?: string; noFundOpen?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'grants-'));
   const clock = { t: 1_000_000 };
   const grants = new GrantStore(join(dir, 'grants.jsonl'), () => clock.t);
@@ -30,6 +30,8 @@ async function start(over: { fundOpen?: () => boolean; noGrants?: boolean } = {}
     dataDir: dir,
     ...(over.noGrants ? {} : { grants }),
     ...(over.fundOpen ? { fundOpen: over.fundOpen } : {}),
+    ...(over.fundToken ? { fundToken: over.fundToken } : {}),
+    ...(over.fundAddress ? { fundAddress: over.fundAddress } : {}),
   }).listen(0, '127.0.0.1');
   await new Promise((r) => server.once('listening', r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -136,4 +138,128 @@ test('GET /v1/grants never contains pitch text, lists newest first, and shows th
   j = JSON.parse(text);
   assert.deepEqual(j.fund, { address: '0xabc', balanceMicro: '5000000', grantsLeft: 3 });
   s.close();
+});
+
+const TOKEN = 'fund-secret-token';
+const auth = { authorization: `Bearer ${TOKEN}` };
+const jpost = (s: { base: string }, path: string, b: unknown, h: Record<string, string> = auth, method = 'POST') =>
+  fetch(s.base + path, { method, headers: { 'content-type': 'application/json', ...h }, body: JSON.stringify(b) });
+
+test('fund routes answer 401 without the bearer, 404 when no token is configured', async () => {
+  const s = await start({ fundToken: TOKEN });
+  const n = await start();
+  try {
+    assert.equal((await s.get('/v1/fund/queue')).status, 401);
+    assert.equal((await s.get('/v1/fund/queue', { authorization: 'Bearer nope' })).status, 401);
+    assert.deepEqual(await (await s.get('/v1/fund/grants', { authorization: 'Bearer x' })).json(), { error: 'unauthorized' });
+    assert.equal((await jpost(s, '/v1/fund/public', {}, {}, 'PUT')).status, 401);
+    assert.equal((await n.get('/v1/fund/queue', auth)).status, 404);
+  } finally {
+    s.close();
+    n.close();
+  }
+});
+
+test('queue returns the oldest queued grant with its pitch', async () => {
+  const s = await start({ fundToken: TOKEN, fundOpen: () => true });
+  try {
+    assert.deepEqual(await (await s.get('/v1/fund/queue', auth)).json(), { grant: null, live: 0 });
+    const a = s.grants.add({ name: 'Ada', pitch: 'first pitch', sshKeys: [KEY], image: 'charter-home' }, 't1');
+    s.clock.t += 10;
+    s.grants.add({ name: 'Bob', pitch: 'second pitch', sshKeys: [keyN(2)], image: 'charter-hermes' }, 't2');
+    const j = (await (await s.get('/v1/fund/queue', auth)).json()) as { grant: Record<string, unknown>; live: number };
+    assert.deepEqual(j.grant, { grantId: a.grantId, name: 'Ada', link: null, image: 'charter-home', pitch: 'first pitch', homeId: a.homeId });
+    assert.equal(j.live, 0);
+    s.grants.update(a.grantId, { state: 'approved_waiting' });
+    assert.equal(((await (await s.get('/v1/fund/queue', auth)).json()) as { live: number }).live, 1);
+  } finally {
+    s.close();
+  }
+});
+
+test('fund grants list filters by state, omits tokenHash, keeps sshKeys and pitch, rejects unknown state', async () => {
+  const s = await start({ fundToken: TOKEN });
+  try {
+    s.grants.add({ name: 'Ada', pitch: 'p', sshKeys: [KEY], image: 'charter-home' }, 't1');
+    const j = (await (await s.get('/v1/fund/grants?state=queued', auth)).json()) as { grants: Array<Record<string, unknown>> };
+    assert.equal(j.grants.length, 1);
+    assert.equal(j.grants[0]!.tokenHash, undefined);
+    assert.deepEqual(j.grants[0]!.sshKeys, [KEY]);
+    assert.equal(j.grants[0]!.pitch, 'p');
+    assert.equal(((await (await s.get('/v1/fund/grants?state=active', auth)).json()) as { grants: unknown[] }).grants.length, 0);
+    assert.equal((await s.get('/v1/fund/grants?state=bogus', auth)).status, 400);
+    assert.equal(((await (await s.get('/v1/fund/grants', auth)).json()) as { grants: unknown[] }).grants.length, 1);
+  } finally {
+    s.close();
+  }
+});
+
+test('a verdict moves queued to declined with summary and reason', async () => {
+  const s = await start({ fundToken: TOKEN });
+  try {
+    const g = s.grants.add({ name: 'Ada', pitch: 'p', sshKeys: [KEY], image: 'charter-home' }, 't1');
+    const r = await jpost(s, `/v1/fund/grants/${g.grantId}`, { state: 'declined', summary: 'thin', reason: 'no plan' });
+    assert.equal(r.status, 200);
+    const j = (await r.json()) as Record<string, unknown>;
+    assert.equal(j.state, 'declined');
+    assert.equal(j.summary, 'thin');
+    assert.equal(j.reason, 'no plan');
+    assert.equal(j.tokenHash, undefined);
+    assert.equal(s.grants.get(g.grantId)!.state, 'declined');
+  } finally {
+    s.close();
+  }
+});
+
+test('a bad move answers 409, an unknown id 404, a bad field 400', async () => {
+  const s = await start({ fundToken: TOKEN });
+  try {
+    const g = s.grants.add({ name: 'Ada', pitch: 'p', sshKeys: [KEY], image: 'charter-home' }, 't1');
+    const r = await jpost(s, `/v1/fund/grants/${g.grantId}`, { state: 'active' });
+    assert.equal(r.status, 409);
+    assert.deepEqual(await r.json(), { error: 'bad_move' });
+    assert.equal((await jpost(s, '/v1/fund/grants/nope', { summary: 'x' })).status, 404);
+    assert.equal((await jpost(s, `/v1/fund/grants/${g.grantId}`, { tokenHash: 'x' })).status, 400, 'unlisted fields are refused');
+    assert.equal((await jpost(s, `/v1/fund/grants/${g.grantId}`, { paidHours: -1 })).status, 400);
+    assert.equal((await jpost(s, `/v1/fund/grants/${g.grantId}`, { state: 'nonsense' })).status, 400);
+    assert.equal((await jpost(s, `/v1/fund/grants/${g.grantId}`, { summary: 7 })).status, 400);
+    assert.equal(s.grants.get(g.grantId)!.state, 'queued');
+  } finally {
+    s.close();
+  }
+});
+
+test('PUT public with open false makes POST /v1/grants answer fund_closed, and open true reopens it without a restart', async () => {
+  const { readFileSync, statSync, existsSync } = await import('node:fs');
+  const s = await start({ fundToken: TOKEN, fundOpen: () => { try { return JSON.parse(readFileSync(join(s.dir, 'fund-public.json'), 'utf8')).open === true; } catch { return false; } } });
+  try {
+    assert.equal((await s.post(body())).status, 503);
+    const pub = { address: '0x' + 'ab'.repeat(20), balanceMicro: '5000000', grantsLeft: 3, open: true };
+    assert.equal((await jpost(s, '/v1/fund/public', pub, auth, 'PUT')).status, 200);
+    const f = join(s.dir, 'fund-public.json');
+    assert.deepEqual(JSON.parse(readFileSync(f, 'utf8')), pub);
+    assert.equal(statSync(f).mode & 0o777, 0o600);
+    assert.equal(existsSync(f + '.tmp'), false);
+    assert.equal((await s.post(body())).status, 201);
+    const pubJ = (await (await s.get('/v1/grants')).json()) as { fund: Record<string, unknown> };
+    assert.equal(pubJ.fund.grantsLeft, 3);
+    assert.equal((await jpost(s, '/v1/fund/public', { ...pub, open: false }, auth, 'PUT')).status, 200);
+    assert.deepEqual(await (await s.post(body({ sshKeys: [keyN(3)] }))).json(), { error: 'fund_closed' });
+  } finally {
+    s.close();
+  }
+});
+
+test('PUT public validates its body', async () => {
+  const s = await start({ fundToken: TOKEN });
+  const ok = { address: '0x' + 'ab'.repeat(20), balanceMicro: '5', grantsLeft: 0, open: false };
+  try {
+    for (const bad of [
+      { ...ok, address: '0x123' }, { ...ok, address: 'ab'.repeat(20) }, { ...ok, balanceMicro: '-1' }, { ...ok, balanceMicro: 5 },
+      { ...ok, grantsLeft: -1 }, { ...ok, grantsLeft: 1.5 }, { ...ok, open: 'yes' }, { address: ok.address },
+    ]) assert.equal((await jpost(s, '/v1/fund/public', bad, auth, 'PUT')).status, 400, JSON.stringify(bad));
+    assert.equal((await jpost(s, '/v1/fund/public', ok, auth, 'PUT')).status, 200);
+  } finally {
+    s.close();
+  }
 });

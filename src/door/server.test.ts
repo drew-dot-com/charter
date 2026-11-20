@@ -918,6 +918,23 @@ test('I4: a settlement failure records the payer, and that payer is refused on a
   }
 });
 
+test('a settle_failed loss does not block the fund\'s address', async () => {
+  const host = fakeHost({ open: counterOpen() });
+  let fail = true;
+  const d = await start(host, { fundAddress: '0xabc', testHooks: { settle: () => { if (fail) throw new Error(PAYER_FAULT); } } });
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'x-test-payer': '0xAbC', 'payment-signature': pay('0xd1', '0x01') })).status, 402);
+    assert.equal(d.ledger.payerHasLoss('0xabc', d.clock.t), true, 'the loss is still booked');
+    fail = false;
+    const r = await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': '0xABC', 'payment-signature': pay('0xd2', '0x02') });
+    assert.notEqual(r.status, 403);
+  } finally {
+    d.close();
+  }
+});
+
 test('CORS: GETs and the tick route are open with the x402 headers exposed; POST /v1/leases is same-origin only (F-I1)', async () => {
   const d = await start(fakeHost());
   try {

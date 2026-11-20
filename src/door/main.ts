@@ -71,6 +71,12 @@ async function main(): Promise<void> {
     }
   };
 
+  const fundTokenFile = env.CHARTER_FUND_TOKEN_FILE?.trim();
+  const fundToken = fundTokenFile ? readFileSync(fundTokenFile, 'utf8').trim() : undefined;
+  if (fundTokenFile && !fundToken) throw new Error(`CHARTER_FUND_TOKEN_FILE ${fundTokenFile} is empty`);
+  const fundAddressRaw = env.CHARTER_FUND_ADDRESS?.trim();
+  if (fundAddressRaw && !/^0x[0-9a-fA-F]{40}$/.test(fundAddressRaw)) throw new Error('CHARTER_FUND_ADDRESS must be a 0x address (40 hex characters)');
+
   const client = await doorPayer(env);
   // The channel is opened (or found) now, at boot, not inside the first tick's payment window.
   try {
@@ -109,6 +115,8 @@ async function main(): Promise<void> {
     dataDir,
     grants,
     fundOpen,
+    ...(fundToken ? { fundToken } : {}),
+    ...(fundAddressRaw ? { fundAddress: fundAddressRaw.toLowerCase() } : {}),
     x402,
     schemes,
     offerBatch,

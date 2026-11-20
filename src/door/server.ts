@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,7 +6,7 @@ import express from 'express';
 import { HostError, type HostApi, type OpenResult } from '../tenant/host-api.js';
 import { findOfferExact } from '../tenant/offers.js';
 import { JOB_IMAGES, homeIdOf, jobFromBody } from '../jobs.js';
-import { ownerView, publicView, validatePitch, type GrantStore } from './grants.js';
+import { ALLOWED_MOVES, BadMove, ownerView, publicView, validatePitch, type Grant, type GrantState, type GrantStore } from './grants.js';
 import type { JobSpec, Lease, Micro, Offer } from '../types.js';
 import { DeadlinePassedError, SendTimeoutError } from '../payer.js';
 import { offerOfSnapshot, snapshotOffer, type DoorLedger, type LossKind } from './ledger.js';
@@ -64,6 +64,10 @@ export interface DoorDeps {
   grants?: GrantStore;
   /** False answers a pitch `503 fund_closed`. Default: open. */
   fundOpen?: () => boolean;
+  /** The grant fund's bearer token. Left out (or no `grants`): the /v1/fund routes do not exist. */
+  fundToken?: string;
+  /** The fund's own payer address, lowercased. A payer equal to it is never answered payer_blocked. */
+  fundAddress?: string;
 }
 
 const PITCHES_PER_HOUR = 5;
@@ -400,6 +404,67 @@ export function doorApp(deps: DoorDeps): express.Express {
     });
   }
 
+  if (deps.grants && deps.fundToken) {
+    const grants = deps.grants;
+    const want = createHash('sha256').update(deps.fundToken).digest();
+    const fundAuth: express.RequestHandler = (req, res, next) => {
+      const m = /^Bearer (.+)$/.exec(req.get('authorization') ?? '');
+      const got = createHash('sha256').update(m?.[1] ?? '').digest();
+      if (!m || !timingSafeEqual(got, want)) return void res.status(401).json({ error: 'unauthorized' });
+      next();
+    };
+    const fundView = (g: Grant): Record<string, unknown> => {
+      const { tokenHash: _t, ...rest } = g;
+      return rest;
+    };
+    app.get('/v1/fund/queue', fundAuth, (_req, res) => {
+      const g = grants.queued().sort((a, b) => a.createdAt - b.createdAt)[0];
+      const live = grants.all().filter((x) => x.state === 'active' || x.state === 'approved_waiting').length;
+      res.json({ grant: g ? { grantId: g.grantId, name: g.name, link: g.link ?? null, image: g.image, pitch: g.pitch ?? '', homeId: g.homeId } : null, live });
+    });
+    app.get('/v1/fund/grants', fundAuth, (req, res) => {
+      const state = req.query.state;
+      if (state !== undefined && (typeof state !== 'string' || !Object.hasOwn(ALLOWED_MOVES, state))) return void res.status(400).json({ error: 'bad_state' });
+      res.json({ grants: grants.all().filter((g) => state === undefined || g.state === state).map(fundView) });
+    });
+    app.post('/v1/fund/grants/:id', fundAuth, (req, res) => {
+      const id = String(req.params.id);
+      if (!grants.get(id)) return void res.status(404).json({ error: 'not_found' });
+      const b = req.body;
+      if (typeof b !== 'object' || b === null || Array.isArray(b)) return void res.status(400).json({ error: 'body must be a JSON object' });
+      const patch: Parameters<GrantStore['update']>[1] = {};
+      for (const [k, v] of Object.entries(b as Record<string, unknown>)) {
+        if (k === 'state' && typeof v === 'string' && Object.hasOwn(ALLOWED_MOVES, v)) patch.state = v as GrantState;
+        else if ((k === 'summary' || k === 'reason' || k === 'leaseId') && typeof v === 'string' && v.length <= 2000) patch[k] = v;
+        else if (k === 'paidHours' && typeof v === 'number' && Number.isInteger(v) && v >= 0) patch.paidHours = v;
+        else if (k === 'renewedByGrantee' && typeof v === 'boolean') patch.renewedByGrantee = v;
+        else return void res.status(400).json({ error: `bad field ${k}` });
+      }
+      if (patch.state !== undefined && grants.get(id)!.state === 'queued') patch.decidedAt = now();
+      try {
+        res.json(fundView(grants.update(id, patch)));
+      } catch (e) {
+        if (e instanceof BadMove) return void res.status(409).json({ error: 'bad_move' });
+        throw e;
+      }
+    });
+    app.put('/v1/fund/public', fundAuth, (req, res) => {
+      const b = req.body as Record<string, unknown> | null;
+      const ok = typeof b === 'object' && b !== null && !Array.isArray(b)
+        && typeof b.address === 'string' && /^0x[0-9a-fA-F]{40}$/.test(b.address)
+        && typeof b.balanceMicro === 'string' && /^[0-9]+$/.test(b.balanceMicro)
+        && typeof b.grantsLeft === 'number' && Number.isInteger(b.grantsLeft) && b.grantsLeft >= 0
+        && typeof b.open === 'boolean';
+      if (!ok) return void res.status(400).json({ error: 'address, balanceMicro (digits), grantsLeft (integer) and open (boolean) are required' });
+      const pub = { address: b.address, balanceMicro: b.balanceMicro, grantsLeft: b.grantsLeft, open: b.open };
+      const file = join(deps.dataDir, 'fund-public.json');
+      mkdirSync(deps.dataDir, { recursive: true, mode: 0o700 });
+      writeFileSync(`${file}.tmp`, JSON.stringify(pub), { mode: 0o600 });
+      renameSync(`${file}.tmp`, file);
+      res.json(pub);
+    });
+  }
+
   /** What the door's ledger says about a host: leases with a renter-paid interval, and the newest one. */
   const hostStats = (hostPubkey: string): { leases: number; lastLeaseAt?: number } => {
     let leases = 0;
@@ -589,7 +654,8 @@ export function doorApp(deps: DoorDeps): express.Express {
   const verified = (res: express.Response): boolean => {
     if (res.locals.paymentKey) ledger.addPayment(res.locals.paymentKey as string);
     const payer = res.locals.payer as string | undefined;
-    if (payer && ledger.payerHasLoss(payer, now())) return void res.status(403).json({ error: 'payer_blocked' }), false;
+    // The fund's own wallet is exempt: its losses are booked, but it is never turned away.
+    if (payer && payer.toLowerCase() !== deps.fundAddress && ledger.payerHasLoss(payer, now())) return void res.status(403).json({ error: 'payer_blocked' }), false;
     return true;
   };
 
