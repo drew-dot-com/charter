@@ -711,3 +711,60 @@ test('home operations refuse an id that is not a home id', async () => {
   }
   assert.equal(t.calls.length, 0);
 });
+
+const PUBLIC_IP = '37.27.86.235';
+
+test('public host: the sshd port is published on that address', async () => {
+  const t = await homeSetup();
+  t.home.publicHost = PUBLIC_IP;
+  await t.r.ensureHome(HOME_ID);
+  t.calls.length = 0;
+  await t.r.create('l1', HOME);
+  const a = t.calls[0]!.args;
+  assert.ok(a.some((x, i) => x === '-p' && a[i + 1] === `${PUBLIC_IP}:22000:2222`), a.join(' '));
+  assert.ok(!a.includes('127.0.0.1:22000:2222'));
+});
+
+test('no public host: the sshd port stays on loopback', async () => {
+  const t = await homeSetup();
+  await t.r.ensureHome(HOME_ID);
+  t.calls.length = 0;
+  await t.r.create('l1', HOME);
+  const a = t.calls[0]!.args;
+  assert.ok(a.some((x, i) => x === '-p' && a[i + 1] === '127.0.0.1:22000:2222'), a.join(' '));
+});
+
+test('public host: homeAccess answers at once with host, the home port and tenant', async () => {
+  const t = await homeSetup();
+  delete t.home.anon;
+  t.home.publicHost = PUBLIC_IP;
+  await t.r.ensureHome(HOME_ID);
+  assert.deepEqual(await t.r.homeAccess(HOME_ID), { ssh: { host: PUBLIC_IP, port: 22000, user: 'tenant' } });
+});
+
+test('onion off: publish, retire and remove never touch anon', async () => {
+  const t = await homeSetup();
+  delete t.home.anon;
+  t.home.publicHost = PUBLIC_IP;
+  await t.r.ensureHome(HOME_ID);
+  await t.r.publishHome(HOME_ID);
+  await t.r.retireHome(HOME_ID);
+  await t.r.removeHome(HOME_ID);
+  assert.deepEqual(t.kills, []);
+  await assert.rejects(access(join(t.root, 'hs.d')));
+});
+
+test('public host with onion on: access carries both, ssh first', async () => {
+  const t = await homeSetup();
+  t.home.publicHost = PUBLIC_IP;
+  await t.r.ensureHome(HOME_ID);
+  await t.r.publishHome(HOME_ID);
+  // The onion is not published until anon writes its hostname.
+  assert.deepEqual(await t.r.homeAccess(HOME_ID), { ssh: { host: PUBLIC_IP, port: 22000, user: 'tenant' } });
+  const host = `${'a'.repeat(56)}.anyone`;
+  await writeFile(join(t.homesDir, HOME_ID, 'hs', 'hostname'), host + '\n');
+  assert.deepEqual(await t.r.homeAccess(HOME_ID), {
+    ssh: { host: PUBLIC_IP, port: 22000, user: 'tenant' },
+    onion: { host, port: 22, user: 'tenant' },
+  });
+});

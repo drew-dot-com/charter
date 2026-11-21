@@ -110,6 +110,8 @@ export interface HomeRunnerOpts {
   socksPort: number;
   httpPort: number;
   homes: HomeStore;
+  /** The host's public IP: homes' sshd is published there. Absent: loopback only, reached through the onion. */
+  publicHost?: string;
   /** Set when homes are published as onion services. */
   anon?: AnonDeps;
   /** losetup runs as root (`sudo -n losetup` on the host): docker gets a loop device, not the image. */
@@ -183,8 +185,8 @@ function homeArgs(profile: JobProfile, rec: HomeRecord, homeId: string, leaseId:
   return [
     '--network', h.network,
     '--dns', h.gateway,
-    // Loopback only: the onion service is the one way in.
-    '-p', `127.0.0.1:${rec.port}:2222`,
+    // The public address when the host has one; otherwise loopback only, and the onion service is the one way in.
+    '-p', `${h.publicHost ?? '127.0.0.1'}:${rec.port}:2222`,
     '--mount', `type=volume,src=${volumeName(homeId)},dst=/home/tenant`,
     '-v', `${join(h.homesDir, homeId, 'charter')}:/charter:ro`,
     // gVisor cannot reach docker's embedded resolver (127.0.0.11); names must resolve over the host's Anyone DNS port.
@@ -434,8 +436,15 @@ export function dockerRunner(opts: {
     async homeAccess(homeId) {
       const h = needHome();
       checkHomeId(homeId);
-      const host = h.anon ? await onionHostname(h.anon, homeId) : null;
-      return host ? { ssh: { host, port: 22, user: 'tenant' } } : null;
+      const onion = h.anon ? await onionHostname(h.anon, homeId) : null;
+      if (h.publicHost) {
+        const rec = record(h, homeId);
+        return {
+          ssh: { host: h.publicHost, port: rec.port, user: 'tenant' },
+          ...(onion ? { onion: { host: onion, port: 22, user: 'tenant' } } : {}),
+        };
+      }
+      return onion ? { ssh: { host: onion, port: 22, user: 'tenant' } } : null;
     },
 
     // On the ensureHome chain, so an open that arrives mid-removal waits and builds a fresh disk.

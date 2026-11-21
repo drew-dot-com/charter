@@ -38,6 +38,8 @@ export type CloseReason = 'boot_failed' | 'missed_tick' | 'max_intervals' | 'hos
 /** Where a tenant reaches its running home. */
 export interface HomeAccess {
   ssh: { host: string; port: number; user: string };
+  /** Also reachable as an onion service, once anon has published its hostname. */
+  onion?: { host: string; port: number; user: string };
 }
 
 export interface Lease {

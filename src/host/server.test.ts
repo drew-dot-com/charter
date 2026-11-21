@@ -8,7 +8,7 @@ import type { JobSpec, Offer } from '../types.js';
 import { RunnerError, type Runner } from './runner.js';
 import { hostApps, OUTPUT_PART_BYTES } from './server.js';
 import { LeaseStore } from './store.js';
-import { HomeStore } from './homes.js';
+import { HomeError, HomeStore } from './homes.js';
 
 const OFFER: Offer = {
   id: 'o1', hostPubkey: '', ilpBase: 'g.test', sealKey: '0x04' + 'ab'.repeat(64), sealUrl: 'http://x.anyone/ilp', cpu: 1,
@@ -598,5 +598,23 @@ test('a boot failure is logged with its detail while the renter gets only the co
     assert.ok(lines.some((l) => l.includes('boot failed') && l.includes('no disk')), lines.join('|'));
   } finally {
     t.done();
+  }
+});
+
+test('a full home port range closes the open boot_failed and says so', async () => {
+  const u = await setup(
+    homeRunner([], {
+      ensureHome: async () => { throw new HomeError('no_port', 'home port range 22000-22099 is full'); },
+    }),
+    5, 1,
+  );
+  try {
+    const r = await u.post(u.urls.open, '/open', { job: HOME });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.state, 'closed');
+    assert.equal(r.body.closedReason, 'boot_failed');
+    assert.match(r.body.error, /home port range .* is full/);
+  } finally {
+    u.done();
   }
 });

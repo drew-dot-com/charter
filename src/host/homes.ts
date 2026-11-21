@@ -79,7 +79,7 @@ export function allocatePort(taken: Iterable<number>): number {
   const used = new Set(taken);
   let p = HOME_PORT_BASE;
   while (used.has(p)) p++;
-  if (p > HOME_PORT_LAST) throw new HomeError('no_port', `all ports ${HOME_PORT_BASE}-${HOME_PORT_LAST} are taken`);
+  if (p > HOME_PORT_LAST) throw new HomeError('no_port', `home port range ${HOME_PORT_BASE}-${HOME_PORT_LAST} is full`);
   return p;
 }
 

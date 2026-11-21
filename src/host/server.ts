@@ -3,7 +3,7 @@ import express from 'express';
 import { homeIdOf, normalizeSshKeys } from '../jobs.js';
 import { isHome, isLive, LeaseError, newLease, onBootFailed, onBooted, onTick } from '../lease.js';
 import type { CloseReason, JobSpec, Lease, Offer } from '../types.js';
-import type { HomeStore } from './homes.js';
+import { HomeError, type HomeStore } from './homes.js';
 import { closeAndStop, OUTPUT_PART_BYTES } from './loop.js';
 import { RunnerError, type Runner } from './runner.js';
 import type { LeaseStore } from './store.js';
@@ -120,7 +120,9 @@ export function hostApps(deps: HostDeps): { open: express.Express; tick: express
     } catch (e) {
       const refused =
         e instanceof RunnerError && (e.code === 'image_not_allowed' || e.code === 'arg_not_allowed' || e.code === 'bad_input');
-      return void (await fail(e instanceof RunnerError ? e.code : 'boot_failed', !refused, e instanceof Error ? e.message : String(e)));
+      // A full port range is the host's state, not a secret: say so instead of the bare code.
+      const error = e instanceof RunnerError ? e.code : e instanceof HomeError && e.code === 'no_port' ? e.message : 'boot_failed';
+      return void (await fail(error, !refused, e instanceof Error ? e.message : String(e)));
     }
 
     const cur = store.get(leaseId)!;
