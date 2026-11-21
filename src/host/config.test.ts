@@ -119,11 +119,16 @@ test('no public host: onion on and anon paths required, as today', () => {
   assert.equal(c.home?.onion, true);
 });
 
-test('CHARTER_HOME_PUBLIC_HOST must be a bare IPv4 address or hostname', () => {
-  for (const bad of ['http://37.27.86.235', '37.27.86.235:22', 'a b', '999.1.1.1']) {
+test('CHARTER_HOME_PUBLIC_HOST must be a dotted IPv4 address', () => {
+  for (const bad of ['http://37.27.86.235', '37.27.86.235:22', 'a b', '999.1.1.1', '1.2.3', '1.2.3.4.5']) {
     assert.throws(() => loadConfig({ ...HOME_ENV, CHARTER_HOME_PUBLIC_HOST: bad }), /CHARTER_HOME_PUBLIC_HOST/, bad);
   }
-  assert.equal(loadConfig({ ...HOME_ENV, CHARTER_HOME_PUBLIC_HOST: 'box.example.com' }).home?.publicHost, 'box.example.com');
+  assert.throws(
+    () => loadConfig({ ...HOME_ENV, CHARTER_HOME_PUBLIC_HOST: 'box.example.com' }),
+    /CHARTER_HOME_PUBLIC_HOST must be a dotted IPv4 address/,
+    'a hostname is refused: docker -p binds only an IP',
+  );
+  assert.equal(loadConfig({ ...HOME_ENV, CHARTER_HOME_PUBLIC_HOST: '10.0.0.255' }).home?.publicHost, '10.0.0.255');
 });
 
 test('a host without home slots has no home and no home terms', () => {

@@ -25,7 +25,7 @@ export interface HostConfig {
     gateway: string;
     socksPort: number;
     httpPort: number;
-    /** A public IPv4 address or hostname homes are reached on. Unset: homes are onion-only. */
+    /** A public dotted IPv4 address homes are reached on (docker -p binds it, so not a name). Unset: homes are onion-only. */
     publicHost?: string;
     /** Publish each home as an onion service. True unless a public host is set and CHARTER_HOME_ONION is off. */
     onion: boolean;
@@ -74,12 +74,10 @@ function flag(env: Record<string, string | undefined>, name: string): boolean {
   return v === '1' || v === 'true' || v === 'yes';
 }
 
-function publicHostName(v: string): boolean {
+/** A dotted IPv4 address, each octet 0-255. `docker run -p <host>:<port>:2222` binds it, and docker takes only an IP there. */
+function publicIPv4(v: string): boolean {
   const octets = v.split('.');
-  if (octets.length === 4 && octets.every((o) => /^\d+$/.test(o))) {
-    return octets.every((o) => /^\d{1,3}$/.test(o) && Number(o) <= 255);
-  }
-  return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(v);
+  return octets.length === 4 && octets.every((o) => /^\d{1,3}$/.test(o) && Number(o) <= 255);
 }
 
 export function loadConfig(env: Record<string, string | undefined>): HostConfig {
@@ -125,8 +123,8 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
       throw new Error('CHARTER_HOME_GATEWAY must be a dotted IPv4 address');
     }
     const publicHost = env.CHARTER_HOME_PUBLIC_HOST?.trim() || undefined;
-    if (publicHost !== undefined && !publicHostName(publicHost)) {
-      throw new Error('CHARTER_HOME_PUBLIC_HOST must be a bare IPv4 address or hostname, without a scheme or port');
+    if (publicHost !== undefined && !publicIPv4(publicHost)) {
+      throw new Error('CHARTER_HOME_PUBLIC_HOST must be a dotted IPv4 address (docker binds it; a hostname is not accepted), without a scheme or port');
     }
     const onion = publicHost === undefined || flag(env, 'CHARTER_HOME_ONION');
     home = {

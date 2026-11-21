@@ -68,7 +68,7 @@ Drew bought a second server for this: **charter-host-hel1**, Hetzner CPX32, Hels
 - The routed single-port proxy (approach 2).
 - Moving any home's disk from toon2. Nothing live is there: the proof home lapsed 11-21 and Edison's old
   home's kept disk expires 11-23. Both are left to expire.
-- A domain name for homes. The IP is the address; a name can come later without code changes.
+- A domain name for homes. The IP is the address, and `CHARTER_HOME_PUBLIC_HOST` takes only an IPv4 address (docker binds it). A name needs a small later change: bind the IP, show the name.
 - Changing prices, the grant fund, or the door's payment paths.
 
 ## Anti-goals (would make this a failure even if it works)
@@ -84,7 +84,7 @@ Drew bought a second server for this: **charter-host-hel1**, Hetzner CPX32, Hels
 ### Code (charter repo)
 
 - **A public address setting for the host.** New optional variable, e.g. `CHARTER_HOME_PUBLIC_HOST`
-  (an IP or a name). When set:
+  (an IPv4 address; a name is a later change, see Non-goals). When set:
   - the home container's sshd port is bound on that public address instead of `127.0.0.1`
     (today `-p 127.0.0.1:${rec.port}:2222` in `src/host/runner.ts`);
   - `homeAccess(homeId)` returns `{ ssh: { host: <public host>, port: rec.port, user: 'tenant' } }` at once,
