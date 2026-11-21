@@ -661,4 +661,5 @@ grant is first-party (Drew's own pitch and money) and is never counted as a rent
   charter-anon, after which the onion stayed unreachable from two clients for over 10 minutes (SOCKS "TTL
   expired"). Now: alert after 3 misses in a row (15 minutes), no restart unless `HOME_ONION_RESTART=1`.
   Finding: onion reachability of a toon2 home is flaky in itself, which is the case for the SSH jump host.
-- [ ] Lapse: paid through 11:52:26Z; checked at 11:55Z (below).
+- [x] Lapse: the lease closed `missed_tick` at 11:52Z after 13 intervals; the fund paid nothing after the stop
+  (still 5.909000, no problems). The home watch said so on Telegram at 11:53Z. Disk and onion kept 7 days.
