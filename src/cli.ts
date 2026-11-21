@@ -221,10 +221,25 @@ function relayFor(d: CliDeps, env: Record<string, string | undefined>, relay: st
   return undefined;
 }
 
-/** How a tenant reaches its home: plain ssh to a public host, or through Anyone for an onion host (the port is the tenant's own SOCKS port). */
-export function sshLine(a: HomeAccess): string {
-  if (!/^[a-z2-7]{56}\.anyone$/.test(a.ssh.host)) return `ssh -p ${a.ssh.port} tenant@${a.ssh.host}`;
-  return `ssh -o ProxyCommand="nc -x 127.0.0.1:<your Anyone SOCKS port> %h %p" tenant@${a.ssh.host}`;
+const ONION = /^[a-z2-7]{56}\.anyone$/;
+const IPV4 = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+const HOSTNAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+
+/**
+ * How a tenant reaches its home: plain ssh to a public host, or through Anyone for an onion host (the port is
+ * the tenant's own SOCKS port). The line is meant to be pasted into a shell and is built from what the host
+ * sent, so it is given only for a valid shape (the same rules as web/keys.ts); anything else is undefined.
+ */
+export function sshLine(a: HomeAccess): string | undefined {
+  const { host, port, user } = (a?.ssh ?? {}) as Partial<HomeAccess['ssh']>;
+  if (typeof host !== 'string' || user !== 'tenant') return undefined;
+  if (ONION.test(host)) {
+    if (port !== 22) return undefined;
+    return `ssh -o ProxyCommand="nc -x 127.0.0.1:<your Anyone SOCKS port> %h %p" tenant@${host}`;
+  }
+  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) return undefined;
+  if (host.toLowerCase().endsWith('.anyone') || host.startsWith('-') || !(IPV4.test(host) || HOSTNAME.test(host))) return undefined;
+  return `ssh -p ${port} tenant@${host}`;
 }
 
 /** Progress to stderr (none with --json), and the ssh line once, the first time a read shows it. */
@@ -235,7 +250,9 @@ function leaseProgress(d: CliDeps, json: boolean | undefined): (e: LeaseEvent) =
     else if (e.kind === 'ticked' && !json) d.err(`paid tick ${e.index}`);
     else if (e.kind === 'status' && e.access && !shown) {
       shown = true;
-      d.err(sshLine(e.access));
+      const line = sshLine(e.access);
+      if (line) d.err(line);
+      else d.err('the host sent an address that is not a valid ssh login; not printing it');
     }
   };
 }
