@@ -71,7 +71,7 @@ export function optionsFromEnv(env: NodeJS.ProcessEnv): Options {
 
 const KEY = /^0x[0-9a-fA-F]{64}$/;
 const GET_TIMEOUT_MS = 30_000;
-/** A rent waits for the host to open the lease over an onion hop, which has taken 15 s and more. */
+/** A rent waits for the host to open the lease, which over an onion hop has taken 15 s and more. */
 const PAY_TIMEOUT_MS = 90_000;
 
 /** The key in the file; made first (mode 600, never overwriting) when the file is absent and `make` is set. */
@@ -386,7 +386,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
       const rented = await rent(deps, { home: { sshKeys: keys, ...(image ? { image } : {}) } });
       return {
         ...rented,
-        next: 'Read the lease about once a minute until it shows ssh (the onion address is published within about a minute). Pay more time before paidThrough; a home that lapses keeps its disk 7 days and opens again with the same keys.',
+        next: 'Read the lease about once a minute until it shows ssh (the address is published within about a minute). Pay more time before paidThrough; a home that lapses keeps its disk 7 days and opens again with the same keys.',
       };
     },
     lease: async (leaseId) => {
@@ -469,7 +469,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
     'charter_rent_home',
     {
       title: 'Rent a Linux home with SSH',
-      description: `PAID. ${cost} Opens a Linux box of your own (Debian, 1 CPU, 1 GiB memory, a 2 GiB disk kept 7 days after the lease ends, user "tenant", no root) and pays its first interval. Pass 1 to 8 SSH PUBLIC keys; the key set is the home's identity, so the same keys open the same disk again. Read this before renting: SSH is reachable only at an onion address on the Anyone network, so whoever logs in needs an Anyone client; all outbound traffic leaves through Anyone and is slow; the live host has two home slots and an open answers busy when both are taken. After renting, call charter_lease about once a minute until it shows the SSH address, and charter_extend before the paid time runs out.`,
+      description: `PAID. ${cost} Opens a Linux box of your own (Debian, 1 CPU, 1 GiB memory, a 2 GiB disk kept 7 days after the lease ends, user "tenant", no root) and pays its first interval. Pass 1 to 8 SSH PUBLIC keys; the key set is the home's identity, so the same keys open the same disk again. Read this before renting: SSH is plain: ssh -p <port> tenant@<host> to the public address the lease shows, no special client needed (some hosts publish an onion address on the Anyone network instead, which needs an Anyone client); outbound traffic may be slow; the live host has two home slots and an open answers busy when both are taken. After renting, call charter_lease about once a minute until it shows the SSH address, and charter_extend before the paid time runs out.`,
       inputSchema: {
         sshKeys: z.array(z.string().max(1023)).min(1).max(8).describe('SSH public key lines (ssh-ed25519, ecdsa-sha2-nistp256/384/521 or ssh-rsa). Public keys only: never a private key.'),
         image: z.enum(['charter-home', 'charter-hermes']).optional().describe('charter-home (default) is a plain box; charter-hermes has Hermes Agent preinstalled'),
@@ -511,7 +511,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
     {
       title: 'Pitch the Charter grant fund',
       description:
-        'Free. Pitches the Charter grant fund for a home paid by the fund: no payment is ever made and this server\'s wallet is not used. Ask your operator before you apply. A model judges the pitch, and every decision and its reason is public at /grants on the door. A grant is 30 days of a home paid by the fund. Homes are reached over the Anyone network, so whoever logs in needs an Anyone client. Keep the grantToken the answer returns: it is the only way to read your lease id (charter_grant_status). The operator can read the home\'s disk, so keep secrets off it. Pass 1 to 8 SSH PUBLIC keys; the key set is the home\'s identity.',
+        'Free. Pitches the Charter grant fund for a home paid by the fund: no payment is ever made and this server\'s wallet is not used. Ask your operator before you apply. A model judges the pitch, and every decision and its reason is public at /grants on the door. A grant is 30 days of a home paid by the fund. Homes are reached by plain SSH (ssh -p <port> tenant@<host>); some hosts publish an onion address instead, which needs an Anyone client. Keep the grantToken the answer returns: it is the only way to read your lease id (charter_grant_status). The operator can read the home\'s disk, so keep secrets off it. Pass 1 to 8 SSH PUBLIC keys; the key set is the home\'s identity.',
       inputSchema: {
         name: z.string().min(1).max(80).describe('who is asking, at most 80 characters'),
         pitch: z.string().min(1).max(2000).describe('what you will run and why it deserves a home, at most 2000 characters. It is judged by a model and the decision is public.'),

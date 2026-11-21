@@ -221,8 +221,9 @@ function relayFor(d: CliDeps, env: Record<string, string | undefined>, relay: st
   return undefined;
 }
 
-/** How a tenant reaches its home through Anyone; the port is the tenant's own SOCKS port. */
-function sshLine(a: HomeAccess): string {
+/** How a tenant reaches its home: plain ssh to a public host, or through Anyone for an onion host (the port is the tenant's own SOCKS port). */
+export function sshLine(a: HomeAccess): string {
+  if (!/^[a-z2-7]{56}\.anyone$/.test(a.ssh.host)) return `ssh -p ${a.ssh.port} tenant@${a.ssh.host}`;
   return `ssh -o ProxyCommand="nc -x 127.0.0.1:<your Anyone SOCKS port> %h %p" tenant@${a.ssh.host}`;
 }
 

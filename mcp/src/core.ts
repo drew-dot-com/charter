@@ -262,7 +262,9 @@ export async function lease(d: Pick<Deps, 'get' | 'now'>, leaseId: string): Prom
             host: String(ssh.host),
             port: Number(ssh.port ?? 22),
             user: String(ssh.user ?? 'tenant'),
-            how: 'The host is an onion address on the Anyone network. With an Anyone client running: ssh -o ProxyCommand="nc -x 127.0.0.1:<its SOCKS port> %h %p" tenant@<host>. No Anyone client, no way in.',
+            how: /^[a-z2-7]{56}\.anyone$/.test(String(ssh.host))
+              ? 'The host is an onion address on the Anyone network. With an Anyone client running: ssh -o ProxyCommand="nc -x 127.0.0.1:<its SOCKS port> %h %p" tenant@<host>. No Anyone client, no way in.'
+              : `Plain SSH: ssh -p ${Number(ssh.port ?? 22)} ${String(ssh.user ?? 'tenant')}@${String(ssh.host)}`,
           },
         }
       : {}),

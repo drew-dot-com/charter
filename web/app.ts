@@ -887,7 +887,7 @@ function render(p: LeasePage): void {
     return out;
   });
 
-  // A running home: how to reach it. The host publishes the onion address a little after the first tick.
+  // A running home: how to reach it. The host publishes the address a little after the first tick (a public host and port, or an onion address).
   const home = isHomeImage(lease?.job.image);
   const ssh = home && lease?.state === 'running' ? sshLine(lease.access) : undefined;
   const restarts = home ? lease?.restarts ?? 0 : 0;
@@ -900,7 +900,7 @@ function render(p: LeasePage): void {
       out.push(el('h2', undefined, 'Your home'));
       if (ssh) {
         out.push(el('pre', 'mono', ssh));
-        out.push(el('p', 'note', 'needs an Anyone client: replace <your Anyone SOCKS port> with your Anyone client\'s SOCKS port; see the ', link('agents page', '/agents', false)));
+        if (ssh.includes('ProxyCommand')) out.push(el('p', 'note', 'needs an Anyone client: replace <your Anyone SOCKS port> with your Anyone client\'s SOCKS port; see the ', link('agents page', '/agents', false)));
       } else {
         out.push(el('p', 'muted', 'address pending'));
       }

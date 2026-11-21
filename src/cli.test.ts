@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
-import { runCli, type CliDeps } from './cli.js';
+import { runCli, sshLine, type CliDeps } from './cli.js';
 import { offerToJson } from './offer.js';
 import type { PacketRequest, Payer, ToonClientPayerConfig } from './payer.js';
 import { exitJob, OFFER, testHost } from './tenant/test-host.js';
@@ -413,4 +413,13 @@ test('charter payer refuses a bad --listen before touching any key', async () =>
   const r = await cli(['payer', '--listen', 'nowhere'], { CHARTER_PAYER: 'toon-client', CHARTER_TOON_KEY_FILE: '/nonexistent', CHARTER_TOON_CHANNEL_STORE: '/tmp/x.json', CHARTER_TOON_CHAIN: 'evm', CHARTER_CONNECTOR_URL: 'https://c' });
   assert.equal(r.code, 2);
   assert.match(r.err, /--listen must be <host>:<port>/);
+});
+
+test('public access prints ssh -p', () => {
+  assert.equal(sshLine({ ssh: { host: '37.27.86.235', port: 22003, user: 'tenant' } }), 'ssh -p 22003 tenant@37.27.86.235');
+});
+
+test('onion access still prints the ProxyCommand line', () => {
+  const host = `${'a'.repeat(56)}.anyone`;
+  assert.equal(sshLine({ ssh: { host, port: 22, user: 'tenant' } }), `ssh -o ProxyCommand="nc -x 127.0.0.1:<your Anyone SOCKS port> %h %p" tenant@${host}`);
 });

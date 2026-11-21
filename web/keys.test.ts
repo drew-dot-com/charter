@@ -25,8 +25,8 @@ test('sshLine gives the exact line for a plain access and nothing for anything e
   const ok = { ssh: { host, port: 22, user: 'tenant' } };
   assert.equal(sshLine(ok), `ssh -o ProxyCommand="nc -x 127.0.0.1:<your Anyone SOCKS port> %h %p" tenant@${host}`);
   for (const bad of [
-    { ssh: { ...ok.ssh, host: 'a'.repeat(56) } },
     { ssh: { ...ok.ssh, host: `${'a'.repeat(55)}.anyone` } },
+    { ssh: { ...ok.ssh, host: 'foo.anyone' } },
     { ssh: { ...ok.ssh, host: `${'a'.repeat(56)}.anyone; rm -rf ~` } },
     { ssh: { ...ok.ssh, user: 'ten ant' } },
     { ssh: { ...ok.ssh, user: 'root' } },
@@ -39,4 +39,17 @@ test('sshLine gives the exact line for a plain access and nothing for anything e
     undefined,
     'ssh tenant@x.anyone',
   ]) assert.equal(sshLine(bad), undefined, JSON.stringify(bad));
+});
+
+test('public access prints ssh -p', () => {
+  assert.equal(sshLine({ ssh: { host: '37.27.86.235', port: 22003, user: 'tenant' } }), 'ssh -p 22003 tenant@37.27.86.235');
+  assert.equal(sshLine({ ssh: { host: 'homes.example.com', port: 22, user: 'tenant' } }), 'ssh -p 22 tenant@homes.example.com');
+});
+
+test('a public host with a bad port or user is pending', () => {
+  assert.equal(sshLine({ ssh: { host: '37.27.86.235', port: 0, user: 'tenant' } }), undefined);
+  assert.equal(sshLine({ ssh: { host: '37.27.86.235', port: 65536, user: 'tenant' } }), undefined);
+  assert.equal(sshLine({ ssh: { host: '37.27.86.235', port: 22003, user: 'root' } }), undefined);
+  assert.equal(sshLine({ ssh: { host: 'a b', port: 22003, user: 'tenant' } }), undefined);
+  assert.equal(sshLine({ ssh: { host: '-oProxyCommand=x', port: 22003, user: 'tenant' } }), undefined);
 });

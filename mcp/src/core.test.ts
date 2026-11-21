@@ -195,6 +195,17 @@ test('with no wallet the paid tools say so and send nothing', async () => {
   await assert.rejects(rent(d, { python: { script: 'x' } }), /no wallet key/);
 });
 
+test('a public home\'s lease view says plain SSH', async () => {
+  const d = fake({
+    [`/v1/leases/${ID}`]: {
+      status: 200,
+      body: { lease: { state: 'running', paidIntervals: 1, paidThrough: Date.UTC(2026, 10, 18, 12, 40), access: { ssh: { host: '37.27.86.235', port: 22003, user: 'tenant' } } }, stopped: false },
+    },
+  });
+  const { view } = await lease(d, ID);
+  assert.equal(view.ssh?.how, 'Plain SSH: ssh -p 22003 tenant@37.27.86.235');
+});
+
 test('a lease read shows the paid time left and a home\'s way in', async () => {
   const through = Date.UTC(2026, 10, 18, 12, 40);
   const d = fake({
