@@ -457,7 +457,8 @@ export async function runCli(argv: string[], env: Record<string, string | undefi
     d.err(USAGE);
     return 2;
   } catch (e) {
-    if (e instanceof UsageError || (e as { code?: string }).code?.startsWith('ERR_PARSE_ARGS')) {
+    const code = (e as { code?: unknown }).code;
+    if (e instanceof UsageError || (typeof code === 'string' && code.startsWith('ERR_PARSE_ARGS'))) {
       d.err(`${(e as Error).message}\n${USAGE}`);
       return 2;
     }

@@ -437,3 +437,15 @@ test('an invalid access prints no ssh line', () => {
     { ...ok, host: `${'a'.repeat(56)}.anyone`, port: 2222 },
   ]) assert.equal(sshLine({ ssh }), undefined, JSON.stringify(ssh));
 });
+
+test('an error with a non-string code prints its own message, not a crash in the handler', async () => {
+  const failing = Object.assign(new Error('peer drew unreachable'), { code: 504 });
+  const r = await cli(['offers', '--relay', 'wss://r'], {}, {
+    fetchOffers: async () => {
+      throw failing;
+    },
+  });
+  assert.equal(r.code, 1);
+  assert.match(r.err, /peer drew unreachable/);
+  assert.doesNotMatch(r.err, /startsWith is not a function/);
+});
