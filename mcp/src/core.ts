@@ -239,6 +239,29 @@ export interface LeaseView {
   note?: string;
 }
 
+// The same rules as the charter CLI's sshLine (src/cli.ts) and web/keys.ts; copied, since this is its own package.
+const ONION = /^[a-z2-7]{56}\.anyone$/;
+const IPV4 = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+const HOSTNAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+const BAD_SSH = 'The host sent an address that is not a valid ssh login, so no command is given. Do not build one from it.';
+
+/**
+ * The line an agent pastes into a shell to reach a home, built from what the host sent, so only for the shapes a
+ * host publishes: user tenant and an onion name on port 22, or a public IPv4 address or hostname (not *.anyone, no
+ * leading -) on an integer port 1-65535. Anything else says so and repeats none of it.
+ */
+export function sshHow(ssh: { host?: unknown; port?: unknown; user?: unknown }): string {
+  const { host, port, user } = ssh;
+  if (typeof host !== 'string' || user !== 'tenant') return BAD_SSH;
+  if (ONION.test(host)) {
+    if (port !== 22) return BAD_SSH;
+    return `The host is an onion address on the Anyone network. With an Anyone client running: ssh -o ProxyCommand="nc -x 127.0.0.1:<your Anyone SOCKS port> %h %p" tenant@${host}. No Anyone client, no way in.`;
+  }
+  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) return BAD_SSH;
+  if (host.toLowerCase().endsWith('.anyone') || host.startsWith('-') || !(IPV4.test(host) || HOSTNAME.test(host))) return BAD_SSH;
+  return `Plain SSH: ssh -p ${port} tenant@${host}`;
+}
+
 /** A free read of a lease. */
 export async function lease(d: Pick<Deps, 'get' | 'now'>, leaseId: string): Promise<{ view: LeaseView; raw: any }> {
   if (!LEASE_ID.test(leaseId)) throw new Error('a leaseId is 32 lowercase hex characters');
@@ -262,9 +285,7 @@ export async function lease(d: Pick<Deps, 'get' | 'now'>, leaseId: string): Prom
             host: String(ssh.host),
             port: Number(ssh.port ?? 22),
             user: String(ssh.user ?? 'tenant'),
-            how: /^[a-z2-7]{56}\.anyone$/.test(String(ssh.host))
-              ? 'The host is an onion address on the Anyone network. With an Anyone client running: ssh -o ProxyCommand="nc -x 127.0.0.1:<its SOCKS port> %h %p" tenant@<host>. No Anyone client, no way in.'
-              : `Plain SSH: ssh -p ${Number(ssh.port ?? 22)} ${String(ssh.user ?? 'tenant')}@${String(ssh.host)}`,
+            how: sshHow(ssh),
           },
         }
       : {}),

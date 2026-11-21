@@ -16,6 +16,7 @@ import {
   output,
   pitch,
   rent,
+  sshHow,
   runJob,
   usdcToMicro,
   type Answer,
@@ -204,6 +205,31 @@ test('a public home\'s lease view says plain SSH', async () => {
   });
   const { view } = await lease(d, ID);
   assert.equal(view.ssh?.how, 'Plain SSH: ssh -p 22003 tenant@37.27.86.235');
+});
+
+test('a lease view gives no ssh command for an address that is not a valid login', async () => {
+  const onion = 'x'.repeat(56) + '.anyone';
+  const bad = [
+    { host: '-oProxyCommand=sh', port: 22003, user: 'tenant' },
+    { host: 'box;rm -rf ~', port: 22003, user: 'tenant' },
+    { host: 'fake.anyone', port: 22003, user: 'tenant' },
+    { host: '37.27.86.235', port: 0, user: 'tenant' },
+    { host: '37.27.86.235', port: 70000, user: 'tenant' },
+    { host: '37.27.86.235', port: '22003', user: 'tenant' },
+    { host: '37.27.86.235', port: 22.5, user: 'tenant' },
+    { host: '37.27.86.235', port: 22003, user: 'root' },
+    { host: '37.27.86.235', port: 22003 },
+    { host: onion, port: 2222, user: 'tenant' },
+  ];
+  for (const ssh of bad) {
+    const d = fake({ [`/v1/leases/${ID}`]: { status: 200, body: { lease: { state: 'running', paidIntervals: 1, access: { ssh } } } } });
+    const { view } = await lease(d, ID);
+    assert.match(view.ssh!.how, /not a valid ssh login/, JSON.stringify(ssh));
+    assert.ok(!view.ssh!.how.includes(String(ssh.host)), `no value repeated: ${JSON.stringify(ssh)}`);
+    assert.ok(!view.ssh!.how.includes(String(ssh.port)), `no port repeated: ${JSON.stringify(ssh)}`);
+  }
+  assert.equal(sshHow({ host: 'box.example.com', port: 22003, user: 'tenant' }), 'Plain SSH: ssh -p 22003 tenant@box.example.com');
+  assert.match(sshHow({ host: onion, port: 22, user: 'tenant' }), new RegExp(`tenant@${onion}`));
 });
 
 test('a lease read shows the paid time left and a home\'s way in', async () => {
