@@ -2,8 +2,10 @@
 # 172.17.0.1:9150. By default that is the toon node's own port, which is loopback
 # only and moves at every `toon up`, so each connection reads the current port
 # (charter-socks-connect). On a host whose node runs no anon (hel1, a clearnet
-# node), the hel1 install uncomments CHARTER_SOCKS_UPSTREAM below: jobs then go
-# out through charter-anon's loopback SOCKS port (deploy/host/anonrc).
+# node), install-home.sh with ANON_BIN set writes a drop-in,
+# ~/.config/systemd/user/charter-socks.service.d/upstream.conf, setting the
+# CHARTER_SOCKS_UPSTREAM shown commented below: jobs then go out through
+# charter-anon's loopback SOCKS port (deploy/host/anonrc). Do not uncomment it here.
 # Needs socat. Install beside charter-host.service; set CHARTER_PROXY=socks5://172.17.0.1:9150.
 [Unit]
 Description=Charter job egress: docker0 to an Anyone SOCKS port

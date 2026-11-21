@@ -48,8 +48,21 @@ arch=$(dpkg --print-architecture)
 [ "$arch" = amd64 ] || die "made for amd64, this is $arch"
 export DEBIAN_FRONTEND=noninteractive
 
+# own_policy: this run (or a killed earlier one) put /usr/sbin/policy-rc.d in place; the
+# EXIT trap removes it however the run ends. A signal becomes an exit, so the trap runs.
+own_policy=0
+POLICY_RC='#!/bin/sh
+# install-host.sh: keeps the anon package from starting its own service while it installs.
+exit 101'
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+cleanup() {
+  rm -rf "$tmp"
+  if [ "$own_policy" = 1 ]; then rm -f /usr/sbin/policy-rc.d; fi
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 export GNUPGHOME="$tmp/gnupg"
 mkdir -m 0700 "$GNUPGHOME"
 
@@ -129,15 +142,18 @@ done
 # The package's own anon service (a client on 127.0.0.1:9050 as debian-anon) is not
 # wanted: Charter runs its own (charter-anon.service). Keep it from starting while
 # the package installs (policy-rc.d), then mask it.
-own_policy=0
+# A file with this script's exact content is one a killed earlier run left: ours to remove.
 if [ ! -e /usr/sbin/policy-rc.d ]; then
-  printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
-  chmod 0755 /usr/sbin/policy-rc.d
   own_policy=1
+  printf '%s\n' "$POLICY_RC" > /usr/sbin/policy-rc.d
+  chmod 0755 /usr/sbin/policy-rc.d
+elif [ "$(cat /usr/sbin/policy-rc.d)" = "$POLICY_RC" ]; then
+  own_policy=1
+  say "found /usr/sbin/policy-rc.d from an earlier run; it is removed at exit"
 fi
 apt-get install -y -q --allow-change-held-packages "anon=$ANON_VERSION" "anon-geoipdb=$ANON_VERSION" \
-  || { [ "$own_policy" = 0 ] || rm -f /usr/sbin/policy-rc.d; die "anon install failed"; }
-[ "$own_policy" = 0 ] || rm -f /usr/sbin/policy-rc.d
+  || die "anon install failed"
+if [ "$own_policy" = 1 ]; then rm -f /usr/sbin/policy-rc.d; own_policy=0; fi
 apt-mark hold anon anon-geoipdb >/dev/null
 systemctl disable --now anon.service anon@default.service >/dev/null 2>&1 || true
 systemctl mask anon.service anon@default.service >/dev/null
@@ -158,8 +174,7 @@ echo
 say "done: $(docker --version), $(runsc --version | sed -n 1p), node $node_v, $anon_v"
 echo "Next, from this directory as root (the anon below is copied, so an upgrade of the package never touches the running one):"
 echo "  SUDO_USER=$HOST_USER ANON_BIN=$anon_bin ANON_GEOIP=$geoip ANON_GEOIP6=$geoip6 ./install-home.sh"
-echo "Then, for charter-socks.service on this host (no toon node anon): uncomment"
-echo "  Environment=CHARTER_SOCKS_UPSTREAM=127.0.0.1:9152"
+echo "With ANON_BIN set, install-home.sh also writes charter-socks.service's drop-in (CHARTER_SOCKS_UPSTREAM=127.0.0.1:9152)."
 echo "Check:"
 echo "  docker run --rm --runtime runsc hello-world"
 echo "  systemctl is-enabled anon.service    # masked"

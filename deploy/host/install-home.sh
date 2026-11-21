@@ -115,6 +115,24 @@ systemctl enable --now charter-anon.service
 # A running anon keeps its old binary and config until restarted.
 if [ "$was_active" = 1 ] && [ "$anon_changed" = 1 ]; then systemctl restart charter-anon.service; fi
 
+# The hel1 path (ANON_BIN given: the node runs no anon of its own): job egress,
+# charter-socks.service (a user unit), goes out through charter-anon's loopback
+# SOCKS port. A user drop-in says so; toon2's path (no ANON_BIN) keeps the node's port.
+if [ -n "${ANON_BIN:-}" ]; then
+  dropin="$home/.config/systemd/user/charter-socks.service.d"
+  as_user mkdir -p "$dropin"
+  printf '[Service]\nEnvironment=CHARTER_SOCKS_UPSTREAM=127.0.0.1:9152\n' > "$tmp/charter-socks-upstream.conf"
+  socks_changed=0
+  cmp -s "$tmp/charter-socks-upstream.conf" "$dropin/upstream.conf" || socks_changed=1
+  put "$tmp/charter-socks-upstream.conf" "$dropin/upstream.conf" 0644 "$user:$group"
+  if [ "$socks_changed" = 1 ]; then
+    # The user's manager runs (linger); restart charter-socks only if it is already running.
+    systemctl --user -M "$user@" daemon-reload 2>/dev/null \
+      && systemctl --user -M "$user@" try-restart charter-socks.service 2>/dev/null \
+      || echo "install-home: as $user, run: systemctl --user daemon-reload && systemctl --user try-restart charter-socks.service"
+  fi
+fi
+
 echo
 echo "install-home: done. Check:"
 echo "  ss -ltunp | grep 172.19.0.1     # anon on tcp 9050 and 9080, udp 53"
@@ -127,3 +145,6 @@ echo "    # two DROPs of 172.19.0.1 tcp 9050,9080 and udp 53 from anything but t
 echo "    # then from the bridge four ACCEPTs (ESTABLISHED,RELATED; tcp 9050,9080; udp 53; tcp 53), then its DROP,"
 echo "    # then for -s 172.19.0.0/24 three ACCEPTs (tcp 9050,9080,53; udp 53; sport 2222 replies) and its DROP"
 echo "  sudo ip6tables -S INPUT | grep br-  # the IPv6 DROP"
+if [ -n "${ANON_BIN:-}" ]; then
+  echo "  systemctl --user cat charter-socks.service   # as $user: the drop-in sets CHARTER_SOCKS_UPSTREAM=127.0.0.1:9152"
+fi

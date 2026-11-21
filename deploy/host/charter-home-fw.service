@@ -13,7 +13,8 @@
 [Unit]
 Description=Charter homes: firewall for the homes' subnet before docker starts
 DefaultDependencies=no
-After=local-fs.target
+# Ordering only: a firewall service that loads or flushes a ruleset runs first, so it never wipes these rules.
+After=local-fs.target nftables.service netfilter-persistent.service ufw.service firewalld.service
 Before=network-pre.target docker.service
 Wants=network-pre.target
 
