@@ -1,0 +1,28 @@
+# Opt-in, for a host where only Charter's job containers use docker0 (hel1: the toon relay and
+# Caddy run on the host network). Job containers then forward nothing anywhere: their one way
+# out is charter-socks on 172.17.0.1:9150 (INPUT to the host, open), plus DNS (below). Without
+# this, a fetch job whose renderer ignored its proxy would leave from the host's own IP.
+# Check first: `docker network inspect bridge` must list only charter job containers.
+# Install (root): cp to /etc/systemd/system/, then
+#   systemctl daemon-reload && systemctl enable --now charter-job-egress.service
+# Ordered after charter-home-fw (which creates DOCKER-USER before docker starts) and before
+# docker, so the rule is in place before any container runs; RequiredBy keeps docker down if
+# it fails (fail closed).
+[Unit]
+Description=Charter job egress: nothing forwarded from docker0
+DefaultDependencies=no
+After=charter-home-fw.service
+Before=docker.service
+Requires=charter-home-fw.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# DNS stays open: the fetch job resolves names itself, through the resolvers docker hands it
+# (the host's), before it uses its proxy; dropping port 53 empties every fetch (seen on hel1
+# 2026-11-21). Follow-up: point job containers at charter-anon's DNS so names stop leaving
+# from the host too. The ACCEPT is inserted after the DROP, so it lands above it.
+ExecStart=/bin/sh -c 'iptables -N DOCKER-USER 2>/dev/null; iptables -C DOCKER-USER -i docker0 -j DROP 2>/dev/null || iptables -I DOCKER-USER -i docker0 -j DROP; for p in udp tcp; do iptables -C DOCKER-USER -i docker0 -p $p --dport 53 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -i docker0 -p $p --dport 53 -j ACCEPT; done'
+
+[Install]
+RequiredBy=docker.service
