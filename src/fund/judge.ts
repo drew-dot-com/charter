@@ -86,7 +86,13 @@ function userMessage(p: PitchIn, ctx: { live: number; slots: number }): string {
   ].join('\n');
 }
 
-/** Remove every run of 12+ characters that also appears in the pitch text. */
+const WORD = /[\p{L}\p{N}'_-]/u;
+
+/**
+ * Remove every run of 12+ characters that also appears in the pitch text. A cut is widened to whole words
+ * and leaves a space, so the words on either side are never glued together ("test|ing network lim|its"
+ * would otherwise become "testits").
+ */
 function stripCopied(s: string, pitch: string): string {
   const hay = pitch.toLowerCase();
   const low = s.toLowerCase();
@@ -95,9 +101,14 @@ function stripCopied(s: string, pitch: string): string {
   for (let i = 0; i + n <= s.length; i++) {
     if (hay.includes(low.slice(i, i + n))) for (let j = i; j < i + n; j++) cut[j] = true;
   }
+  for (let i = 0; i < s.length; i++) {
+    if (!cut[i]) continue;
+    if (i > 0 && !cut[i - 1]) for (let j = i - 1; j >= 0 && WORD.test(s[j]); j--) cut[j] = true;
+    if (i + 1 < s.length && !cut[i + 1]) for (let j = i + 1; j < s.length && WORD.test(s[j]); j++) cut[j] = true;
+  }
   let out = '';
-  for (let i = 0; i < s.length; i++) if (!cut[i]) out += s[i];
-  return out.replace(/\s+/g, ' ').trim();
+  for (let i = 0; i < s.length; i++) out += cut[i] ? (i > 0 && cut[i - 1] ? '' : ' ') : s[i];
+  return out.replace(/\s+/g, ' ').replace(/\s+([,.;:!?])/g, '$1').trim();
 }
 
 function clean(s: string, pitch: string): string {

@@ -193,6 +193,17 @@ test('a reason copying 12+ characters of the pitch is cut', async () => {
   assert.ok(v.reason.length >= 10);
 });
 
+test('cutting copied text never glues the words on either side together', async () => {
+  // The run copied from the pitch ("ing network lim") starts and ends inside words of the summary.
+  const p2 = { ...pitch, pitch: 'The box is for checking network limbs of a tree diagram.' };
+  const summary = 'Wants a box for testing network limits over a month.';
+  const v = await judge(fake(textResp({ decision: 'grant', summary, reason: 'A concrete legal test with a named operator.' })), p2, ctx);
+  const words = (t: string) => t.toLowerCase().split(/[^a-z]+/).filter(Boolean);
+  const allowed = new Set(words(summary));
+  for (const w of words(v.summary)) assert.ok(allowed.has(w), `"${w}" is not a word of the original: ${v.summary}`);
+  assert.ok(!v.summary.toLowerCase().includes('ing network lim'), 'the copied run is gone');
+});
+
 test('a reason made only of copied text becomes Granted. or Declined.', async () => {
   const copied = 'summarizes public court filings every night';
   const g = await judge(fake(textResp({ decision: 'grant', summary: 'ok', reason: copied })), pitch, ctx);
