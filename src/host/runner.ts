@@ -110,7 +110,8 @@ export interface HomeRunnerOpts {
   socksPort: number;
   httpPort: number;
   homes: HomeStore;
-  anon: AnonDeps;
+  /** Set when homes are published as onion services. */
+  anon?: AnonDeps;
   /** losetup runs as root (`sudo -n losetup` on the host): docker gets a loop device, not the image. */
   tools: { truncate: Exec; mkfs: Exec; losetup: Exec };
   offerJson: string;
@@ -421,15 +422,19 @@ export function dockerRunner(opts: {
     async publishHome(homeId) {
       const h = needHome();
       const rec = record(h, checkHomeId(homeId));
-      await publishHiddenService(h.anon, homeId, rec.port);
+      if (h.anon) await publishHiddenService(h.anon, homeId, rec.port);
     },
 
     async retireHome(homeId) {
-      await retireHiddenService(needHome().anon, checkHomeId(homeId));
+      const h = needHome();
+      checkHomeId(homeId);
+      if (h.anon) await retireHiddenService(h.anon, homeId);
     },
 
     async homeAccess(homeId) {
-      const host = await onionHostname(needHome().anon, checkHomeId(homeId));
+      const h = needHome();
+      checkHomeId(homeId);
+      const host = h.anon ? await onionHostname(h.anon, homeId) : null;
       return host ? { ssh: { host, port: 22, user: 'tenant' } } : null;
     },
 
@@ -439,7 +444,7 @@ export function dockerRunner(opts: {
       checkHomeId(homeId);
       return serial(async () => {
         // First, so anon never serves a conf whose directory is gone.
-        await retireHiddenService(h.anon, homeId);
+        if (h.anon) await retireHiddenService(h.anon, homeId);
         await removeVolume(exec, volumeName(homeId));
         // A deleted image stays attached and holds its blocks until the loop device lets go.
         await detachAttached(h, diskPath(h.homesDir, homeId));

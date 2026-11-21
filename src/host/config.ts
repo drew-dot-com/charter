@@ -25,9 +25,13 @@ export interface HostConfig {
     gateway: string;
     socksPort: number;
     httpPort: number;
-    /** Directory the anon daemon reads onion confs from. */
-    anonHsDir: string;
-    anonPidFile: string;
+    /** A public IPv4 address or hostname homes are reached on. Unset: homes are onion-only. */
+    publicHost?: string;
+    /** Publish each home as an onion service. True unless a public host is set and CHARTER_HOME_ONION is off. */
+    onion: boolean;
+    /** Directory the anon daemon reads onion confs from. Set when `onion` is true. */
+    anonHsDir?: string;
+    anonPidFile?: string;
     /** The connector a box pays through, as the box sees it. */
     tenantConnectorUrl: string;
   };
@@ -68,6 +72,14 @@ function price(env: Record<string, string | undefined>, name: string, dflt: Micr
 function flag(env: Record<string, string | undefined>, name: string): boolean {
   const v = env[name]?.trim().toLowerCase();
   return v === '1' || v === 'true' || v === 'yes';
+}
+
+function publicHostName(v: string): boolean {
+  const octets = v.split('.');
+  if (octets.length === 4 && octets.every((o) => /^\d+$/.test(o))) {
+    return octets.every((o) => /^\d{1,3}$/.test(o) && Number(o) <= 255);
+  }
+  return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(v);
 }
 
 export function loadConfig(env: Record<string, string | undefined>): HostConfig {
@@ -112,14 +124,20 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
     if (octets.length !== 4 || octets.some((o) => !/^\d{1,3}$/.test(o) || Number(o) > 255)) {
       throw new Error('CHARTER_HOME_GATEWAY must be a dotted IPv4 address');
     }
+    const publicHost = env.CHARTER_HOME_PUBLIC_HOST?.trim() || undefined;
+    if (publicHost !== undefined && !publicHostName(publicHost)) {
+      throw new Error('CHARTER_HOME_PUBLIC_HOST must be a bare IPv4 address or hostname, without a scheme or port');
+    }
+    const onion = publicHost === undefined || flag(env, 'CHARTER_HOME_ONION');
     home = {
       dir: env.CHARTER_HOME_DIR?.trim() || join(dataDir, 'homes'),
       network: env.CHARTER_HOME_NETWORK?.trim() || 'charter-home',
       gateway,
       socksPort: num(env, 'CHARTER_HOME_SOCKS_PORT', 9050),
       httpPort: num(env, 'CHARTER_HOME_HTTP_PORT', 9080),
-      anonHsDir: need(env, 'CHARTER_ANON_HS_DIR'),
-      anonPidFile: need(env, 'CHARTER_ANON_PIDFILE'),
+      ...(publicHost !== undefined ? { publicHost } : {}),
+      onion,
+      ...(onion ? { anonHsDir: need(env, 'CHARTER_ANON_HS_DIR'), anonPidFile: need(env, 'CHARTER_ANON_PIDFILE') } : {}),
       tenantConnectorUrl,
     };
   }

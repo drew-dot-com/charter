@@ -84,6 +84,7 @@ test('a host with homes needs the anon paths and a tenant connector URL and adve
     gateway: '172.19.0.1',
     socksPort: 9050,
     httpPort: 9080,
+    onion: true,
     anonHsDir: '/etc/anon/hs.d',
     anonPidFile: '/run/anon/anon.pid',
     tenantConnectorUrl: 'https://connector.mainnet.toonprotocol.dev',
@@ -95,6 +96,34 @@ test('a host with homes needs the anon paths and a tenant connector URL and adve
   assert.throws(() => loadConfig({ ...HOME_ENV, CHARTER_HOME_GATEWAY: 'gw.local' }), /CHARTER_HOME_GATEWAY/);
   assert.throws(() => loadConfig({ ...HOME_ENV, CHARTER_HOME_SOCKS_PORT: '0' }), /CHARTER_HOME_SOCKS_PORT/);
   assert.equal(loadConfig({ ...HOME_ENV, CHARTER_HOME_DIR: '/mnt/h' }).home?.dir, '/mnt/h');
+});
+
+test('CHARTER_HOME_PUBLIC_HOST sets home.publicHost and turns the onion off by default', () => {
+  const c = loadConfig({ ...HOME_ENV, CHARTER_HOME_PUBLIC_HOST: '37.27.86.235', CHARTER_ANON_HS_DIR: '', CHARTER_ANON_PIDFILE: '' });
+  assert.equal(c.home?.publicHost, '37.27.86.235');
+  assert.equal(c.home?.onion, false);
+});
+
+test('CHARTER_HOME_ONION=1 with a public host keeps the onion and needs the anon paths', () => {
+  assert.throws(
+    () => loadConfig({ ...HOME_ENV, CHARTER_HOME_PUBLIC_HOST: '37.27.86.235', CHARTER_HOME_ONION: '1', CHARTER_ANON_HS_DIR: '' }),
+    /CHARTER_ANON_HS_DIR/,
+  );
+  const c = loadConfig({ ...HOME_ENV, CHARTER_HOME_PUBLIC_HOST: '37.27.86.235', CHARTER_HOME_ONION: '1' });
+  assert.equal(c.home?.onion, true);
+});
+
+test('no public host: onion on and anon paths required, as today', () => {
+  const c = loadConfig(HOME_ENV);
+  assert.equal(c.home?.publicHost, undefined);
+  assert.equal(c.home?.onion, true);
+});
+
+test('CHARTER_HOME_PUBLIC_HOST must be a bare IPv4 address or hostname', () => {
+  for (const bad of ['http://37.27.86.235', '37.27.86.235:22', 'a b', '999.1.1.1']) {
+    assert.throws(() => loadConfig({ ...HOME_ENV, CHARTER_HOME_PUBLIC_HOST: bad }), /CHARTER_HOME_PUBLIC_HOST/, bad);
+  }
+  assert.equal(loadConfig({ ...HOME_ENV, CHARTER_HOME_PUBLIC_HOST: 'box.example.com' }).home?.publicHost, 'box.example.com');
 });
 
 test('a host without home slots has no home and no home terms', () => {

@@ -80,7 +80,9 @@ async function main(argv: string[]): Promise<number> {
             socksPort: h.socksPort,
             httpPort: h.httpPort,
             homes,
-            anon: { hsDir: h.anonHsDir, homesDir: h.dir, pidFile: h.anonPidFile },
+            ...(h.onion && h.anonHsDir && h.anonPidFile
+              ? { anon: { hsDir: h.anonHsDir, homesDir: h.dir, pidFile: h.anonPidFile } }
+              : {}),
             tools: {
               truncate: execFileExec('truncate'),
               mkfs: execFileExec('mkfs.ext4'),

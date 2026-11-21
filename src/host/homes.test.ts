@@ -39,6 +39,12 @@ test('allocatePort gives 22000 first, skips taken ports and fills gaps', () => {
   assert.equal(allocatePort(new Set([22000, 22001, 22002])), 22003);
 });
 
+test('allocatePort refuses past 22099', () => {
+  const all = Array.from({ length: 100 }, (_, i) => 22000 + i);
+  assert.equal(allocatePort(all.slice(0, 99)), 22099);
+  assert.throws(() => allocatePort(all), (e: unknown) => e instanceof HomeError && e.code === 'no_port');
+});
+
 test('names and paths follow the pinned shapes', () => {
   assert.equal(volumeName('h1'), 'charter-home-h1');
   assert.equal(diskPath('/var/homes', 'h1'), '/var/homes/h1/disk.img');

@@ -15,10 +15,12 @@ export const HOME_DISK_GIB = 2;
 export const HOME_RETENTION_MS = 7 * 86_400_000;
 export const HOME_FREE_FLOOR_BYTES = 3 * 1024 ** 3;
 export const HOME_PORT_BASE = 22000;
+/** The last port a home may take: a bounded range, so a public host opens a known set. */
+export const HOME_PORT_LAST = 22099;
 
 export class HomeError extends Error {
   constructor(
-    readonly code: 'mkfs_failed' | 'no_disk' | 'volume_failed' | 'disk_exists' | 'attach_failed',
+    readonly code: 'mkfs_failed' | 'no_disk' | 'volume_failed' | 'disk_exists' | 'attach_failed' | 'no_port',
     message: string,
   ) {
     super(message);
@@ -77,6 +79,7 @@ export function allocatePort(taken: Iterable<number>): number {
   const used = new Set(taken);
   let p = HOME_PORT_BASE;
   while (used.has(p)) p++;
+  if (p > HOME_PORT_LAST) throw new HomeError('no_port', `all ports ${HOME_PORT_BASE}-${HOME_PORT_LAST} are taken`);
   return p;
 }
 
