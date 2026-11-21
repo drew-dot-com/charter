@@ -1,0 +1,26 @@
+# System unit: the homes' firewall before docker starts (charter-home-net.sh
+# --early, rules matched on the homes' subnet 172.19.0.0/24). docker starts the
+# homes itself at boot (--restart unless-stopped), before charter-home-net.service
+# can put the bridge rules in place, and iptables rules do not survive a reboot.
+# Installed by install-home.sh to /etc/systemd/system/, with the script at
+# /usr/local/bin/.
+#
+# RequiredBy=docker.service plus Before=docker.service: docker waits for this
+# unit, and does not start at all if it fails, so a home never runs without it
+# (fail closed). The cost of Requires=: stopping or restarting this unit stops or
+# restarts docker and every container. Never restart it; to reapply the rules,
+# run /usr/local/bin/charter-home-net.sh (a full run) instead.
+[Unit]
+Description=Charter homes: firewall for the homes' subnet before docker starts
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target docker.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/charter-home-net.sh --early
+
+[Install]
+RequiredBy=docker.service

@@ -90,6 +90,7 @@ sed -e "s|__USER__|$user|g" -e "s|__GROUP__|$group|g" -e "s|__HOME__|$home|g" \
   "$here/charter-anon.service" > "$tmp/charter-anon.service"
 put "$tmp/charter-anon.service" /etc/systemd/system/charter-anon.service 0644 root:root anon
 put "$here/charter-home-net.service" /etc/systemd/system/charter-home-net.service 0644 root:root
+put "$here/charter-home-fw.service" /etc/systemd/system/charter-home-fw.service 0644 root:root
 put "$here/charter-home-net.sh" /usr/local/bin/charter-home-net.sh 0755 root:root
 
 # charter-host attaches each home's disk image with `sudo -n losetup`: the one
@@ -103,6 +104,11 @@ systemctl daemon-reload
 systemctl enable --now charter-home-net.service
 # Already active from an earlier run: apply the (idempotent) script again anyway.
 /usr/local/bin/charter-home-net.sh
+# The early firewall, before docker at every boot (docker Requires it once
+# enabled). Started, never restarted: a restart of it restarts docker. Starting it
+# now changes nothing, as the full run above already put its rules in place.
+systemctl enable charter-home-fw.service
+systemctl start charter-home-fw.service
 was_active=0
 systemctl is-active --quiet charter-anon.service && was_active=1
 systemctl enable --now charter-anon.service
@@ -113,8 +119,11 @@ echo
 echo "install-home: done. Check:"
 echo "  ss -ltunp | grep 172.19.0.1     # anon on tcp 9050 and 9080, udp 53"
 echo "  ss -ltnp | grep 127.0.0.1:9152  # anon's SOCKS port for the host itself"
-echo "  sudo iptables -S DOCKER-USER    # -i br-... tcp sport 2222 ESTABLISHED ctdir REPLY ACCEPT, then -i br-... -j DROP"
-echo "  sudo iptables -S INPUT | grep br-   # seven lines, in this order:"
+echo "  sudo iptables -S DOCKER-USER    # -i br-... tcp sport 2222 ESTABLISHED ctdir REPLY ACCEPT, then -i br-... -j DROP,"
+echo "    # then the same pair for -s 172.19.0.0/24"
+echo "  systemctl list-dependencies --reverse charter-home-fw.service | grep docker   # docker requires it"
+echo "  sudo iptables -S INPUT | grep -e br- -e 172.19.0.0/24   # eleven lines, in this order:"
 echo "    # two DROPs of 172.19.0.1 tcp 9050,9080 and udp 53 from anything but the bridge (! -i br-...),"
-echo "    # then from the bridge four ACCEPTs (ESTABLISHED,RELATED; tcp 9050,9080; udp 53; tcp 53), then its DROP"
+echo "    # then from the bridge four ACCEPTs (ESTABLISHED,RELATED; tcp 9050,9080; udp 53; tcp 53), then its DROP,"
+echo "    # then for -s 172.19.0.0/24 three ACCEPTs (tcp 9050,9080,53; udp 53; sport 2222 replies) and its DROP"
 echo "  sudo ip6tables -S INPUT | grep br-  # the IPv6 DROP"
