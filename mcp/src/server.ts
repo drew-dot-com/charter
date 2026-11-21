@@ -386,7 +386,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
       const rented = await rent(deps, { home: { sshKeys: keys, ...(image ? { image } : {}) } });
       return {
         ...rented,
-        next: 'Read the lease about once a minute until it shows ssh (the address is published within about a minute). Pay more time before paidThrough; a home that lapses keeps its disk 7 days and opens again with the same keys.',
+        next: 'Read the lease about once a minute until it shows ssh (access may be filled at once; poll about once a minute while it is null). Pay more time before paidThrough; a home that lapses keeps its disk 7 days and opens again with the same keys.',
       };
     },
     lease: async (leaseId) => {

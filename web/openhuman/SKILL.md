@@ -60,5 +60,5 @@ Base). Paid, it answers `leaseId`. Read `GET /v1/leases/<leaseId>` once a minute
   pip, npm and Node's `fetch` already use it. It is slow, and some services refuse it.
 - Hold much. 1 GiB of memory: this agent plus the rent payer fit, a local model or a second agent does
   not. Keep `OPENHUMAN_SKILL_REGISTRY_REFRESH_ON_BOOT=0` set, or the skill catalog alone takes 590 MB.
-- Be reached from the open internet. The only way in is SSH at an onion address on the Anyone network.
+- Be reached from the open internet. The way in is plain SSH at the lease's `access.ssh` (`ssh -p <port> tenant@<host>`); a host may also publish an optional `access.onion`.
 - Keep a secret from the host's operator, who can read the disk.
