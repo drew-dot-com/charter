@@ -48,15 +48,22 @@ if [ $? -ne 0 ]; then echo "skip: $LEDGER does not parse"; exit 0; fi
 learn() { # learn <leaseId> -> writes the cache file, or nothing when the GET failed (tried again next run)
   local id="$1" body line
   body=$(curl -fsS -m 20 "$DOOR/v1/leases/$id" 2>/dev/null) || return 1
+  # "retry" (nothing cached, asked again next run): a null lease, no homeId and no job, or a home with no
+  # host yet (a lease can open before its host has booted). Onion is cached only for a *.anyone host.
   line=$(printf '%s' "$body" | jq -r '
     .lease as $l
-    | (($l.homeId // "") != "" or (($l.job.image // "") | test("charter-home|charter-hermes"))) as $home
-    | if ($home | not) then "nothome"
-      else ($l.homeId // $l.id // "") as $h
-        | ($l.access.ssh.host // "") as $host
-        | if $host == "" or ($host | endswith(".anyone")) then "onion \($h)"
-          else "home \($h) \($host) \($l.access.ssh.port // 22)" end
+    | if $l == null or (($l.homeId // "") == "" and $l.job == null) then "retry"
+      else
+        (($l.homeId // "") != "" or (($l.job.image // "") | test("charter-home|charter-hermes"))) as $home
+        | if ($home | not) then "nothome"
+          else ($l.homeId // $l.id // "") as $h
+            | ($l.access.ssh.host // "") as $host
+            | if $host == "" then "retry"
+              elif ($host | endswith(".anyone")) then "onion \($h)"
+              else "home \($h) \($host) \($l.access.ssh.port // 22)" end
+          end
       end' 2>/dev/null) || return 1
+  [ "$line" = retry ] && return 1
   [ -n "$line" ] || return 1
   echo "$line" > "$STATE/home-ssh-$id.cache"
 }
