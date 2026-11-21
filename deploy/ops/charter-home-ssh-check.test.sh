@@ -16,6 +16,8 @@ cat > "$T/data/door-ledger.json" <<J
  {"leaseId":"L-stopped","createdAt":$now,"offer":$off,"offerId":"o","stopped":true,"ticksPaidToHost":5},
  {"leaseId":"L-late","createdAt":$now,"offer":$off,"offerId":"o","stopped":false,"ticksPaidToHost":5},
  {"leaseId":"L-null","createdAt":$now,"offer":$off,"offerId":"o","stopped":false,"ticksPaidToHost":5},
+ {"leaseId":"L-nojob","createdAt":$now,"offer":$off,"offerId":"o","stopped":false,"ticksPaidToHost":5},
+ {"leaseId":"L-any","createdAt":$now,"offer":$off,"offerId":"o","stopped":false,"ticksPaidToHost":5},
  {"leaseId":"L-old","createdAt":1000,"offer":$off,"offerId":"o","stopped":false,"ticksPaidToHost":5}
 ]
 J
@@ -24,6 +26,8 @@ echo "{\"lease\":{\"id\":\"L-dead\",\"homeId\":\"h-dead\",\"job\":{\"image\":\"c
 echo '{"lease":{"id":"L-job","job":{"image":"alpine"}}}' > "$T/www/v1/leases/L-job"
 echo '{"lease":{"id":"L-late","homeId":"h-late","job":{"image":"charter-home"}}}' > "$T/www/v1/leases/L-late"
 echo '{"lease":null}' > "$T/www/v1/leases/L-null"
+echo '{"lease":{"id":"L-nojob"}}' > "$T/www/v1/leases/L-nojob"
+echo '{"lease":{"id":"L-any","homeId":"h-any","job":{"image":"charter-home"},"access":{"ssh":{"host":"abcdef.anyone","port":22}}}}' > "$T/www/v1/leases/L-any"
 (cd "$T/www" && exec python3 -m http.server $WEBP --bind 127.0.0.1 >/dev/null 2>&1) &
 python3 - $OKP <<'PY' &
 import socket,sys
@@ -32,19 +36,34 @@ while True:
     c,_=s.accept(); c.sendall(b"SSH-2.0-test\r\n"); c.close()
 PY
 sleep 1
-run() { CHARTER_OPS_ENV=/nonexistent CHARTER_DOOR_DATA="$T/data" CHARTER_DOOR_URL="http://127.0.0.1:$WEBP" CHARTER_OPS_STATE="$T/state" "$here/charter-home-ssh-check.sh" "$@"; }
+run() { CHARTER_OPS_ENV=/nonexistent CHARTER_DOOR_DATA="${DATA_DIR:-$T/data}" CHARTER_DOOR_URL="http://127.0.0.1:$WEBP" CHARTER_OPS_STATE="${STATE_DIR:-$T/state}" "$here/charter-home-ssh-check.sh" "$@"; }
 fail=0; expect() { if grep -q "$1" <<<"$2"; then echo "PASS $1"; else echo "FAIL missing: $1"; echo "$2"; fail=1; fi; }
 out=$(run); echo "$out"
 expect '^ok h-ok 127.0.0.1:'"$OKP" "$out"
 expect '^miss h-dead 127.0.0.1:'"$DEADP"' (1 in a row)' "$out"
 if grep -q 'L-stopped\|L-old\|h-job' <<<"$out"; then echo "FAIL stopped/expired/non-home listed"; fail=1; else echo "PASS only live homes listed"; fi
 [ "$(cat "$T/state/home-ssh-L-job.cache")" = nothome ] && echo "PASS non-home cached" || { echo "FAIL non-home not cached"; fail=1; }
+[ -e "$T/state/home-ssh-L-nojob.cache" ] && { echo "FAIL no-homeId-no-job lease cached"; fail=1; } || echo "PASS no homeId and no job: not cached"
+expect '^skip L-nojob' "$out"
+[ "$(cat "$T/state/home-ssh-L-any.cache")" = "onion h-any" ] && echo "PASS .anyone host cached as onion" || { echo "FAIL onion cache"; fail=1; }
+expect '^skip h-any: onion-only' "$out"
 # an address-less home answer and a null lease are not cached; the home is probed once it has an address
 [ -e "$T/state/home-ssh-L-late.cache" ] && { echo "FAIL address-less home cached"; fail=1; } || echo "PASS address-less home not cached, not probed"
 [ -e "$T/state/home-ssh-L-null.cache" ] && { echo "FAIL null lease cached"; fail=1; } || echo "PASS null lease not cached"
 echo "{\"lease\":{\"id\":\"L-late\",\"homeId\":\"h-late\",\"job\":{\"image\":\"charter-home\"},\"access\":{\"ssh\":{\"host\":\"127.0.0.1\",\"port\":$OKP,\"user\":\"u\"}}}}" > "$T/www/v1/leases/L-late"
 out=$(run); expect '^ok h-late 127.0.0.1:'"$OKP" "$out"
 [ -e "$T/state/home-ssh-L-late.cache" ] && [ ! -e "$T/state/home-ssh-L-null.cache" ] && echo "PASS late address cached, null still not" || { echo "FAIL late/null cache"; fail=1; }
+# R8: an address-less home misses, 3 in a row alerts with the no-address detail, then it gains an address and recovers
+mkdir -p "$T/d2" "$T/s2"
+echo "[{\"leaseId\":\"L-na\",\"createdAt\":$now,\"offer\":$off,\"offerId\":\"o\",\"stopped\":false,\"ticksPaidToHost\":5}]" > "$T/d2/door-ledger.json"
+echo '{"lease":{"id":"L-na","homeId":"h-na","job":{"image":"charter-home"}}}' > "$T/www/v1/leases/L-na"
+for i in 1 2 3; do out=$(DATA_DIR="$T/d2" STATE_DIR="$T/s2" run --alert); done
+expect '^miss h-na no address (3 in a row)' "$out"
+[ "$(cat "$T/s2/home-ssh-h-na.state" 2>/dev/null)" = fail ] && grep -q 'no address has been published' "$T/s2/alerts.log" && echo "PASS address-less home alerts after 3 misses" || { echo "FAIL address-less alert"; fail=1; }
+[ -e "$T/s2/home-ssh-L-na.cache" ] && { echo "FAIL address-less home cached"; fail=1; }
+echo "{\"lease\":{\"id\":\"L-na\",\"homeId\":\"h-na\",\"job\":{\"image\":\"charter-home\"},\"access\":{\"ssh\":{\"host\":\"127.0.0.1\",\"port\":$OKP,\"user\":\"u\"}}}}" > "$T/www/v1/leases/L-na"
+DATA_DIR="$T/d2" STATE_DIR="$T/s2" run --alert >/dev/null
+[ "$(cat "$T/s2/home-ssh-h-na.state")" = ok ] && grep -q RECOVERED "$T/s2/alerts.log" && echo "PASS recovered once it has an address" || { echo "FAIL no recovery"; fail=1; }
 # second run must not GET again: kill the door; cached answers still work
 kill %1 2>/dev/null; sleep 0.5
 out=$(run); expect '(3 in a row)' "$out"; expect '^ok h-ok' "$out"

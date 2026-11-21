@@ -44,12 +44,15 @@ live=$(jq -r --argjson now "$now_ms" '
       | .leaseId' "$LEDGER" 2>/dev/null)
 if [ $? -ne 0 ]; then echo "skip: $LEDGER does not parse"; exit 0; fi
 
-# cache line: "home <homeId> <host> <port>" | "onion <homeId>" | "nothome"
-learn() { # learn <leaseId> -> writes the cache file, or nothing when the GET failed (tried again next run)
+# cache line: "home <homeId> <host> <port>" | "onion <homeId>" | "nothome". A retry caches nothing.
+# learn <leaseId> returns 0 and writes the cache file; 1 (nothing cached, asked again next run) when the GET
+# failed or the answer cannot be classified; 2 when the lease is a home with no address yet (nothing cached,
+# NOHOME_ID set: it counts as a miss for that home).
+learn() {
   local id="$1" body line
   body=$(curl -fsS -m 20 "$DOOR/v1/leases/$id" 2>/dev/null) || return 1
-  # "retry" (nothing cached, asked again next run): a null lease, no homeId and no job, or a home with no
-  # host yet (a lease can open before its host has booted). Onion is cached only for a *.anyone host.
+  # "retry" (nothing cached, asked again next run): a null lease, or no homeId and no job. A home with no
+  # host yet (a lease can open before its host has booted) is "noaddr": not cached either, but a miss. Onion is cached only for a *.anyone host.
   line=$(printf '%s' "$body" | jq -r '
     .lease as $l
     | if $l == null or (($l.homeId // "") == "" and $l.job == null) then "retry"
@@ -58,12 +61,13 @@ learn() { # learn <leaseId> -> writes the cache file, or nothing when the GET fa
         | if ($home | not) then "nothome"
           else ($l.homeId // $l.id // "") as $h
             | ($l.access.ssh.host // "") as $host
-            | if $host == "" then "retry"
+            | if $host == "" then "noaddr \($h)"
               elif ($host | endswith(".anyone")) then "onion \($h)"
               else "home \($h) \($host) \($l.access.ssh.port // 22)" end
           end
       end' 2>/dev/null) || return 1
   [ "$line" = retry ] && return 1
+  case "$line" in "noaddr "*) NOADDR_ID="${line#noaddr }"; return 2 ;; esac
   [ -n "$line" ] || return 1
   echo "$line" > "$STATE/home-ssh-$id.cache"
 }
@@ -75,10 +79,27 @@ probe() { # probe <host> <port>
 }
 
 declare -A seen=()
+NOADDR_ID=""
+miss() { # miss <leaseId> <homeId> <label for the line> <what is wrong, for the alert>
+  local id="$1" hid="$2" label="$3" what="$4" missf="$STATE/home-ssh-$1.miss" n
+  n=$(( $(cat "$missf" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$missf"
+  echo "miss $hid $label ($n in a row)"
+  if [ "$n" -ge "$MISSES_MAX" ] && [ "$alert" = 1 ]; then
+    "$here/charter-alert.sh" "home-ssh-$hid" fail "Charter home $hid SSH" "$what, $n checks in a row (lease $id)"
+  fi
+}
 for id in $live; do
   seen[$id]=1
   cache="$STATE/home-ssh-$id.cache"
-  [ -r "$cache" ] || learn "$id" || { echo "skip $id: could not read the lease from the door"; continue; }
+  if [ ! -r "$cache" ]; then
+    learn "$id"; rc=$?
+    if [ "$rc" = 2 ]; then
+      seen_hid="$NOADDR_ID"; echo "$seen_hid" > "$STATE/home-ssh-$id.hid"
+      miss "$id" "$seen_hid" "no address" "no address has been published for this home yet"; continue
+    elif [ "$rc" != 0 ]; then
+      echo "skip $id: could not read or classify the lease from the door"; continue
+    fi
+  fi
   read -r kind hid host port < "$cache"
   case "$kind" in
     nothome) continue ;;
@@ -86,27 +107,24 @@ for id in $live; do
     home) ;;
     *) continue ;;
   esac
-  key="home-ssh-$hid"; title="Charter home $hid SSH"; missf="$STATE/home-ssh-$id.miss"
+  key="home-ssh-$hid"; title="Charter home $hid SSH"
   if probe "$host" "$port"; then
     echo "ok $hid $host:$port"
-    rm -f "$missf"
+    rm -f "$STATE/home-ssh-$id.miss"
     [ "$alert" = 1 ] && "$here/charter-alert.sh" "$key" ok "$title" "answers SSH at $host:$port"
   else
-    n=$(( $(cat "$missf" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$missf"
-    echo "miss $hid $host:$port ($n in a row)"
-    if [ "$n" -ge "$MISSES_MAX" ] && [ "$alert" = 1 ]; then
-      "$here/charter-alert.sh" "$key" fail "$title" "no SSH banner from $host:$port, $n checks in a row (lease $id)"
-    fi
+    miss "$id" "$hid" "$host:$port" "no SSH banner from $host:$port"
   fi
 done
 
-# Drop state of leases no longer live (no recovered alert).
-for c in "$STATE"/home-ssh-*.cache; do
+# Drop state of leases no longer live (no recovered alert). A lease leaves .cache, or .hid when it was
+# a home with no address yet.
+for c in "$STATE"/home-ssh-*.cache "$STATE"/home-ssh-*.hid; do
   [ -e "$c" ] || continue
-  id="${c##*/home-ssh-}"; id="${id%.cache}"
+  id="${c##*/home-ssh-}"; id="${id%.*}"
   [ -n "${seen[$id]:-}" ] && continue
-  read -r kind hid _ < "$c"
+  case "$c" in *.hid) read -r hid < "$c" ;; *) read -r _ hid _ < "$c" ;; esac
   [ -n "${hid:-}" ] && rm -f "$STATE/home-ssh-$hid.state" "$STATE/home-ssh-$hid.state.since" "$STATE/home-ssh-$hid.state.alerted"
-  rm -f "$c" "$STATE/home-ssh-$id.miss"
+  rm -f "$STATE/home-ssh-$id.cache" "$STATE/home-ssh-$id.hid" "$STATE/home-ssh-$id.miss"
 done
 exit 0
