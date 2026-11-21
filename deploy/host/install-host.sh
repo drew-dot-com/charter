@@ -151,6 +151,9 @@ elif [ "$(cat /usr/sbin/policy-rc.d)" = "$POLICY_RC" ]; then
   own_policy=1
   say "found /usr/sbin/policy-rc.d from an earlier run; it is removed at exit"
 fi
+# The anon package refuses to install until its debconf question anon/terms is true
+# (https://www.anyone.io/terms). Drew accepted the terms for Charter's hosts on 2026-11-21.
+echo "anon anon/terms boolean true" | debconf-set-selections
 apt-get install -y -q --allow-change-held-packages "anon=$ANON_VERSION" "anon-geoipdb=$ANON_VERSION" \
   || die "anon install failed"
 if [ "$own_policy" = 1 ]; then rm -f /usr/sbin/policy-rc.d; own_policy=0; fi
