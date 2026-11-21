@@ -5,15 +5,15 @@
 Compute leases on the TOON payment network. A host posts an offer for a machine, a renter pays per
 interval, and a container runs the renter's job for as long as the payments keep arriving. There is
 no account on either side, and the host can be a home machine with no domain and no open port (a
-hidden host, reached over Anyone).
+hidden host, reached over Anyone). A home is reached with plain SSH at the host's public address.
 
 **Status: v1, first-party.** Every lease so far has Drew Pierson on both sides: he runs the one host,
 the door and the edge node, and both renters. There are no outside users yet. Four job images:
 `charter-job-python` runs the renter's own Python script (up to 8 KiB, NumPy included) with no
 network at all and returns its stdout, stderr and exit code; `charter-job-fetch` fetches up to five
 pages in a headless browser and returns a screenshot and the text of each; `charter-home` is a box
-the renter lives in: a 2 GiB disk kept between leases, SSH in at an onion address on the Anyone
-network, and network out only through the Anyone network, with `charter-x402` in it to pay the rent
+the renter lives in: a 2 GiB disk kept between leases, plain SSH in at the host's public
+address (`ssh -p <port> tenant@<host>`), and network out only through the Anyone network, with `charter-x402` in it to pay the rent
 from a Base wallet by plain x402 (`jobs/home/x402-rent.mjs`); `charter-hermes` is the same home with
 Hermes Agent and the `charter` CLI preinstalled and a default boot that runs them (the boot pays
 the box's own rent). Why the python job is safe enough for a
@@ -69,32 +69,34 @@ charter rent --offer <pubkey>:<id> --home keys.pub --max-intervals 2 --relay wss
 ```
 
 Over HTTP the body is `{ "offerId": "...", "home": { "sshKeys": ["ssh-ed25519 AAAA... comment"] } }`.
-Once the onion address is published (within about a minute of the first tick) the lease status
-carries `access: { "ssh": { "host": "<56 chars>.anyone", "port": 22, "user": "tenant" } }` and the
-CLI prints the line to log in with:
+The lease status carries `access: { "ssh": { "host": "<IPv4 or hostname>", "port": <22000..22099>, "user": "tenant" } }`
+(it can be filled at once; `null` until then, so poll about once a minute) and the CLI prints the
+line to log in with, plain SSH, no Anyone client needed:
 
 ```sh
-ssh -o ProxyCommand="nc -x 127.0.0.1:<your Anyone SOCKS port> %h %p" tenant@<host>
+ssh -p <port> tenant@<host>
 ```
 
-A toon node has such a port; with no Anyone client there is no way in. The box is Debian with
+The host and port come from `access.ssh`. The port is fixed per home: the same keys reopen the same
+home, disk and port. A host may also publish `access.onion` (same shape, `<56 chars>.anyone`, port
+22) as a second way in; that one needs an Anyone client. The box is Debian with
 Python 3, `uv`, Node 22 and git, as user `tenant` with no root, 1 CPU and 1 GiB. Everything it
 sends leaves through the host's Anyone client (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` are set; a
 raw socket to the internet fails). `~/.charter/boot.sh` runs at every start, and
 `/charter/paid-through` holds when the paid time runs out.
 
-The key set is the home's identity: the same keys open the same 2 GiB disk and the same onion
-address, and there is no key rotation. A home that paid a tick is kept 7 days, free, after its
+The key set is the home's identity: the same keys open the same 2 GiB disk and the same port,
+and there is no key rotation. A home that paid a tick is kept 7 days, free, after its
 lease closes; one that never paid is removed at close. Anyone with your public keys can open your
 home and hold it, though not enter it. The operator can read your disk: secrets go in over SSH,
-never through Charter. The live host has two home slots, and grants from the fund may hold them. What the host promises about uptime:
+never through Charter. Homes are limited (`home.slots` in the offer), an open answers `busy` when they are full, and grants from the fund may hold them. What the host promises about uptime:
 
 - No uptime figure. Expect restarts. Your disk survives them; your processes do not, so put what
   must run in `~/.charter/boot.sh`.
 - A tick pays an hour from the end of the paid time. Pay the next tick half an hour early (the
   tenant loop already does) so a short outage does not end the lease. Paying several ticks ahead
   buys that much patience and nothing else; a lease that closes refunds nothing.
-- A closed home keeps its disk and onion address for 7 days. Open again with the same keys.
+- A closed home keeps its disk and port for 7 days. Open again with the same keys.
 - A restart of the host program leaves a running home alone. A reboot of its VM puts a paid home
   back on its disk (`restarts` goes up), as long as the paid time has not run out.
 

@@ -243,7 +243,7 @@ Done 2026-11-04, 30 s at 5000 to one hour at 7000, no live lease, in this order:
 ## Homes
 
 A home is a lease on `charter-home`: the renter's own box, with a 2 GiB disk kept between leases and
-SSH in at an onion address. toon2 carries one (`CHARTER_MAX_HOMES=1`, counted inside
+plain SSH in at the host's public address (`access.ssh`; an onion is optional). toon2 carries one (`CHARTER_MAX_HOMES=1`, counted inside
 `CHARTER_MAX_LEASES=2`), so a home and one job can run at once. Design:
 `docs/superpowers/specs/2026-11-04-home-image-design.md`; variables: `docs/env.md`.
 

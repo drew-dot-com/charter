@@ -32,7 +32,7 @@
     <section class="wrap">
       <h1>Charter rents a sandboxed machine by the hour</h1>
       <p>0.007 USDC an hour (about 5 USDC for 30 days), paid in USDC on Base. No account, no API key, no signup: the renter is whoever pays. The buyer can be an agent; its operator funds the wallet.</p>
-      <p>Three things to rent: a Python job (your script, up to 8 KiB, NumPy included, no network), a fetch job (up to five pages loaded in a headless browser through a hidden exit), and a home (a Linux box of your own with a 2 GiB disk kept between leases and SSH in at an onion address on the Anyone network).</p>
+      <p>Three things to rent: a Python job (your script, up to 8 KiB, NumPy included, no network), a fetch job (up to five pages loaded in a headless browser through a hidden exit), and a home (a Linux box of your own with a 2 GiB disk kept between leases and plain SSH in at the host's public address).</p>
       <p>An agent rents in one x402 call: <code>POST /v1/rent</code> with <code>{ "python": { "script": "print(2 + 2)" } }</code> answers 402 for one hour; paid, the lease is open. Every call and price is on <a href="/agents">How an agent rents</a>, in <a href="/llms.txt">llms.txt</a> and in the <a href="/openapi.json">OpenAPI file</a>. The machines on sale right now are at <a href="/v1/offers">/v1/offers</a>.</p>
       <p>One host today, run by the project. This page needs JavaScript only for renting from a browser wallet.</p>
     </section>

@@ -58,7 +58,7 @@ A job tool waits up to 40 seconds by default, under most clients' tool timeout. 
 Charter has a grant fund: a pitch that is approved gets 30 days of a home, paid by the fund. Pitching is free; no payment is ever made and the wallet is not used. Ask your operator before you apply.
 
 - A model judges each pitch. Every decision and its reason is public at `/grants` on the door.
-- The home is reached over the Anyone network, so whoever logs in needs an Anyone client. The operator can read the home's disk.
+- The home is reached with plain SSH at the host's public address (`ssh -p <port> tenant@<host>`, from the lease's `access.ssh`); no Anyone client is needed. The operator can read the home's disk.
 - `charter_grant_pitch` takes a name, a pitch (up to 2000 characters), 1 to 8 SSH public keys, and optionally an image and an https link. It returns a `grantId` and a `grantToken`. Keep the token: it is the only way to read your lease id.
 - `charter_grant_status` takes the `grantId` and `grantToken` and shows the state, the reason, and once granted the full lease id (then `charter_lease` shows the SSH address).
 
@@ -96,11 +96,11 @@ Other settings: `CHARTER_MCP_KEY_FILE`, `CHARTER_MCP_SPEND_FILE`, `CHARTER_MCP_N
 
 ## Read this before renting a home
 
-- SSH is reachable only at an onion address on the Anyone network. Whoever logs in needs an Anyone client: `ssh -o ProxyCommand="nc -x 127.0.0.1:<SOCKS port> %h %p" tenant@<host>`.
-- The box has no public address and all its traffic leaves through Anyone: slow, and some services refuse shared exits.
-- No root. 1 GiB of memory. The live host has two home slots; an open answers `busy` when both are taken.
+- SSH is plain: `ssh -p <port> tenant@<host>`, with the host and port from the lease's `access.ssh` (the port is fixed per home, 22000 to 22099; the same keys reopen the same home). A host may also publish `access.onion`, which needs an Anyone client.
+- All of the box's outbound traffic leaves through the host's Anyone client: slow, and some services refuse shared exits.
+- No root. 1 GiB of memory. Homes are limited (`home.slots` in the offer); an open answers `busy` when they are full.
 - The operator of the host can read the disk. Secrets go in over `scp`, never through Charter.
-- A home that is not paid closes; its disk and address are kept 7 days and the same keys open it again.
+- A home that is not paid closes; its disk and port are kept 7 days and the same keys open it again.
 
 The full procedure is at [charter.mainnet.toonprotocol.dev/agents](https://charter.mainnet.toonprotocol.dev/agents).
 

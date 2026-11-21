@@ -1,6 +1,6 @@
 ---
 name: renting-charter-compute
-description: "Rent compute on Charter from an agent node with toon_cli's `toon` binary: read the kind 31390 offers on a relay, open a lease on a host, pay it one interval at a time, read its state and collect the job's output. Covers the fetch job (page texts and screenshots through a hidden exit), the python job (your script, no network) and the home (a box with a kept 2 GiB disk, SSH in over an Anyone onion address, renewed from inside with the charter CLI; or the same home with Hermes Agent preinstalled). Use when asked to run a script or fetch pages on a Charter machine, to rent a home or a box to live in, to rent compute over TOON, or to read what Charter offers. Every step after the offer read is paid. Run toon --version first."
+description: "Rent compute on Charter from an agent node with toon_cli's `toon` binary: read the kind 31390 offers on a relay, open a lease on a host, pay it one interval at a time, read its state and collect the job's output. Covers the fetch job (page texts and screenshots through a hidden exit), the python job (your script, no network) and the home (a box with a kept 2 GiB disk, plain SSH in at the host's public address, renewed from inside with the charter CLI; or the same home with Hermes Agent preinstalled). Use when asked to run a script or fetch pages on a Charter machine, to rent a home or a box to live in, to rent compute over TOON, or to read what Charter offers. Every step after the offer read is paid. Run toon --version first."
 toon_cli: ">=0.3, <0.4"
 ---
 
@@ -94,7 +94,7 @@ The event's `content` is a JSON object:
 | `cpu`, `memoryMiB` | The container's size. |
 | `images` | The jobs the host runs. Open only a job whose image is listed. |
 | `hiddenHost`, `hiddenEgress` | Whether the host is reachable only over Anyone, and whether the fetch job's traffic leaves through an Anyone exit. |
-| `home` | On a host that runs homes: `{"diskGiB": 2, "retentionDays": 7, "slots": 1}` on the first host. |
+| `home` | On a host that runs homes: `{"diskGiB": 2, "retentionDays": 7, "slots": <n>}`; `slots` is how many homes the host runs. |
 
 Save the one you will rent as a file (`offer.json`, the parsed `content`): the commands below
 read `ilpBase`, `sealUrl` and the prices from it.
@@ -177,7 +177,7 @@ The report's `response.body` is a string holding JSON. Parse it:
 - `{"leaseId": …, "state": "awaiting_first_tick"}`: the container is created, not started. Pay
   tick `0` within `firstTickGraceSeconds` (90 s on the first host) or the host closes it.
 - `{"leaseId": …, "state": "closed", "closedReason": "busy"}`: the host is running another
-  lease, or its home slot is taken. Wait and try later; do not retry in a loop.
+  lease, or its homes are full. Wait and try later; do not retry in a loop.
 - `{"leaseId": …, "state": "closed", "closedReason": "home_in_use"}`: a live lease already holds
   the home your keys name (step 8).
 - `{"leaseId": …, "state": "closed", "closedReason": "boot_failed", "error": …}`: the job was
@@ -256,9 +256,9 @@ past the end or a lease with no output yet.
 ## 8. A home
 
 A home is a lease on `charter-home`: a box with a disk that outlives the lease, reached over SSH.
-It runs while it is paid, at the same `tickPrice`, and never finishes by itself. The first host
-has two home slots (`home.slots`), one of them Edison's; while both are taken an open answers
-`busy`.
+It runs while it is paid, at the same `tickPrice`, and never finishes by itself. Homes are
+limited (`home.slots` in the offer says how many); grants from the fund may hold them, and while
+they are full an open answers `busy`.
 
 ### Rent it with the charter CLI
 
@@ -298,19 +298,20 @@ A running home's lease has:
 ```
 "homeId": "<16 hex>",
 "restarts": 0,
-"access": {"ssh": {"host": "<56 characters>.anyone", "port": 22, "user": "tenant"}}
+"access": {"ssh": {"host": "<IPv4 or hostname>", "port": <22000..22099>, "user": "tenant"}}
 ```
 
-`access` is `null` until the host has published the home's onion address, within
-about a minute of the first tick: read the lease about once a minute until it is set (each read
-is one `statusPrice`). `restarts` counts the times the host re-created the box. Then:
+`access` may be filled at once; while it is `null`, read the lease about once a minute until it
+is set (each read is one `statusPrice`). The host and port are the lease's own: do not guess them. `restarts` counts the times the host re-created the box. Then:
 
 ```
-ssh -o ProxyCommand="nc -x 127.0.0.1:<your Anyone SOCKS port> %h %p" tenant@<host>
+ssh -p <port> tenant@<host>
 ```
 
-Your toon node has an Anyone SOCKS port: that is the one to use. No Anyone client, no way in:
-there is no clearnet address. The keys you opened with are the only logins. The box's host key
+`host` and `port` come from `access.ssh`. This is plain SSH: no Anyone client and no proxy. The
+port is fixed per home: the same keys reopen the same home, disk and port. A host may also publish
+`access.onion` (same shape, `<56 characters>.anyone`, port 22) as a second way in; only that one
+needs an Anyone client. The keys you opened with are the only logins. The box's host key
 is made once on your disk, so its fingerprint stays the same across restarts and leases; pin it
 the first time.
 
@@ -331,7 +332,7 @@ the first time.
   are `http://172.19.0.1:9080`, `ALL_PROXY` is `socks5h://172.19.0.1:9050`, names resolve over
   Anyone, and `NODE_USE_ENV_PROXY=1` is set for Node; all of it in every SSH session and in
   `boot.sh`. A program that opens a raw socket to the internet fails. The box reaches nothing on
-  the host or its LAN. It is slow, hidden, and sometimes refused by a service that dislikes
+  the host or its LAN. It is slow, and sometimes refused by a service that dislikes
   shared exits.
 
 ### The disk and the keys
@@ -339,7 +340,7 @@ the first time.
 - 2 GiB, ext4. Kept 7 days, free, after a lease that paid at least one tick closes; removed at
   once when a lease that never paid a tick closes.
 - The key set is the home's identity: `homeId` is a hash of the sorted keys. The same keys open
-  the same home, on the same disk and the same onion address. There is no key rotation: a
+  the same home, on the same disk and the same port. There is no key rotation: a
   different set is a different home, and a lost private key is a lost home once the retention
   runs out. Two homes need two key pairs.
 - Anyone with your public keys can open your home and hold it, though not enter it: while their
@@ -350,7 +351,7 @@ the first time.
 - Secrets go in over SSH, never through Charter; the open carries public keys only:
 
   ```
-  scp -o ProxyCommand="nc -x 127.0.0.1:<your Anyone SOCKS port> %h %p" .env tenant@<host>:
+  scp -P <port> .env tenant@<host>:
   ```
 
 ### What the host promises about uptime
@@ -360,7 +361,7 @@ the first time.
 - A tick pays an hour from the end of the paid time. Pay the next tick half an hour early (the
   tenant loop already does) so a short outage does not end the lease. Paying several ticks ahead
   buys that much patience and nothing else; a lease that closes refunds nothing.
-- A closed home keeps its disk and onion address for 7 days. Open again with the same keys.
+- A closed home keeps its disk and port for 7 days. Open again with the same keys.
 - A restart of the host program leaves a running home alone. A reboot of its VM puts a paid home
   back on its disk (`restarts` goes up), as long as the paid time has not run out.
 
@@ -448,8 +449,8 @@ Limits: 1 GiB of memory (measured: gateway 348 MB, payer 153 MB, renew 140 MB), 
 nothing heavy. The image sets `HERMES_DISABLE_LAZY_INSTALLS=1` and `config.yaml` cannot undo it,
 so Hermes's tool bundles are never downloaded: no WhatsApp bridge, browser tool, voice or TUI.
 Traffic leaves through shared Anyone exits that Telegram and the provider may rate-limit. The
-image is 1.94 GB on the host, 842 MB of it the shared `charter-home` base. One of the live host's
-two home slots is Edison's while Edison lives there.
+image is 1.94 GB on the host, 842 MB of it the shared `charter-home` base. Homes are limited
+(`home.slots` in the offer), and one may be Edison's while Edison lives there.
 
 ### What to tell your operator
 

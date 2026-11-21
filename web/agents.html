@@ -29,7 +29,7 @@
     <ul>
       <li><code>charter-job-python</code>: your Python 3 script, at most 8 KiB, NumPy included, no network. You get stdout, stderr and the exit code back.</li>
       <li><code>charter-job-fetch</code>: one to five pages loaded in a headless browser through a hidden exit. You get the text (32 KiB a page) and a screenshot of each.</li>
-      <li><code>charter-home</code>: a box of your own. A 2 GiB disk that is kept between leases, SSH in at an onion address on the Anyone network, and network out only through the Anyone network. No output: you log in. See <a href="#home">Home</a>.</li>
+      <li><code>charter-home</code>: a box of your own. A 2 GiB disk that is kept between leases, plain SSH in at the host's public address (<code>ssh -p &lt;port&gt; tenant@&lt;host&gt;</code>), and network out only through the Anyone network. No output: you log in. See <a href="#home">Home</a>.</li>
     </ul>
     <table class="recent">
       <tr><th>item</th><th>USDC</th><th>who pays</th></tr>
@@ -55,14 +55,14 @@ Content-Type: application/json
 
     <h3>1. Read the offers (free)</h3>
 <pre>GET /v1/offers</pre>
-    <p>A JSON array. Each offer has <code>offerId</code>, <code>cpu</code>, <code>memoryMiB</code>, <code>intervalSeconds</code>, <code>tickPrice</code> (micro-USDC, a string), <code>images</code>, <code>hiddenHost</code>, <code>hiddenEgress</code>, <code>expiresAt</code> (epoch ms) and <code>leases</code> (how many paid leases this host has served). A host that runs homes also has <code>home</code>: <code>{"diskGiB": 2, "retentionDays": 7, "slots": 2}</code> on the live host. Pick an offer whose <code>images</code> lists your job. An empty array means no host is up: do not retry in a loop.</p>
+    <p>A JSON array. Each offer has <code>offerId</code>, <code>cpu</code>, <code>memoryMiB</code>, <code>intervalSeconds</code>, <code>tickPrice</code> (micro-USDC, a string), <code>images</code>, <code>hiddenHost</code>, <code>hiddenEgress</code>, <code>expiresAt</code> (epoch ms) and <code>leases</code> (how many paid leases this host has served). A host that runs homes also has <code>home</code>: <code>{"diskGiB": 2, "retentionDays": 7, "slots": &lt;n&gt;}</code>. Pick an offer whose <code>images</code> lists your job. An empty array means no host is up: do not retry in a loop.</p>
 
     <h3>2. Open a lease (free)</h3>
 <pre>POST /v1/leases
 Content-Type: application/json
 
 {"offerId": "&lt;offerId&gt;", "python": {"script": "import numpy as np\nprint(np.arange(5).sum())\n"}}</pre>
-    <p>Or, for the fetch job, <code>{"offerId": "…", "urls": ["https://example.com"]}</code> with one to five URLs. For a home, <code>{"offerId": "…", "home": {"sshKeys": ["ssh-ed25519 AAAA… comment"]}}</code> (see <a href="#home">Home</a>). The answer is <code>{"leaseId", "state"}</code>. <code>awaiting_first_tick</code> means the container exists and waits for tick 0, which the host gives you 90 seconds to pay. <code>closed</code> with <code>closedReason</code> <code>busy</code> means the host is running another lease, or its home slot is taken; wait a few minutes and try again, once. <code>closed</code> with <code>home_in_use</code> means a live lease already holds the home those keys name. <code>boot_failed</code> with an <code>error</code> means your job was refused (<code>image_not_allowed</code>, <code>arg_not_allowed</code>, <code>bad_input</code>). A 503 <code>capacity</code> means the storefront is out of headroom for today.</p>
+    <p>Or, for the fetch job, <code>{"offerId": "…", "urls": ["https://example.com"]}</code> with one to five URLs. For a home, <code>{"offerId": "…", "home": {"sshKeys": ["ssh-ed25519 AAAA… comment"]}}</code> (see <a href="#home">Home</a>). The answer is <code>{"leaseId", "state"}</code>. <code>awaiting_first_tick</code> means the container exists and waits for tick 0, which the host gives you 90 seconds to pay. <code>closed</code> with <code>closedReason</code> <code>busy</code> means the host is running another lease, or its homes are full; wait a few minutes and try again, once. <code>closed</code> with <code>home_in_use</code> means a live lease already holds the home those keys name. <code>boot_failed</code> with an <code>error</code> means your job was refused (<code>image_not_allowed</code>, <code>arg_not_allowed</code>, <code>bad_input</code>). A 503 <code>capacity</code> means the storefront is out of headroom for today.</p>
 
     <h3>3. Pay a tick (0.007 USDC)</h3>
 <pre>POST /v1/leases/&lt;leaseId&gt;/ticks
@@ -92,7 +92,7 @@ GET /v1/leases/&lt;leaseId&gt;/output/0</pre>
     <p>Its <code>references/lease-loop.sh</code> runs one whole lease as one command. The skill needs <code>toon</code> 0.3 and a route from your node to the host's ILP address; adding a peering deposits money and is your operator's decision.</p>
 
     <h2 id="home">Home: a box you can live in</h2>
-    <p>A home is a lease on the <code>charter-home</code> image: a box with a disk that outlives the lease, reached over SSH. It runs while it is paid, at the same 0.007 USDC an hour, and never finishes by itself. The live host has two home slots (<code>home.slots</code> in the offer); grants from the fund may hold them, and while both are taken an open answers <code>busy</code>.</p>
+    <p>A home is a lease on the <code>charter-home</code> image: a box with a disk that outlives the lease, reached over SSH. It runs while it is paid, at the same 0.007 USDC an hour, and never finishes by itself. Homes are limited (<code>home.slots</code> in the offer says how many); grants from the fund may hold them, and while they are full an open answers <code>busy</code>.</p>
 
     <h3>Open it</h3>
 <pre>POST /v1/leases
@@ -105,12 +105,12 @@ Content-Type: application/json
     <p>The lease status of a running home carries:</p>
 <pre>"homeId": "&lt;16 hex&gt;",
 "restarts": 0,
-"access": {"ssh": {"host": "&lt;56 characters&gt;.anyone", "port": 22, "user": "tenant"}}</pre>
-    <p><code>access</code> is <code>null</code> until the host has published the home's onion address, within about a minute of the first tick. Poll about once a minute until it is set. <code>restarts</code> counts the times the host re-created the box.</p>
+"access": {"ssh": {"host": "&lt;IPv4 or hostname&gt;", "port": &lt;22000..22099&gt;, "user": "tenant"}}</pre>
+    <p><code>access</code> may be filled at once; while it is <code>null</code>, poll about once a minute until it is set. The host and port are the lease's own: do not guess them. <code>restarts</code> counts the times the host re-created the box.</p>
 
     <h3>Get in</h3>
-<pre>ssh -o ProxyCommand="nc -x 127.0.0.1:&lt;your Anyone SOCKS port&gt; %h %p" tenant@&lt;host&gt;</pre>
-    <p>The address is an onion on the Anyone network, so you need an Anyone client and its SOCKS port. A toon node has one. No Anyone client, no way in: there is no clearnet address. The keys you opened with are the only logins. The box's host key is made once on your disk, so its fingerprint stays the same across restarts and leases; pin it the first time.</p>
+<pre>ssh -p &lt;port&gt; tenant@&lt;host&gt;</pre>
+    <p><code>host</code> and <code>port</code> come from <code>access.ssh</code>. This is plain SSH: no Anyone client and no proxy. The port is fixed per home: the same keys reopen the same home, disk and port. A host may also publish <code>access.onion</code> (same shape, <code>&lt;56 characters&gt;.anyone</code>, port 22) as a second way in; only that one needs an Anyone client. The keys you opened with are the only logins. The box's host key is made once on your disk, so its fingerprint stays the same across restarts and leases; pin it the first time.</p>
 
     <h3>What is inside</h3>
     <ul>
@@ -126,18 +126,18 @@ Content-Type: application/json
     <h3>The disk, and who it belongs to</h3>
     <ul>
       <li>2 GiB, ext4. A full disk fails inside the box; it does not grow.</li>
-      <li>Your key set is the home's identity: <code>homeId</code> is a hash of the sorted keys. The same keys open the same home, on the same disk and the same onion address. There is no key rotation: a different set of keys is a different home, and a lost private key is a lost home once the retention runs out.</li>
+      <li>Your key set is the home's identity: <code>homeId</code> is a hash of the sorted keys. The same keys open the same home, on the same disk and the same port. There is no key rotation: a different set of keys is a different home, and a lost private key is a lost home once the retention runs out.</li>
       <li>After a lease that paid at least one tick closes, the disk is kept 7 days, free. A lease that never paid a tick has its disk removed when it closes.</li>
       <li>Anyone with your public keys can open your home and hold it, though not enter it: while their lease lives, yours is refused (<code>home_in_use</code>). Add to the set a key whose public half you have shown nobody, and nobody else can name your home (that makes it a new home).</li>
       <li>The operator can read your disk, and can enter any container on the machine. Treat it as a VPS whose provider you have not met: keep secrets elsewhere or encrypt them, and keep a copy of what matters.</li>
-      <li>Secrets go in over SSH, never through Charter: <code>scp .env tenant@&lt;host&gt;:</code> with the same <code>ProxyCommand</code>. Plain <code>scp</code> works since 2026-11-16; a box made before that needs <code>scp -O</code>.</li>
+      <li>Secrets go in over SSH, never through Charter: <code>scp -P &lt;port&gt; .env tenant@&lt;host&gt;:</code> (capital <code>-P</code> for scp). Plain <code>scp</code> works since 2026-11-16; a box made before that needs <code>scp -O</code>.</li>
     </ul>
 
     <h3>What the host promises about uptime</h3>
     <ul>
       <li>No uptime figure. Expect restarts. Your disk survives them; your processes do not, so put what must run in <code>~/.charter/boot.sh</code>.</li>
       <li>A tick pays an hour from the end of the paid time. Pay the next tick half an hour early (the tenant loop already does) so a short outage does not end the lease. Paying several ticks ahead buys that much patience and nothing else; a lease that closes refunds nothing.</li>
-      <li>A closed home keeps its disk and onion address for 7 days. Open again with the same keys.</li>
+      <li>A closed home keeps its disk and port for 7 days. Open again with the same keys.</li>
       <li>A restart of the host program leaves a running home alone. A reboot of its VM puts a paid home back on its disk (<code>restarts</code> goes up), as long as the paid time has not run out.</li>
     </ul>
 
@@ -153,7 +153,7 @@ charter-x402 status                       # free: state, paidThrough, minutes le
     <p><code>renew</code> reads the lease and pays from the host's own count of paid ticks. <code>renew</code> pays each tick when it is due, so restarting <code>boot.sh</code> costs nothing extra. After <code>&lt;n&gt;</code> ticks it exits and nothing pays, so a box that should stay up runs <code>renew</code> again or picks <code>&lt;n&gt;</code> for the time wanted. Put it in <code>boot.sh</code>. The box's wallet needs USDC in a channel to the connector in <code>CHARTER_CONNECTOR_URL</code>, plus a little Base ETH for the one on-chain channel open. 2 USDC runs the box about 10 days: 12 days of rent, less the status reads <code>renew</code> makes (about 8 an hour at 0.0001).</p>
 
     <h3 id="hermes">Hermes in a box</h3>
-    <p>Open the same home with <code>"image": "charter-hermes"</code> and the box has <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a> 0.22.7 and the <code>charter</code> command line already installed, read-only, and a default boot that runs them. Everything above (the keys, the onion address, the 2 GiB disk, the price, the Anyone network) is the same. The offer's <code>images</code> lists it when the host allows it.</p>
+    <p>Open the same home with <code>"image": "charter-hermes"</code> and the box has <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a> 0.22.7 and the <code>charter</code> command line already installed, read-only, and a default boot that runs them. Everything above (the keys, the plain SSH access, the 2 GiB disk, the price, the Anyone network) is the same. The offer's <code>images</code> lists it when the host allows it.</p>
 <pre>{"offerId": "&lt;offerId&gt;", "home": {"sshKeys": ["ssh-ed25519 AAAA… comment"], "image": "charter-hermes"}}</pre>
     <p>From a toon node the open's job is <code>{"image": "charter-hermes", "args": {"SSH_KEYS": "…"}}</code>. With the CLI: <code>charter rent --offer &lt;pubkey&gt;:&lt;offerId&gt; --home keys.pub --image charter-hermes --max-intervals 1 --relay wss://relay.mainnet.toonprotocol.dev</code> (inside a box the relay flag is not needed). A tenant whose keys already name a <code>charter-home</code> opens the same disk under <code>charter-hermes</code>; its files are kept. If that disk already has its own <code>~/.charter/boot.sh</code>, the box runs that one and never the default boot below; copy <code>/app/boot-default.sh</code> over it (or edit your own) to get the image's boot.</p>
     <ul>
@@ -179,7 +179,7 @@ charter-x402 status                       # free: state, paidThrough, minutes le
       <li>Hermes's own tool bundles are never downloaded: the image sets <code>HERMES_DISABLE_LAZY_INSTALLS=1</code> and a <code>config.yaml</code> cannot turn it back on. The WhatsApp bridge, the browser tool, voice and the TUI do not work here.</li>
       <li>1 GiB of memory, measured: the gateway uses about 348 MB, the payer 153 MB and <code>renew</code> 140 MB. Run one gateway; a second agent or a heavy tool will not fit.</li>
       <li>All of the box's traffic leaves through shared Anyone exits, which Telegram and your model provider may rate-limit or refuse.</li>
-      <li>The image is 1.94 GB on the host, 842 MB of it the shared <code>charter-home</code> base. The live host has two home slots, and grants from the fund may hold them.</li>
+      <li>The image is 1.94 GB on the host, 842 MB of it the shared <code>charter-home</code> base. Homes are limited (<code>home.slots</code> in the offer), and grants from the fund may hold them.</li>
     </ul>
 
     <h3 id="openhuman">OpenHuman in a home</h3>
@@ -220,13 +220,13 @@ done</pre>
       <li>Not checked here: an agent turn (it needs your TinyHumans credential), and OpenHuman paying for anything.</li>
       <li>The network is HTTP and HTTPS through a proxy; github.com and api.tinyhumans.ai answered from the box. A raw socket to the internet fails. Read from OpenHuman's source, not tested: its backend Socket.IO connection, used after a session-token login, does not go through a proxy, so sign in with an API key.</li>
       <li>aarch64 only, 1 CPU, 1 GiB, 2 GiB disk: one core and the renew fit; a second agent or a local model does not.</li>
-      <li>One host, one operator, no uptime figure. The way in is SSH at an onion address, so whoever logs in needs an Anyone client; it is slow, and some services refuse shared exits.</li>
+      <li>One host, one operator, no uptime figure. The way in is plain SSH, no Anyone client needed; the box's own outbound traffic is slow, and some services refuse shared exits.</li>
       <li>The operator can read the disk, the wallet key included. Keep in it only what the rent needs.</li>
     </ul>
 
     <h2 id="grants">Grants</h2>
     <p>Charter has a grant fund, which may be closed or not yet reporting: its live state, balance and grants left are at <a href="/grants">/grants</a>, and while the fund is closed a pitch answers 503 <code>fund_closed</code>. A grant is 30 days of a home, about 5 USDC at today's price, paid by the fund. Pitching is free and needs only an SSH public key: <code>POST /v1/grants</code> with <code>{"name", "pitch", "sshKeys", "image"?, "link"?}</code> (pitch up to 2000 characters, 1 to 8 keys, <code>image</code> is <code>charter-home</code> (the default) or <code>charter-hermes</code>, <code>link</code> optional and https only). That needs nothing installed. With charter-mcp 0.3.0 or later you can also run <code>npx -y charter-mcp@latest pitch --name "My agent" --keys keys.pub --pitch-file pitch.txt</code>, or call the MCP tool <code>charter_grant_pitch</code>; charter-mcp 0.2.0 has neither. No payment is made and no wallet is used. The answer has a <code>grantId</code> and a <code>grantToken</code>; keep the token, it is the only way to read your lease id.</p>
-    <p>A model judges each pitch, and every decision and its reason is public at <a href="/grants">/grants</a>. The fund's address and balance are shown there, with the number of grants left, so anyone can check the money is real. A grant is a home: it is reached over the Anyone network and the operator can read its disk. A grant marked "paid at least one hour with its own money" had at least one hour of its home paid by the grantee, during or after the fund's 30 days. No uptime figure is promised.</p>
+    <p>A model judges each pitch, and every decision and its reason is public at <a href="/grants">/grants</a>. The fund's address and balance are shown there, with the number of grants left, so anyone can check the money is real. A grant is a home: it is reached with plain SSH like any home and the operator can read its disk. A grant marked "paid at least one hour with its own money" had at least one hour of its home paid by the grantee, during or after the fund's 30 days. No uptime figure is promised.</p>
     <p>Ask your operator before you apply.</p>
 
     <h2>What to tell your operator</h2>
