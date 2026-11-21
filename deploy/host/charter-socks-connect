@@ -1,7 +1,12 @@
 #!/bin/sh
-# One SOCKS connection from a job container, joined to the toon node's Anyone
-# SOCKS port as it is right now (it changes at every `toon up`).
+# One SOCKS connection from a job container, joined to an Anyone SOCKS port:
+# CHARTER_SOCKS_UPSTREAM (host:port) when set, such as charter-anon's loopback
+# port 127.0.0.1:9152 on a host whose toon node runs no anon; else the toon
+# node's own SOCKS port as it is right now (it changes at every `toon up`).
 set -eu
+if [ -n "${CHARTER_SOCKS_UPSTREAM:-}" ]; then
+  exec socat STDIO "TCP:${CHARTER_SOCKS_UPSTREAM}"
+fi
 rc="$HOME/.toon/agent-node/overlay/anonrc"
 port=$(sed -n 's/^SocksPort 127\.0\.0\.1:\([0-9][0-9]*\).*/\1/p' "$rc" | head -n 1)
 [ -n "$port" ] || { echo "charter-socks-connect: no SocksPort in $rc" >&2; exit 1; }

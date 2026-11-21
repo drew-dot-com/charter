@@ -17,15 +17,24 @@
 #       keys brings it back. Said once, with no daily reminder: a tenant who
 #       stopped paying on purpose is not an outage.
 #   running with time to spare                                               -> ok
-#   running, its onion does not answer SSH HOME_ONION_MISSES times in a row  -> fail
-#       Checked from the toon node's own anon (a different process from charter-anon), by
-#       reading the SSH banner through its SOCKS port. A home is not checked in its first
-#       HOME_ONION_GRACE_MINUTES (default 15) while its address publishes. HOME_ONION_MISSES
-#       defaults to 3 (15 minutes): a single onion connection fails often enough on its own.
+#   running, its address does not answer SSH HOME_ONION_MISSES times in a row -> fail
+#       The address is the one the lease hands the tenant (access.ssh), else the home's onion
+#       hostname. A public address (host and port, such as 37.27.86.235:22000) is probed
+#       directly: the SSH banner must come back within 20 seconds. This runs on the host
+#       itself, so it proves the home's sshd and its port publish, not the path from outside.
+#       An onion is probed through the toon node's own anon (a different process from
+#       charter-anon), by reading the SSH banner through its SOCKS port; on a host whose node
+#       runs no anon, through charter-anon's loopback SOCKS port 127.0.0.1:9152, which then
+#       checks the onion through the same process that serves it.
+#       A home is not checked in its first HOME_ONION_GRACE_MINUTES (default 15) while its
+#       address publishes. HOME_ONION_MISSES defaults to 3 (15 minutes): a single onion
+#       connection fails often enough on its own. A public address is said under ssh-<homeId>,
+#       an onion under onion-<homeId>.
 #       On 2026-11-21 a stale charter-anon left a granted home unreachable for 11 hours with no
 #       alert; a restart fixed it then. HOME_ONION_RESTART=1 lets the watch restart charter-anon
-#       itself (sudo -n, at most once an hour). It is off by default: a restart the same morning,
-#       set off by flaky probes, left the onion unreachable for longer than the miss it answered.
+#       itself (sudo -n, at most once an hour), for an onion only: a public address does not go
+#       through anon. It is off by default: a restart the same morning, set off by flaky probes,
+#       left the onion unreachable for longer than the miss it answered.
 #
 # With --alert each home goes through charter-alert.sh: the late tick under the key
 # home-<homeId> (one message when it is late, one when a tick lands), the lapse under
@@ -36,7 +45,8 @@
 # Config: $CHARTER_OPS_ENV (default ~/.config/charter/ops.env), the same keys
 # charter-alert.sh reads (TELEGRAM_BOT_TOKEN_FILE + TELEGRAM_CHAT_ID, or NTFY_URL),
 # plus CHARTER_DATA_DIR, HOME_LAPSE_WARN_MINUTES, HOME_ONION_GRACE_MINUTES, HOME_ONION_MISSES, HOME_ONION_RESTART,
-# HOME_ONION_PROBE (a command given the onion host, which must print the SSH banner: for tests) and HOME_WATCH_SKIP (homeIds or their
+# HOME_ONION_PROBE (a command given the host and port, onion or public, which must print the
+# SSH banner: for tests) and HOME_WATCH_SKIP (homeIds or their
 # first 8 characters, separated by spaces or commas: homes that never alert, such as
 # test leases; a skipped home's state is dropped with no "recovered"). State: $CHARTER_OPS_STATE
 # (default ~/.local/state/charter-ops). Install: deploy/host/charter-home-watch.timer.
@@ -74,8 +84,9 @@ rows=$(jq -r --slurpfile homes "$DATA/homes.json" '
   ($homes[0] | map({key: .homeId, value: .}) | from_entries) as $kept
   | [ .[] | select(.homeId != null and (.paidIntervals // 0) > 0 and $kept[.homeId] != null) ]
   | group_by(.homeId)[] | max_by(.createdAt)
-  | [ .homeId, .id, .state, (.closedReason // "-"), ((.paidThrough // 0) / 1000 | floor), (.paidIntervals // 0), .job.image,
-      (($kept[.homeId].lastClosedAt // 0) / 1000 | floor), ((.startedAt // .createdAt // 0) / 1000 | floor) ] | @tsv' "$DATA/leases.json") || { echo "home-watch: leases.json did not parse"; exit 1; }
+  | [ .homeId, .id, .state, (.closedReason // "-"), ((.paidThrough // 0) / 1000 | floor), (.paidIntervals // 0), (.job.image // "-"),
+      (($kept[.homeId].lastClosedAt // 0) / 1000 | floor), ((.startedAt // .createdAt // 0) / 1000 | floor),
+      (.access.ssh.host // "-"), (.access.ssh.port // 0) ] | @tsv' "$DATA/leases.json") || { echo "home-watch: leases.json did not parse"; exit 1; }
 
 utc() { date -u -d "@$1" +%Y-%m-%dT%H:%MZ; }
 say() { # say <key> ok|fail <title> <detail> [realert minutes]
@@ -84,28 +95,45 @@ say() { # say <key> ok|fail <title> <detail> [realert minutes]
 }
 forget() { rm -f "$CHARTER_OPS_STATE/$1.state" "$CHARTER_OPS_STATE/$1.state.since" "$CHARTER_OPS_STATE/$1.state.alerted" "$CHARTER_OPS_STATE/$1.misses"; }
 
-# The SSH banner of an onion, through the toon node's anon (its SOCKS port changes at every `toon up`).
+# The SSH banner of <host> <port>: a public address directly, an onion through an anon's SOCKS
+# port (the toon node's, which changes at every `toon up`, else charter-anon's loopback one).
 probe() {
-  if [ -n "${HOME_ONION_PROBE:-}" ]; then $HOME_ONION_PROBE "$1"; return; fi
-  local port
-  port=$(sed -n 's/^SocksPort 127\.0\.0\.1:\([0-9][0-9]*\).*/\1/p' "$HOME/.toon/agent-node/overlay/anonrc" 2>/dev/null | head -n 1)
-  [ -n "$port" ] || return 2
-  timeout 100 nc -N -X 5 -x "127.0.0.1:$port" -w 90 "$1" 22 </dev/null 2>/dev/null | head -c 64
+  if [ -n "${HOME_ONION_PROBE:-}" ]; then $HOME_ONION_PROBE "$1" "$2"; return; fi
+  case "$1" in
+    *.anyone|*.onion)
+      local socks
+      socks=$(sed -n 's/^SocksPort 127\.0\.0\.1:\([0-9][0-9]*\).*/\1/p' "$HOME/.toon/agent-node/overlay/anonrc" 2>/dev/null | head -n 1)
+      timeout 100 nc -N -X 5 -x "127.0.0.1:${socks:-9152}" -w 90 "$1" "$2" </dev/null 2>/dev/null | head -c 64 ;;
+    *) timeout 30 nc -N -w 20 "$1" "$2" </dev/null 2>/dev/null | head -c 64 ;;
+  esac
 }
 
-# onion_check <homeId> <short> <started>: says ok or fail under onion-<homeId>, once the address has had time to publish.
-onion_check() {
-  local home="$1" short="$2" started="$3" host banner misses mf="$CHARTER_OPS_STATE/onion-$1.misses"
-  host=$(cat "$DATA/homes/$home/hs/hostname" 2>/dev/null) || host=""
-  [ -n "$host" ] || { echo "skip onion $short: no hostname yet"; return; }
-  [ $(( (now - started) / 60 )) -ge "$ONION_GRACE" ] || { echo "skip onion $short: started under $ONION_GRACE min ago"; return; }
-  banner=$(probe "$host"); local rc=$?
-  if [ "$rc" = 2 ]; then echo "skip onion $short: no toon node SOCKS port to probe through"; return; fi
+# reach_check <homeId> <short> <started> <host> <port>: says ok or fail under ssh-<homeId> (a
+# public address) or onion-<homeId>, once the address has had time to publish.
+reach_check() {
+  local home="$1" short="$2" started="$3" host="$4" port="$5" kind where banner misses key mf
+  if [ "$host" = - ] || [ -z "$host" ]; then
+    # No access on the lease yet: the onion, if the home has one.
+    host=$(cat "$DATA/homes/$home/hs/hostname" 2>/dev/null) || host=""
+    port=22
+  fi
+  [ -n "$host" ] || { echo "skip reach $short: no address yet"; return; }
+  case "$host" in *.anyone|*.onion) kind=onion where="$host" ;; *) kind=ssh where="$host:$port" ;; esac
+  key="$kind-$home" mf="$CHARTER_OPS_STATE/$kind-$home.misses"
+  [ $(( (now - started) / 60 )) -ge "$ONION_GRACE" ] || { echo "skip $kind $short: started under $ONION_GRACE min ago"; return; }
+  banner=$(probe "$host" "$port")
   case "$banner" in
-    SSH-*) rm -f "$mf"; say "onion-$home" ok "Charter home $short onion" "SSH answers at $host" ;;
+    SSH-*)
+      rm -f "$mf"
+      if [ "$kind" = onion ]; then say "$key" ok "Charter home $short onion" "SSH answers at $where"
+      else say "$key" ok "Charter home $short SSH" "SSH answers at $where"; fi ;;
     *)
       misses=$(( $(cat "$mf" 2>/dev/null || echo 0) + 1 )); echo "$misses" > "$mf"
-      if [ "$misses" -lt "$ONION_MISSES" ]; then echo "miss onion $short: no SSH banner from $host ($misses of $ONION_MISSES)"; return; fi
+      if [ "$misses" -lt "$ONION_MISSES" ]; then echo "miss $kind $short: no SSH banner from $where ($misses of $ONION_MISSES)"; return; fi
+      if [ "$kind" = ssh ]; then
+        say "$key" fail "Charter home $short unreachable at $where" "no SSH banner from $where in $misses checks, probed from the host itself; not restarted. The tenant cannot log in. By hand: docker ps for the home's container and its port."
+        return
+      fi
       local did="not restarted"
       if [ "$ONION_RESTART" = 1 ]; then
         local stamp="$CHARTER_OPS_STATE/anon-restart.at" last
@@ -114,12 +142,12 @@ onion_check() {
           if sudo -n systemctl restart charter-anon 2>/dev/null; then echo "$now" > "$stamp"; did="charter-anon restarted by the watch"; else did="charter-anon restart failed (sudo -n)"; fi
         else did="charter-anon was already restarted within the hour"; fi
       fi
-      say "onion-$home" fail "Charter home $short unreachable over its onion" "no SSH banner from $host in $misses checks; $did. The tenant cannot log in. By hand: sudo systemctl restart charter-anon in toon2." ;;
+      say "$key" fail "Charter home $short unreachable over its onion" "no SSH banner from $where in $misses checks; $did. The tenant cannot log in. By hand: sudo systemctl restart charter-anon on the host." ;;
   esac
 }
 
 seen=""
-while IFS=$'\t' read -r home lease state reason through paid image closed started; do
+while IFS=$'\t' read -r home lease state reason through paid image closed started sshhost sshport; do
   [ -n "$home" ] || continue
   short="${home:0:8}"
   # Skipped homes stay out of $seen, so the cleanup below drops their state silently.
@@ -135,7 +163,7 @@ while IFS=$'\t' read -r home lease state reason through paid image closed starte
       else
         say "home-$home" ok "Charter home $short" "paid through $(utc "$through") ($left min), lease ${lease:0:8}, $image"
       fi
-      onion_check "$home" "$short" "${started:-0}" ;;
+      reach_check "$home" "$short" "${started:-0}" "${sshhost:--}" "${sshport:-0}" ;;
     closed)
       if [ "$reason" = missed_tick ]; then
         kept=$(( closed + RETENTION_DAYS * 86400 ))
@@ -150,7 +178,7 @@ done <<< "$rows"
 
 # A home the sweep removed has nothing left to say: drop its state, with no "recovered".
 if [ "$alert" = 1 ]; then
-  for f in "$CHARTER_OPS_STATE"/home-*.state "$CHARTER_OPS_STATE"/lapsed-*.state "$CHARTER_OPS_STATE"/onion-*.state; do
+  for f in "$CHARTER_OPS_STATE"/home-*.state "$CHARTER_OPS_STATE"/lapsed-*.state "$CHARTER_OPS_STATE"/onion-*.state "$CHARTER_OPS_STATE"/ssh-*.state; do
     [ -e "$f" ] || continue
     key="${f##*/}"; key="${key%.state}"; id="${key#*-}"
     case " $seen " in *" $id "*) ;; *) forget "$key" ;; esac

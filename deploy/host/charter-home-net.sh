@@ -1,8 +1,9 @@
 #!/bin/bash
 # The charter-home bridge and its firewall. Run as root (charter-home-net.service).
 # A home may reach only Charter's anon on the gateway: SOCKS 9050, HTTP tunnel
-# 9080, DNS 53. Nothing from the bridge is forwarded anywhere, and nothing else
-# on the host answers it. Safe to run any number of times.
+# 9080, DNS 53. Nothing the bridge starts is forwarded anywhere (a home's replies
+# to an inbound connection on its published port are), and nothing else on the
+# host answers it. Safe to run any number of times.
 set -euo pipefail
 
 net=charter-home
@@ -30,8 +31,47 @@ icc=$(docker network inspect -f '{{index .Options "com.docker.network.bridge.ena
 id=$(docker network inspect -f '{{.Id}}' "$net")
 br="br-${id:0:12}"
 
-# Forwarded traffic from the bridge (to the internet, to other bridges, home to home): dropped.
-iptables -C DOCKER-USER -i "$br" -j DROP 2>/dev/null || iptables -I DOCKER-USER -i "$br" -j DROP
+# Forwarded traffic from the bridge: a home answers, it never starts. A home's sshd
+# published on a public address (docker run -p <public ip>:<port>:2222) is reached
+# through FORWARD: the client's packets come in on the uplink and are not -i the
+# bridge, and the home's replies go out -i the bridge as ESTABLISHED. Only those
+# replies (and ICMP errors RELATED to them) pass. A connection the home starts, to
+# the internet, the host's own public address, another home's port or another
+# bridge, is NEW on its first packet and dropped. Conntrack, not the home, decides
+# the state: a packet is ESTABLISHED only when it belongs to a flow whose first
+# packet was let through, and a home's first packet never is.
+forward=(
+  "-i $br -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
+  "-i $br -j DROP"
+)
+# ordered <cmd> <chain> <rule>...: the rules at the top of the chain, in this order.
+# Nothing changes when all are there. When one is missing, all are inserted at the
+# top first and only then are older copies below them deleted, so a DROP already in
+# place is never missing, not even for a moment.
+ordered() {
+  local cmd=$1 chain=$2 r all=1 n=1 i j
+  shift 2
+  for r in "$@"; do
+    # shellcheck disable=SC2086 # each rule is split into its words on purpose
+    "$cmd" -C "$chain" $r 2>/dev/null || all=0
+  done
+  [ "$all" = 0 ] || return 0
+  for r in "$@"; do
+    # shellcheck disable=SC2086
+    "$cmd" -I "$chain" "$n" $r
+    n=$((n + 1))
+  done
+  # The chain as iptables prints it, rules only: the first $# lines are the ones just
+  # inserted, in iptables' own spelling, so an older copy compares equal as text.
+  local -a have
+  mapfile -t have < <("$cmd" -S "$chain" | grep -v -e '^-N ' -e '^-P ')
+  for ((i = ${#have[@]} - 1; i >= $#; i--)); do
+    for ((j = 0; j < $#; j++)); do
+      if [ "${have[i]}" = "${have[j]}" ]; then "$cmd" -D "$chain" $((i + 1)); break; fi
+    done
+  done
+}
+ordered iptables DOCKER-USER "${forward[@]}"
 
 # Traffic to the host, in this order: anon's home ports refused to anything but
 # the bridge (job containers on docker0, the LAN), then from the bridge the
@@ -45,36 +85,37 @@ rules=(
   "-i $br -d $gw -p tcp --dport 53 -j ACCEPT"
   "-i $br -j DROP"
 )
-all=1
-for r in "${rules[@]}"; do
-  # shellcheck disable=SC2086 # each rule is split into its words on purpose
-  iptables -C INPUT $r 2>/dev/null || all=0
-done
-if [ "$all" = 0 ]; then
-  # Some are missing: remove what is there and insert them all at the top, so
-  # the order holds however the chain was left.
-  for r in "${rules[@]}"; do
-    # shellcheck disable=SC2086
-    while iptables -C INPUT $r 2>/dev/null; do iptables -D INPUT $r; done
-  done
-  n=1
-  for r in "${rules[@]}"; do
-    # shellcheck disable=SC2086
-    iptables -I INPUT "$n" $r
-    n=$((n + 1))
-  done
-fi
-# IPv6: the network has none, but drop anything from the bridge in case. Only
-# in chains that exist: this creates no ip6tables chain.
+ordered iptables INPUT "${rules[@]}"
+# IPv6: the network has none, but drop anything from the bridge in case, with the
+# same answer-only FORWARD pair as IPv4. Only in chains that exist: this creates
+# no ip6tables chain.
 if command -v ip6tables >/dev/null 2>&1; then
   ip6tables -C INPUT -i "$br" -j DROP 2>/dev/null || ip6tables -I INPUT -i "$br" -j DROP
   if ip6tables -S DOCKER-USER >/dev/null 2>&1; then
-    ip6tables -C DOCKER-USER -i "$br" -j DROP 2>/dev/null || ip6tables -I DOCKER-USER -i "$br" -j DROP
+    ordered ip6tables DOCKER-USER "${forward[@]}"
   else
     echo "charter-home-net: no ip6tables DOCKER-USER chain, skipped (INPUT drop is in place)"
   fi
 else
   echo "charter-home-net: no ip6tables, IPv6 drops skipped"
+fi
+
+# Flows a home started before these rules were in place are cut: at boot docker
+# starts the homes (--restart unless-stopped) before this script runs, and a flow
+# begun in that gap would otherwise pass the ESTABLISHED rule above for its whole
+# life. Only flows whose first packet came from a home (original source .2 to
+# .255, the subnet without its gateway): an inbound SSH session is untouched,
+# whether its client started it from outside or docker-proxy did from the
+# gateway, and a home's connection to anon carries on (INPUT accepts those ports
+# in any state). Needs the conntrack tool; without it, say so.
+if command -v conntrack >/dev/null 2>&1; then
+  p=${gw%.1}
+  for c in "$p.2/31" "$p.4/30" "$p.8/29" "$p.16/28" "$p.32/27" "$p.64/26" "$p.128/25"; do
+    # Exit 1 when nothing matched: not an error here.
+    conntrack -D -s "$c" >/dev/null 2>&1 || true
+  done
+else
+  echo "charter-home-net: no conntrack tool, flows homes started before the firewall were not cut"
 fi
 
 echo "charter-home-net: $net on $br, gateway $gw, firewall in place"

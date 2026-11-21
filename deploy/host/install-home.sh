@@ -1,12 +1,17 @@
 #!/bin/bash
-# Sets up what homes need on the host's VM (toon2): Charter's own anon, the
+# Sets up what homes need on the host (toon2, hel1): Charter's own anon, the
 # charter-home bridge and its firewall, and the one sudo rule charter-host uses.
 # Run from this directory as the host user, with sudo:
 #   sudo ./install-home.sh
-# The toon node must be up (`toon up`): its anon binary and GeoIP files are
-# copied from it. Rerun after a toon upgrade, which moves them. Running it
-# twice is harmless; it changes only what differs. It prints no secrets: none
-# are involved.
+# or as root for a host user without sudo: SUDO_USER=charter ./install-home.sh
+# Where anon comes from:
+#   ANON_BIN, ANON_GEOIP, ANON_GEOIP6 set (all three): those files, such as the
+#     pinned package install-host.sh installs (it prints the line to use);
+#   unset: the toon node's own anon and GeoIP files. The node must be up
+#     (`toon up`). Rerun after a toon upgrade, which moves them.
+# Either way they are copied, so the source can change without breaking
+# Charter's anon. Running it twice is harmless; it changes only what differs. It
+# prints no secrets: none are involved.
 set -euo pipefail
 
 [ "$(id -u)" = 0 ] || { echo "install-home: run with sudo" >&2; exit 1; }
@@ -17,24 +22,32 @@ home=$(getent passwd "$user" | cut -d: -f6)
 here=$(cd "$(dirname "$0")" && pwd)
 as_user() { runuser -u "$user" -- "$@"; }
 
-# The node's anon, from the running process first (its version directory
-# changes at every toon upgrade), else the newest one on disk.
-node_bin="$home/.toon/agent-node/overlay/bin"
-anon_src=$(pgrep -a -u "$user" -f 'bin/[0-9.]+/anon' | awk '{print $2}' | grep "^$node_bin/" | head -n 1 || true)
-if [ -z "$anon_src" ]; then
-  anon_src=$(ls -d "$node_bin"/*/anon 2>/dev/null | sort -V | tail -n 1 || true)
-fi
-[ -n "$anon_src" ] && [ -x "$anon_src" ] || { echo "install-home: no anon under $node_bin (is the toon node up?)" >&2; exit 1; }
-anon_dir=$(dirname "$anon_src")
+if [ -n "${ANON_BIN:-}${ANON_GEOIP:-}${ANON_GEOIP6:-}" ]; then
+  # Given: all three or none, so a half-set environment never mixes sources.
+  [ -n "${ANON_BIN:-}" ] && [ -n "${ANON_GEOIP:-}" ] && [ -n "${ANON_GEOIP6:-}" ] \
+    || { echo "install-home: set all of ANON_BIN, ANON_GEOIP, ANON_GEOIP6, or none" >&2; exit 1; }
+  anon_src=$ANON_BIN geoip=$ANON_GEOIP geoip6=$ANON_GEOIP6
+  [ -x "$anon_src" ] || { echo "install-home: ANON_BIN $anon_src is not an executable file" >&2; exit 1; }
+else
+  # The node's anon, from the running process first (its version directory
+  # changes at every toon upgrade), else the newest one on disk.
+  node_bin="$home/.toon/agent-node/overlay/bin"
+  anon_src=$(pgrep -a -u "$user" -f 'bin/[0-9.]+/anon' | awk '{print $2}' | grep "^$node_bin/" | head -n 1 || true)
+  if [ -z "$anon_src" ]; then
+    anon_src=$(ls -d "$node_bin"/*/anon 2>/dev/null | sort -V | tail -n 1 || true)
+  fi
+  [ -n "$anon_src" ] && [ -x "$anon_src" ] || { echo "install-home: no anon under $node_bin (is the toon node up? or set ANON_BIN, ANON_GEOIP, ANON_GEOIP6)" >&2; exit 1; }
+  anon_dir=$(dirname "$anon_src")
 
-# GeoIP files: as the node's own anonrc names them, else beside the binary.
-# Copied next to the anon copy below, so a toon upgrade that removes the old
-# version directory cannot break Charter's anon.
-node_rc="$home/.toon/agent-node/overlay/anonrc"
-geoip=$(sed -n 's/^GeoIPFile[[:space:]]\{1,\}//p' "$node_rc" 2>/dev/null | head -n 1 || true)
-geoip6=$(sed -n 's/^GeoIPv6File[[:space:]]\{1,\}//p' "$node_rc" 2>/dev/null | head -n 1 || true)
-[ -n "$geoip" ] && [ -f "$geoip" ] || geoip="$anon_dir/geoip"
-[ -n "$geoip6" ] && [ -f "$geoip6" ] || geoip6="$anon_dir/geoip6"
+  # GeoIP files: as the node's own anonrc names them, else beside the binary.
+  node_rc="$home/.toon/agent-node/overlay/anonrc"
+  geoip=$(sed -n 's/^GeoIPFile[[:space:]]\{1,\}//p' "$node_rc" 2>/dev/null | head -n 1 || true)
+  geoip6=$(sed -n 's/^GeoIPv6File[[:space:]]\{1,\}//p' "$node_rc" 2>/dev/null | head -n 1 || true)
+  [ -n "$geoip" ] && [ -f "$geoip" ] || geoip="$anon_dir/geoip"
+  [ -n "$geoip6" ] && [ -f "$geoip6" ] || geoip6="$anon_dir/geoip6"
+fi
+# Copied next to the anon copy below, so a toon upgrade (or a package upgrade)
+# that removes or replaces the source cannot break Charter's anon.
 for f in "$geoip" "$geoip6"; do
   [ -f "$f" ] || { echo "install-home: no GeoIP file $f" >&2; exit 1; }
 done
@@ -99,7 +112,8 @@ if [ "$was_active" = 1 ] && [ "$anon_changed" = 1 ]; then systemctl restart char
 echo
 echo "install-home: done. Check:"
 echo "  ss -ltunp | grep 172.19.0.1     # anon on tcp 9050 and 9080, udp 53"
-echo "  sudo iptables -S DOCKER-USER    # -i br-... -j DROP"
+echo "  ss -ltnp | grep 127.0.0.1:9152  # anon's SOCKS port for the host itself"
+echo "  sudo iptables -S DOCKER-USER    # -i br-... ESTABLISHED,RELATED ACCEPT, then -i br-... -j DROP"
 echo "  sudo iptables -S INPUT | grep br-   # seven lines, in this order:"
 echo "    # two DROPs of 172.19.0.1 tcp 9050,9080 and udp 53 from anything but the bridge (! -i br-...),"
 echo "    # then from the bridge four ACCEPTs (ESTABLISHED,RELATED; tcp 9050,9080; udp 53; tcp 53), then its DROP"
