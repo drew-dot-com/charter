@@ -113,7 +113,7 @@ echo
 echo "install-home: done. Check:"
 echo "  ss -ltunp | grep 172.19.0.1     # anon on tcp 9050 and 9080, udp 53"
 echo "  ss -ltnp | grep 127.0.0.1:9152  # anon's SOCKS port for the host itself"
-echo "  sudo iptables -S DOCKER-USER    # -i br-... ESTABLISHED,RELATED ACCEPT, then -i br-... -j DROP"
+echo "  sudo iptables -S DOCKER-USER    # -i br-... tcp sport 2222 ESTABLISHED ctdir REPLY ACCEPT, then -i br-... -j DROP"
 echo "  sudo iptables -S INPUT | grep br-   # seven lines, in this order:"
 echo "    # two DROPs of 172.19.0.1 tcp 9050,9080 and udp 53 from anything but the bridge (! -i br-...),"
 echo "    # then from the bridge four ACCEPTs (ESTABLISHED,RELATED; tcp 9050,9080; udp 53; tcp 53), then its DROP"

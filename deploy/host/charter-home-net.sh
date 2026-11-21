@@ -31,17 +31,20 @@ icc=$(docker network inspect -f '{{index .Options "com.docker.network.bridge.ena
 id=$(docker network inspect -f '{{.Id}}' "$net")
 br="br-${id:0:12}"
 
-# Forwarded traffic from the bridge: a home answers, it never starts. A home's sshd
-# published on a public address (docker run -p <public ip>:<port>:2222) is reached
-# through FORWARD: the client's packets come in on the uplink and are not -i the
-# bridge, and the home's replies go out -i the bridge as ESTABLISHED. Only those
-# replies (and ICMP errors RELATED to them) pass. A connection the home starts, to
-# the internet, the host's own public address, another home's port or another
-# bridge, is NEW on its first packet and dropped. Conntrack, not the home, decides
-# the state: a packet is ESTABLISHED only when it belongs to a flow whose first
-# packet was let through, and a home's first packet never is.
+# Forwarded traffic from the bridge: a home answers its own inbound SSH, it never
+# starts anything. A home's sshd published on a public address (docker run -p
+# <public ip>:<port>:2222) is reached through FORWARD: the client's packets come in
+# on the uplink and are not -i the bridge, and the home's replies go out -i the
+# bridge. Only those replies pass: tcp from container port 2222 (a home's one
+# inbound service), in a flow conntrack already holds, in its reply direction (the
+# client started it). No RELATED, so no ICMP or helper traffic either. A
+# connection the home starts, to the internet, the host's own public address,
+# another home's port or another bridge, is NEW on its first packet and dropped.
+# Conntrack, not the home, decides state and direction: a packet is ESTABLISHED
+# only when it belongs to a flow whose first packet was let through, and a home's
+# first packet never is.
 forward=(
-  "-i $br -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
+  "-i $br -p tcp --sport 2222 -m conntrack --ctstate ESTABLISHED --ctdir REPLY -j ACCEPT"
   "-i $br -j DROP"
 )
 # ordered <cmd> <chain> <rule>...: the rules at the top of the chain, in this order.
@@ -87,7 +90,7 @@ rules=(
 )
 ordered iptables INPUT "${rules[@]}"
 # IPv6: the network has none, but drop anything from the bridge in case, with the
-# same answer-only FORWARD pair as IPv4. Only in chains that exist: this creates
+# same answer-only FORWARD pair as IPv4 (inbound SSH replies only). Only in chains that exist: this creates
 # no ip6tables chain.
 if command -v ip6tables >/dev/null 2>&1; then
   ip6tables -C INPUT -i "$br" -j DROP 2>/dev/null || ip6tables -I INPUT -i "$br" -j DROP
@@ -102,8 +105,8 @@ fi
 
 # Flows a home started before these rules were in place are cut: at boot docker
 # starts the homes (--restart unless-stopped) before this script runs, and a flow
-# begun in that gap would otherwise pass the ESTABLISHED rule above for its whole
-# life. Only flows whose first packet came from a home (original source .2 to
+# begun in that gap (say from port 2222) would otherwise pass the answer rule
+# above for its whole life. Only flows whose first packet came from a home (original source .2 to
 # .255, the subnet without its gateway): an inbound SSH session is untouched,
 # whether its client started it from outside or docker-proxy did from the
 # gateway, and a home's connection to anon carries on (INPUT accepts those ports
