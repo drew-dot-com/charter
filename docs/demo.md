@@ -612,3 +612,53 @@ Deploy steps: `docs/deploy-openhuman-home.md`.
 - [ ] Left as it is: the proof home lapses at 20:10Z (the watch will say so) and keeps its disk 7 days,
   with OpenHuman installed in `~/openhuman`. Not checked, and only the tenant can: an OpenHuman agent turn,
   and OpenHuman paying by itself (no release has the wallet).
+
+## 16. The grant fund, first-party proof (2026-11-20/21)
+
+Design: `docs/superpowers/specs/2026-11-20-grant-fund-design.md`; ops: `docs/ops.md`, "Grant fund". This
+grant is first-party (Drew's own pitch and money) and is never counted as a renter.
+
+- [x] Host, 22:12Z 11-20: toon2 code to main (backup `~/src/charter-host.bak-20261120-pregrant.tgz`),
+  `charter-host` restarted with nothing running; the door's `/v1/offers` then shows `home.free: 2`.
+- [x] Door, 22:14Z: backup `/opt/charter.bak-20261120-pregrant` and `door.env.bak-20261120-pregrant`, tree
+  synced from main with `web/llms.txt`, `web/agents.html` and `web/index.html` held at 2bd5008 (no grant copy
+  until charter-mcp 0.3.0 is published), `CHARTER_FUND_TOKEN_FILE` and `CHARTER_FUND_ADDRESS` added, rebuilt,
+  healthy. `POST /v1/grants` answered `503 fund_closed` until the fund reported; `/v1/fund/queue` 401 without
+  the token. The lockfile had to be regenerated with npm 10 first (`6821e95`): npm 11's lock failed `npm ci`
+  in the node:22 images.
+- [x] Fund: wallet `0xFD80174E28Cc2c0f37739659a63877c2D7544C61` (Base), key made in the fund image, token
+  shared with the door, balance read from the public `https://mainnet.base.org` (the door's own RPC file is
+  Solana). Gemini key placed by Drew. `charter-fund-check.sh` installed through `install-box.sh` (old
+  scripts in `/root/ops-bak-20261120`); first run `ok`.
+- [x] Funding: Drew sent 6 USDC (1 was the plan's figure, but one grant needs 720 x 7000 x 1.1 = 5.544 USDC of
+  cover before the fund opens). Next cycle: `open: true, grantsLeft: 1`.
+- [x] Pitch, 22:47Z: `charter-mcp pitch` (0.3.0, built locally) with a throwaway key made in the toon VM;
+  grant `501316ecfe3f1d539c57a24f48a06b99`.
+- [x] First judge call failed safely: Gemini answered 404 (`gemini-pro-latest is not found for API version
+  v1`). The pitch stayed queued, nothing was counted or declined, and the problem was raised. Cause:
+  `@google/genai` 3.x defaults to v1, where the `-latest` aliases do not exist. Fixed in `db7bfd8`
+  (`apiVersion: 'v1beta'`); the alias resolved to `gemini-3.1-pro-preview`.
+- [x] Verdict, 22:52Z: `approved_waiting`, reason "The pitch describes a concrete and legal technical test
+  while identifying the operator and the future payment method." Flaw: the summary read "a shorttest", two
+  words glued where the copy filter removed a phrase taken from the pitch.
+- [x] Open, 22:52Z: lease `aaf775cbf3d9a39cf4fb314e2d92772a`, homeId `97da7fa76568ecba`, hour 0 paid
+  (6.000000 to 5.993000 USDC).
+- [x] Paying: the fund then paid every hour unattended for 11 hours. At 10:24Z 11-21 the fund counted 13 hours
+  and the host `paidIntervals` 13; 6.000 - 13 x 0.007 = 5.909, which is the balance read on chain.
+- [x] Onion SSH, 10:23Z: failed for 11 hours with `SOCKSv5 error: Host unreachable`. toon2's anon (running
+  since 11-10, idle long stretches) logged the introductions but never completed a connection. After
+  `sudo systemctl restart charter-anon` on toon2, SSH from the toon VM worked at once: `tenant`, 2.0G home
+  disk, 2 CPUs, 1 GiB, `~/grant-proof.log` written. Egress from inside the home: 200 in under a second
+  through both proxies. Note: a test from toon2 itself through `172.19.0.1:9050` always times out by design
+  (the firewall accepts the proxy only from the homes' bridge).
+- [x] Restart, 10:24Z: `docker restart charter-fund` mid-grant. Three cycles later: fund 13 hours, host 13,
+  balance 5.909000, no problems. Nothing paid twice.
+- [x] Stop, 10:27Z: `stop 501316ec...`; the door shows the grant `stopped` with `paidHours: 13`, the fund marks
+  it `ended`. With 5.909 USDC the fund reopened intake (`open: true, grantsLeft: 1`).
+- [x] Onion check added to `charter-home-watch.sh` on toon2 (backup `charter-home-watch.sh.bak-20261121-preonion`):
+  the SSH banner of each running home through the toon node's own anon. Its first deploy had the watch
+  restart charter-anon after 2 misses; at 10:36Z that sent Drew a false "unreachable" alert and restarted
+  charter-anon, after which the onion stayed unreachable from two clients for over 10 minutes (SOCKS "TTL
+  expired"). Now: alert after 3 misses in a row (15 minutes), no restart unless `HOME_ONION_RESTART=1`.
+  Finding: onion reachability of a toon2 home is flaky in itself, which is the case for the SSH jump host.
+- [ ] Lapse: paid through 11:52:26Z; checked at 11:55Z (below).
