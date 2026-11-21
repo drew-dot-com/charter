@@ -96,7 +96,7 @@ async function main(argv: string[]): Promise<number> {
         : undefined,
   });
   // One object for reconcile, windowTick and homeSweep, so watched and published persist across ticks.
-  const deps = { store, runner, now, homes, log, published: new Set<string>() };
+  const deps = { store, runner, now, homes, log, published: new Set<string>(), onionBeside: !!(h?.publicHost && h.onion) };
   await reconcile(deps);
 
   const apps = hostApps({

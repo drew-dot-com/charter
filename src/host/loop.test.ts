@@ -321,6 +321,41 @@ test('windowTick never watches a home\'s exit and fills its access once anon has
   assert.ok(!deps.watched!.has('h'));
 });
 
+test('windowTick refills a public home\'s access with its onion once anon has the hostname, only when the host publishes onions', async () => {
+  const PUBLIC = { host: '37.27.86.235', port: 22000, user: 'tenant' };
+  const ONION = { host: 'a'.repeat(56) + '.anyone', port: 22, user: 'tenant' };
+  for (const onionBeside of [true, false]) {
+    const store = new LeaseStore();
+    store.put(homeLease({ id: 'h', paidThrough: T0 + 3_600_000 }));
+    let hostname = false;
+    let asked = 0;
+    const { r } = fakeRunner({
+      homeAccess: async () => {
+        asked++;
+        return { ssh: PUBLIC, ...(onionBeside && hostname ? { onion: ONION } : {}) };
+      },
+    });
+    const deps: LoopDeps = { store, runner: r, homes: homeStore({ homeId: HOME_ID }), now: () => T0 + 1000, onionBeside };
+    await windowTick(deps);
+    assert.deepEqual(store.get('h')!.access, { ssh: PUBLIC }, 'the first pass stores the public address alone');
+    if (onionBeside) {
+      await windowTick(deps);
+      assert.deepEqual(store.get('h')!.access, { ssh: PUBLIC }, 'no hostname yet: still the public address');
+      hostname = true;
+      await windowTick(deps);
+      assert.deepEqual(store.get('h')!.access, { ssh: PUBLIC, onion: ONION }, 'the next pass adds the onion');
+      const before = asked;
+      await windowTick(deps);
+      assert.equal(asked, before, 'an access with its onion is not asked again');
+    } else {
+      await windowTick(deps);
+      await windowTick(deps);
+      assert.equal(asked, 1, 'onion off: no refill after the first fill');
+      assert.deepEqual(store.get('h')!.access, { ssh: PUBLIC });
+    }
+  }
+});
+
 test('windowTick publishes a running home\'s onion once per process, and retries a failed publish', async () => {
   const store = new LeaseStore();
   store.put(homeLease({ id: 'h', paidThrough: T0 + 3_600_000, access: { ssh: { host: 'abc.anon', port: 22, user: 'tenant' } } }));

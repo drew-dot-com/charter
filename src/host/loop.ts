@@ -39,6 +39,11 @@ export interface LoopDeps {
   published?: Set<string>;
   /** When a failed onion publish was last tried, per home. Created on first use. */
   publishTriedAt?: Map<string, number>;
+  /**
+   * The host publishes `access.onion` beside a public `access.ssh` (CHARTER_HOME_PUBLIC_HOST with CHARTER_HOME_ONION=1).
+   * The public address is known at once, before anon writes the hostname, so a stored access without `onion` is read again.
+   */
+  onionBeside?: boolean;
   log?: (msg: string) => void;
   /** Injectable for tests. Default: a real timer. */
   sleep?: (ms: number) => Promise<void>;
@@ -109,7 +114,11 @@ export async function closeAndStop(deps: LoopDeps, l: Lease, reason: NonNullable
   if (isHome(closed)) await releaseHome(deps, closed, now);
 }
 
-/** A running home: write its onion conf once per process, and fill in its address once anon has one. */
+/**
+ * A running home: write its onion conf once per process, and fill in its address once the host has one. With
+ * `onionBeside`, an access stored before anon wrote the hostname is read again each pass until it carries `onion`
+ * (homeAccess only reads the hostname file; nothing is sent to anon).
+ */
 async function tendHome(deps: LoopDeps, l: Lease): Promise<void> {
   const homeId = l.homeId;
   if (!homeId) return;
@@ -124,16 +133,19 @@ async function tendHome(deps: LoopDeps, l: Lease): Promise<void> {
       triedAt.delete(homeId);
     }
   }
-  if (l.access == null) {
+  const refill = l.access != null && deps.onionBeside === true && !l.access.onion;
+  if (l.access == null || refill) {
     let access = null;
     try {
       access = await deps.runner.homeAccess(homeId);
     } catch (e) {
       deps.log?.(`home ${homeId}: access unreadable: ${String(e)}`);
     }
-    // Re-read: a tick may have been paid while anon was asked.
+    // Re-read: a tick may have been paid while anon was asked. A refill is written only once it adds the onion.
     const cur = deps.store.get(l.id);
-    if (access && cur?.state === 'running') deps.store.put({ ...cur, access });
+    if (access && cur?.state === 'running' && (cur.access == null || (access.onion && !cur.access.onion))) {
+      deps.store.put({ ...cur, access });
+    }
   }
 }
 
