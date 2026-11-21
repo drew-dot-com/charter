@@ -7,7 +7,7 @@ What watches the door, what backs it up, and what to do when something fires. Sc
 
 | what | where | schedule | alerts |
 | --- | --- | --- | --- |
-| door canary + door headroom + daily spend + host channel + grant fund (`charter-ops-check.sh`) | the Hetzner box, `charter-ops.timer` | every 5 min | Telegram DM to Drew from the Edison bot, once down, once back |
+| door canary + door headroom + daily spend + host channel + grant fund + homes' outside SSH (`charter-ops-check.sh`) | the Hetzner box, `charter-ops.timer` | every 5 min | Telegram DM to Drew from the Edison bot, once down, once back |
 | door data backup (`charter-backup-pull.sh`) | the Air, launchd `com.drew.charter-backup` | nightly 03:40 Air local | none yet: `~/charter-backups/pull.log` records each run |
 | the host (`charter-host`, `CHARTER_MAX_LEASES=2`) | the `toon2` VM on the Air | always on | the canary sees its offer vanish |
 | the grant fund (`charter-fund`, container) | the Hetzner box, beside `charter-door` | loop, one cycle every 60 s | `charter-fund-check.sh`, in the 5 minute check |
@@ -268,31 +268,96 @@ window: stop the box's `renew` right after a tick lands, and have the replacemen
 
 **One payer per box.** A tenant's channel store has exactly one writer: a voucher names a running total, so two processes signing on `~/.charter/channels.json` race it and the connector refuses the lower one. A box that pays for more than its rent (an agent's paid fetches, relay posts, its own Charter jobs) runs one `charter payer` (the service, `docs/env.md`) and every other payer in it uses `CHARTER_PAYER=url`. Edison's home does this since 2026-11-05: `~/.charter/boot.sh` starts the payer, then `renew` through it, then the Hermes gateway, whose plugins point at the same `http://127.0.0.1:3510`. To move a running `renew` onto the service without a missed tick: check `/charter/paid-through` (the next tick goes out 30 minutes before it), stop the old `renew`, start `charter payer`, start `renew` with `CHARTER_PAYER=url`, all inside a minute. Restart the payer only in that same window, and never `pkill -f` it from a command line that itself contains the pattern.
 
-**What it adds to toon2.** Two system units, both installed and enabled by `sudo bash
-deploy/host/install-home.sh` from the repo in the VM, run as the host user with the toon node up:
+**What install-home.sh adds to a host (toon2, hel1).** Run from `deploy/host/` with sudo, as the
+host user: `sudo ./install-home.sh` (or as root, `SUDO_USER=<host user> ./install-home.sh`). Where anon
+comes from: with `ANON_BIN`, `ANON_GEOIP` and `ANON_GEOIP6` set, those files (hel1, below); unset, the
+toon node's own anon and GeoIP files (toon2; the node must be up). Either way they are copied, so a
+`toon` or package upgrade never touches the running one. Every step changes only what differs. It
+installs:
 
-- `charter-anon.service`: Charter's own Anyone client (`~/.config/charter/anon/anonrc`, a copy of
-  the node's `anon` binary at `~/.local/bin/anon`, its GeoIP files beside it). It listens on the
-  bridge gateway only: SOCKS `172.19.0.1:9050`, HTTP tunnel `172.19.0.1:9080`, DNS
-  `172.19.0.1:53`, and serves one onion service per home from `~/.config/charter/anon/hs.d/`
-  (charter-host writes `<homeId>.conf` there and sends a `SIGHUP`). Log:
-  `~/.local/share/charter/anon/anon.log`.
-- `charter-home-net.service`: makes the `charter-home` docker bridge (`172.19.0.0/24`, no
-  inter-container traffic) and its firewall at every boot: nothing from the bridge is forwarded
-  anywhere, and the host answers it only on 9050, 9080 and 53.
+- `charter-anon.service`: Charter's own Anyone client (`~/.config/charter/anon/anonrc` from
+  `deploy/host/anonrc`, the anon copy at `~/.local/bin/anon`, the GeoIP copies under
+  `~/.local/share/charter/anon/geoip/`). For homes it listens on the bridge gateway only: SOCKS
+  `172.19.0.1:9050`, HTTP tunnel `172.19.0.1:9080`, DNS `172.19.0.1:53`, and with the onion on it
+  serves one onion service per home from `~/.config/charter/anon/hs.d/` (charter-host writes
+  `<homeId>.conf` there and sends a `SIGHUP`). For the host itself it also has SOCKS
+  `127.0.0.1:9152`, loopback only, out of the homes' reach. Log: `~/.local/share/charter/anon/anon.log`.
+- `charter-home-net.service` (after docker, every boot): runs `/usr/local/bin/charter-home-net.sh`,
+  which makes the `charter-home` bridge (`172.19.0.0/24`, gateway `.1`, `enable_icc=false`, so home
+  to home is refused by the network itself) and its full firewall, records the bridge name in
+  `/var/lib/charter-home-net/bridge`, and cuts any conntrack flow a home started before the rules
+  were in place (a backstop; needs the `conntrack` tool).
+- `charter-home-fw.service` (before docker, every boot): `charter-home-net.sh --early`, the
+  subnet rules only (the bridge has no interface yet), so docker's own restart of a home at boot
+  never runs unfirewalled. docker `Requires=` it, so it fails closed: if it fails, docker does not
+  start. It orders itself after `nftables`, `netfilter-persistent`, `ufw` and `firewalld`, so their
+  ruleset load cannot flush it. Never restart it (that restarts docker and every container); to
+  reapply the rules, run `sudo /usr/local/bin/charter-home-net.sh`.
+- `/etc/sudoers.d/charter-home`: the host user may run `/usr/sbin/losetup` as root, nothing else;
+  charter-host attaches each disk image with it.
+- With `ANON_BIN` set only (hel1): a user drop-in,
+  `~/.config/systemd/user/charter-socks.service.d/upstream.conf`, setting
+  `CHARTER_SOCKS_UPSTREAM=127.0.0.1:9152` (see "Job egress" below). toon2's path writes none.
 
-The script also installs `/etc/sudoers.d/charter-home` (the host user may run `/usr/sbin/losetup`
-as root, nothing else), which charter-host uses to attach each disk image. It copies the node's
-`anon` and GeoIP files, and a `toon` upgrade moves those, so rerun it after every `toon` upgrade.
-Running it twice is harmless. Check:
+**Do not rerun install-home.sh on toon2.** The current anonrc adds `127.0.0.1:9152`, so a rerun
+restarts charter-anon (every home's egress drops for a moment) and opens 9152 in the VM, which Lima
+forwards to the Air's localhost. toon2 keeps the anonrc and firewall it has, so the checks below describe a host installed from the current scripts (hel1).
+
+**hel1's install path.** On the fresh Ubuntu 24.04 box, as root from `deploy/host/`: `bash
+install-host.sh` (docker, gVisor's `runsc` registered with docker, Node 22, Anyone's anon pinned by
+version and sha256 and held, the package's own anon service masked, the `charter` user with linger),
+then the line it prints: `SUDO_USER=charter ANON_BIN=/usr/bin/anon ANON_GEOIP=... ANON_GEOIP6=...
+./install-home.sh`. Both are safe to rerun.
+
+**The firewall, rule by rule** (from `charter-home-net.sh`; `br-...` is the bridge, the subnet is
+`172.19.0.0/24`, the gateway `172.19.0.1`):
+
+- `DOCKER-USER` (forwarded traffic), four lines: from the bridge, tcp from port 2222 in an
+  `ESTABLISHED` flow in its reply direction is accepted (a home answers SSH that a client opened to
+  its published port), then everything else from the bridge is dropped; then the same pair for
+  `-s 172.19.0.0/24` (the early rules, kept under the bridge ones). A home never starts a
+  connection: to the internet, the host's public address, another home or another bridge, its
+  first packet is `NEW` and dropped. IPv6 gets the bridge pair in `DOCKER-USER` if that chain exists.
+- `INPUT` (traffic to the host), eleven lines, in order:
+  1. drop tcp 9050,9080 to `172.19.0.1` from anything but the bridge (job containers on docker0, the LAN);
+  2. drop udp 53 to `172.19.0.1` from anything but the bridge;
+  3. from the bridge, accept `ESTABLISHED,RELATED`;
+  4. from the bridge, accept tcp 9050,9080 to the gateway (anon SOCKS and HTTP tunnel);
+  5. from the bridge, accept udp 53 to the gateway (anon DNS);
+  6. from the bridge, accept tcp 53 to the gateway;
+  7. drop everything else from the bridge;
+  8. the early rules, `-s 172.19.0.0/24 -i br-+`: accept tcp 9050,9080,53 to the gateway;
+  9. accept udp 53 to the gateway;
+  10. accept tcp from port 2222 in an `ESTABLISHED` reply flow (the host's own SSH to a home:
+      docker-proxy, the home watch's probe);
+  11. drop everything else from the subnet that is not on `lo` (loopback is the host's own traffic).
+- `ip6tables INPUT`: drop everything from the bridge.
+
+**Job egress, `CHARTER_SOCKS_UPSTREAM`.** `charter-socks.service` (a user unit, `deploy/host/`)
+listens on `172.17.0.1:9150` (`CHARTER_PROXY=socks5://172.17.0.1:9150`) and runs
+`charter-socks-connect` per connection: with `CHARTER_SOCKS_UPSTREAM` set (hel1, by the drop-in) it
+joins `127.0.0.1:9152`, charter-anon's loopback port, since hel1's node is clearnet and runs no anon;
+unset (toon2) it reads the toon node's current SOCKS port from the node's anonrc.
+
+**The box's SSH check.** `deploy/ops/charter-home-ssh-check.sh`, installed on the box by
+`deploy/ops/install-box.sh` and run every 5 minutes by `charter-ops-check.sh` (`charter-ops.timer`),
+reads the door's ledger for leases still paid, asks the door once per lease whether it is a home
+(cached in `/var/lib/charter-ops/home-ssh-<leaseId>.cache`), and probes each public `host:port` from
+outside with `nc`: the banner must start `SSH-`. Three misses in a row alert under
+`home-ssh-<homeId>`; one `recovered` when it answers again. Onion-only access is skipped (the home
+watch in the host covers that). Run it by hand without `--alert` for one line a home.
+
+Check, on the host:
 
 ```
-systemctl status charter-anon charter-home-net
+systemctl status charter-anon charter-home-net charter-home-fw
+systemctl list-dependencies --reverse charter-home-fw.service | grep docker   # docker requires it
 ss -ltunp | grep 172.19.0.1            # anon on tcp 9050 and 9080, udp 53
-sudo iptables -S DOCKER-USER           # -i br-... -j DROP
-sudo iptables -S INPUT | grep br-      # seven lines: two DROPs of 9050/9080 and 53 from anything
-                                       # but the bridge, ESTABLISHED accept, 9050/9080 accept,
-                                       # udp and tcp 53 accepts, then the bridge's final DROP
+ss -ltnp | grep 127.0.0.1:9152         # anon's SOCKS port for the host itself (not on toon2)
+sudo iptables -S DOCKER-USER           # the four lines above
+sudo iptables -S INPUT | grep -e br- -e 172.19.0.0/24   # the eleven lines above, in that order
+sudo ip6tables -S INPUT | grep br-     # the IPv6 DROP
+systemctl --user cat charter-socks.service   # as the host user, hel1: the upstream.conf drop-in
 losetup -a                             # one line per attached home disk
 ```
 
