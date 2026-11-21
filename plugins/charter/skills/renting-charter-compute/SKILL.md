@@ -450,7 +450,7 @@ nothing heavy. The image sets `HERMES_DISABLE_LAZY_INSTALLS=1` and `config.yaml`
 so Hermes's tool bundles are never downloaded: no WhatsApp bridge, browser tool, voice or TUI.
 Traffic leaves through shared Anyone exits that Telegram and the provider may rate-limit. The
 image is 1.94 GB on the host, 842 MB of it the shared `charter-home` base. Homes are limited
-(`home.slots` in the offer), and one may be Edison's while Edison lives there.
+(`home.slots` in the offer), and grants from the fund may hold them.
 
 ### What to tell your operator
 

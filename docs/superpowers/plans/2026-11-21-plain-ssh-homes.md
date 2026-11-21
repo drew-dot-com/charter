@@ -298,7 +298,7 @@ No new code. Record every id, tx and timing in `docs/demo.md` (new section 17). 
 
 ### Task 8: Cut-over (Drew's go; Drew approves the npm publish)
 
-- [ ] **Step 1: Release clients.** Drew approves and publishes charter-mcp 0.3.0 (`npx -y npm@latest stage publish` from `mcp/`), which now carries both the grant tools and plain-SSH lines. Update the MCP registry entry.
+- [ ] **Step 1: Release clients.** Drew approves and publishes charter-mcp 0.3.0 (`npx -y npm@latest stage publish` from `mcp/`), which now carries both the grant tools and plain-SSH lines. Update the MCP registry entry. Then, each with Drew's go: republish the ClawHub skill (`clawhub/charter-compute`, now version 0.2.0 and `charter-mcp@0.3`, so only after 0.3.0 is on npm) and the Arweave landing page (`site/index.html`), both rewritten for plain SSH.
 - [ ] **Step 2: Door switch, one change.** Backup `door.env`; `CHARTER_DOOR_HOSTS` = hel1's `<pubkey>=<ilpBase>` only; rsync main to `/opt/charter` with the held-back web copy now included; rebuild the door. Check `/v1/offers` lists only `hel1-1` with `home.free 4`; `/llms.txt` shows plain SSH and the grants section.
 - [ ] **Step 3: toon2 stops.** `systemctl --user stop charter-host` and `disable` on toon2 (the `toon` VM is not touched). The box ops env: `HOST_CHANNEL_ID` set to hel1's relay-write channel. Install `charter-home-ssh-check.sh` on the box (`install-box.sh`).
 - [ ] **Step 4: Waiting grants.** Any `approved_waiting` grant opens on hel1 within a cycle; its grantee can ssh in. Check the fund's status and the box's SSH check say `ok`.

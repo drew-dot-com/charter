@@ -1,7 +1,7 @@
 ---
 name: charter-compute
 description: Rent a sandboxed machine by the hour and pay for it yourself in USDC on Base, with no account. Run a Python script and get its output, load web pages in a headless browser through a hidden exit, or open a small Linux home with a kept disk and SSH. Use when you need to run code somewhere other than here, fetch a page that needs JavaScript or refuses your address, or keep a box of your own running. 0.007 USDC an hour.
-version: 0.1.0
+version: 0.2.0
 homepage: https://charter.mainnet.toonprotocol.dev/agents
 tags: compute, sandbox, python, fetch, browser, hosting, ssh, x402, usdc, base
 metadata:
@@ -34,13 +34,13 @@ Three things to rent, all at **0.007 USDC an hour** on the live host:
 1. Look at the price and what is on sale. Free.
 
    ```bash
-   npx -y charter-mcp@0.2 offers
+   npx -y charter-mcp@0.3 offers
    ```
 
 2. Look at your wallet. Free. The first run makes the key at `~/.charter/mcp.key`.
 
    ```bash
-   npx -y charter-mcp@0.2 wallet
+   npx -y charter-mcp@0.3 wallet
    ```
 
 3. If `usdcOnBase` is `0`, stop and tell your operator. Give them the `address` from step 2 and say:
@@ -56,13 +56,13 @@ Python 3 with NumPy. No network, no other packages, script at most 8 KiB. Most s
 seconds; you still pay the whole first hour.
 
 ```bash
-npx -y charter-mcp@0.2 run-python job.py
+npx -y charter-mcp@0.3 run-python job.py
 ```
 
 From stdin:
 
 ```bash
-echo 'import numpy as np; print(int(np.arange(10).sum()))' | npx -y charter-mcp@0.2 run-python -
+echo 'import numpy as np; print(int(np.arange(10).sum()))' | npx -y charter-mcp@0.3 run-python -
 ```
 
 The answer has `output.stdout`, `output.stderr` and `output.exitCode`, and `rented.leaseId`.
@@ -74,7 +74,7 @@ leaves through an exit on the Anyone network, so the site sees neither you nor t
 can take a minute. Some sites refuse shared exits.
 
 ```bash
-npx -y charter-mcp@0.2 fetch https://example.com --wait 180
+npx -y charter-mcp@0.3 fetch https://example.com --wait 180
 ```
 
 The answer has `output.pages[]`, each with `url`, `text` and an `error` when the page failed.
@@ -85,7 +85,7 @@ The command waits 40 seconds by default (`--wait` takes 10 to 240). A job still 
 its `leaseId` with a `next` line. The hour is already paid. Collect the output for free:
 
 ```bash
-npx -y charter-mcp@0.2 lease <leaseId>
+npx -y charter-mcp@0.3 lease <leaseId>
 ```
 
 ## Rent a home (paid, one hour at a time)
@@ -95,36 +95,39 @@ kept 7 days after the lease ends, and the same SSH keys open the same disk again
 
 Read this first, because a home is not an ordinary VPS:
 
-- SSH is reachable **only at an onion address on the Anyone network**. Whoever logs in needs an
-  Anyone client running. No Anyone client, no way in.
-- The box has no public address. All its traffic leaves through Anyone: slow, and some services
+- SSH is plain: `ssh -p <port> tenant@<host>`, with the host and port from the lease's
+  `access.ssh`. No special client, no proxy. The port is fixed per home: the same keys reopen the
+  same home, disk and port. A host may also publish `access.onion` as a second way in; only that
+  one needs an Anyone client.
+- The box's own traffic out leaves only through the Anyone network: slow, and some services
   refuse it.
-- The live host has two home slots. When both are taken the rent answers `busy`; try later.
+- Homes are limited: `home.slots` in the offer says how many. When they are full the rent answers
+  `busy`; try later.
 - The host's operator can read the disk. Put secrets in over `scp`, never through Charter.
 
 Put your SSH **public** keys in a file, one a line (never a private key), then:
 
 ```bash
-npx -y charter-mcp@0.2 rent-home keys.pub
+npx -y charter-mcp@0.3 rent-home keys.pub
 ```
 
 Read the lease about once a minute until it shows `lease.ssh`:
 
 ```bash
-npx -y charter-mcp@0.2 lease <leaseId>
+npx -y charter-mcp@0.3 lease <leaseId>
 ```
 
-Log in through the Anyone client's SOCKS port:
+Log in with the host and port it shows:
 
 ```bash
-ssh -o ProxyCommand="nc -x 127.0.0.1:<SOCKS port> %h %p" tenant@<host>
+ssh -p <port> tenant@<host>
 ```
 
 A home runs only while it is paid. Pay the next hours before `paidThrough`, ideally half an hour
 early. Nothing is refunded, so pay only what you will use:
 
 ```bash
-npx -y charter-mcp@0.2 extend <leaseId> 2
+npx -y charter-mcp@0.3 extend <leaseId> 2
 ```
 
 A home that lapses closes; its disk and address are kept 7 days and the same keys bring it back.
