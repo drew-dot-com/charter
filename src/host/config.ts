@@ -10,6 +10,8 @@ export interface HostConfig {
   dataDir: string;
   allowImages: string[];
   proxy?: string;
+  /** Where a proxied job's names resolve: an Anyone DNS port on the docker bridge's gateway. Unset: docker's default (the host's resolvers). */
+  jobDns?: string;
   /** OCI runtime for every job container (`runsc` for gVisor). Default: docker's own. */
   runtime?: string;
   relayUrl: string;
@@ -92,6 +94,14 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
     .filter(Boolean);
   if (allowImages.length === 0) throw new Error('CHARTER_ALLOW_IMAGES is required');
   const proxy = env.CHARTER_PROXY?.trim() || undefined;
+  const jobDns = env.CHARTER_JOB_DNS?.trim() || undefined;
+  if (jobDns !== undefined) {
+    const o = jobDns.split('.');
+    if (o.length !== 4 || o.some((x) => !/^\d{1,3}$/.test(x) || Number(x) > 255)) {
+      throw new Error('CHARTER_JOB_DNS must be a dotted IPv4 address, such as 172.17.0.1');
+    }
+    if (proxy === undefined) throw new Error('CHARTER_JOB_DNS is for proxied jobs: set CHARTER_PROXY too');
+  }
   const runtime = env.CHARTER_RUNTIME?.trim() || undefined;
   if (runtime !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(runtime)) {
     throw new Error('CHARTER_RUNTIME must be a docker runtime name, such as runsc');
@@ -145,6 +155,7 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
     dataDir,
     allowImages,
     proxy,
+    ...(jobDns !== undefined ? { jobDns } : {}),
     runtime,
     relayUrl: need(env, 'CHARTER_RELAY_URL'),
     passphraseFile: need(env, 'TOON_PASSPHRASE_FILE'),

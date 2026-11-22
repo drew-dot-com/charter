@@ -105,6 +105,43 @@ test('start with a non-loopback proxy passes it through unchanged', async () => 
   assert.ok(calls[0]!.args.includes('CHARTER_PROXY=socks5://proxy.internal:1080'));
 });
 
+test('a host with a job DNS address hands it to a proxied job, so names resolve there and not at the host\'s resolvers', async () => {
+  const { exec, calls } = fake();
+  const r = dockerRunner({
+    exec,
+    outRoot: await outRoot(),
+    allow: ['charter-job-fetch'],
+    proxy: 'socks5://172.17.0.1:9150',
+    jobDns: '172.17.0.1',
+  });
+  await r.create('l1', JOB);
+  const a = calls[0]!.args;
+  const i = a.indexOf('--dns');
+  assert.ok(i > 0);
+  assert.equal(a[i + 1], '172.17.0.1');
+  assert.ok(i < a.indexOf(JOB.image), 'a docker flag, so before the image');
+});
+
+test('without a job DNS address a proxied job gets no --dns flag', async () => {
+  const { exec, calls } = fake();
+  const r = dockerRunner({ exec, outRoot: await outRoot(), allow: ['charter-job-fetch'], proxy: 'socks5://172.17.0.1:9150' });
+  await r.create('l1', JOB);
+  assert.ok(!calls[0]!.args.includes('--dns'));
+});
+
+test('the python job has no network, so a job DNS address is not handed to it', async () => {
+  const { exec, calls } = fake();
+  const r = dockerRunner({
+    exec,
+    outRoot: await outRoot(),
+    allow: ['charter-job-python'],
+    proxy: 'socks5://172.17.0.1:9150',
+    jobDns: '172.17.0.1',
+  });
+  await r.create('l1', { image: 'charter-job-python', args: { SCRIPT: 'print(1)' } });
+  assert.ok(!calls[0]!.args.includes('--dns'));
+});
+
 test('a docker failure rejects create', async () => {
   const { exec } = fake(() => ({ code: 125, stderr: 'no such image' }));
   const r = dockerRunner({ exec, outRoot: await outRoot(), allow: ['charter-job-fetch'] });

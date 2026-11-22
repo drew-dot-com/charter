@@ -210,6 +210,12 @@ export function dockerRunner(opts: {
   outRoot: string;
   allow: string[];
   proxy?: string;
+  /**
+   * The resolver handed to a proxied job (`--dns`): an Anyone DNS port on the bridge's gateway.
+   * Without it docker hands the job the host's own resolvers, so the names a renter asks for
+   * leave from the host's address.
+   */
+  jobDns?: string;
   /** Overrides every image's allowed arg names. For tests. */
   allowArgs?: string[];
   /** An OCI runtime for every job, such as `runsc` (gVisor). Default: docker's own. */
@@ -346,6 +352,7 @@ export function dockerRunner(opts: {
       } else if (proxy) {
         argv.push('--add-host', 'host.docker.internal:host-gateway');
         argv.push('-e', `CHARTER_PROXY=${containerProxy(proxy)}`);
+        if (opts.jobDns) argv.push('--dns', opts.jobDns);
       }
       argv.push(...env, job.image);
 

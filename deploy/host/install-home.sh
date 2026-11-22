@@ -9,6 +9,9 @@
 #     pinned package install-host.sh installs (it prints the line to use);
 #   unset: the toon node's own anon and GeoIP files. The node must be up
 #     (`toon up`). Rerun after a toon upgrade, which moves them.
+# JOB_DNS_ADDR=172.17.0.1 (optional, the docker bridge's gateway): Charter's anon
+#   also answers DNS there, for job containers; set CHARTER_JOB_DNS to the same
+#   address in charter-host's env. Unset: jobs use the host's resolvers.
 # Either way they are copied, so the source can change without breaking
 # Charter's anon. Running it twice is harmless; it changes only what differs. It
 # prints no secrets: none are involved.
@@ -69,6 +72,15 @@ put() {
   if [ "$marks" = anon ]; then anon_changed=1; fi
 }
 
+job_dns_line='# (no DNS port for job containers on this host: JOB_DNS_ADDR was not given)'
+if [ -n "${JOB_DNS_ADDR:-}" ]; then
+  [[ "$JOB_DNS_ADDR" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] \
+    || { echo "install-home: JOB_DNS_ADDR must be a dotted IPv4 address, such as 172.17.0.1" >&2; exit 1; }
+  ip -4 -o addr show | grep -qF " $JOB_DNS_ADDR/" \
+    || { echo "install-home: no interface has $JOB_DNS_ADDR (is docker up? \`ip -4 addr show docker0\`)" >&2; exit 1; }
+  job_dns_line="DNSPort $JOB_DNS_ADDR:53"
+fi
+
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -83,6 +95,7 @@ put "$geoip" "$geo_dir/geoip" 0644 "$user:$group" anon
 put "$geoip6" "$geo_dir/geoip6" 0644 "$user:$group" anon
 
 sed -e "s|__HOME__|$home|g" -e "s|__GEOIP__|$geo_dir/geoip|g" -e "s|__GEOIP6__|$geo_dir/geoip6|g" \
+  -e "s|^__JOB_DNS__\$|$job_dns_line|" \
   "$here/anonrc" > "$tmp/anonrc"
 put "$tmp/anonrc" "$home/.config/charter/anon/anonrc" 0644 "$user:$group" anon
 
@@ -145,6 +158,9 @@ echo "    # two DROPs of 172.19.0.1 tcp 9050,9080 and udp 53 from anything but t
 echo "    # then from the bridge four ACCEPTs (ESTABLISHED,RELATED; tcp 9050,9080; udp 53; tcp 53), then its DROP,"
 echo "    # then for -s 172.19.0.0/24 three ACCEPTs (tcp 9050,9080,53; udp 53; sport 2222 replies) and its DROP"
 echo "  sudo ip6tables -S INPUT | grep br-  # the IPv6 DROP"
+if [ -n "${JOB_DNS_ADDR:-}" ]; then
+  echo "  ss -lunp | grep $JOB_DNS_ADDR:53   # anon's DNS port for job containers; then set CHARTER_JOB_DNS=$JOB_DNS_ADDR"
+fi
 if [ -n "${ANON_BIN:-}" ]; then
   echo "  systemctl --user cat charter-socks.service   # as $user: the drop-in sets CHARTER_SOCKS_UPSTREAM=127.0.0.1:9152"
 fi

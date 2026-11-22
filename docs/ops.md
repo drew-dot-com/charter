@@ -339,6 +339,16 @@ listens on `172.17.0.1:9150` (`CHARTER_PROXY=socks5://172.17.0.1:9150`) and runs
 joins `127.0.0.1:9152`, charter-anon's loopback port, since hel1's node is clearnet and runs no anon;
 unset (toon2) it reads the toon node's current SOCKS port from the node's anonrc.
 
+**Job DNS, `CHARTER_JOB_DNS`.** The fetch job looks each name up itself before it lets a request go
+(its guard against private addresses), so a job container needs a resolver. Docker's default hands it
+the host's resolvers, and the names a renter fetches then leave from the host's own address. On hel1
+they resolve over the Anyone network instead: `install-home.sh` run with `JOB_DNS_ADDR=172.17.0.1`
+renders a second `DNSPort 172.17.0.1:53` into charter-anon's config, and `CHARTER_JOB_DNS=172.17.0.1`
+in charter-host's env makes every proxied job start with `--dns 172.17.0.1`. With that in place
+`charter-job-egress.service` forwards nothing from docker0 at all, port 53 included. Check from a
+job-like container: `docker run --rm --runtime runsc --dns 172.17.0.1 busybox nslookup example.com`
+answers, and the same with `--dns 1.1.1.1` times out. A lookup through anon takes about a second.
+
 **The box's SSH check.** `deploy/ops/charter-home-ssh-check.sh`, installed on the box by
 `deploy/ops/install-box.sh` and run every 5 minutes by `charter-ops-check.sh` (`charter-ops.timer`),
 reads the door's ledger for leases still paid, asks the door once per lease whether it is a home

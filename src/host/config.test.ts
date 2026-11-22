@@ -46,6 +46,14 @@ test('loadConfig reads overrides, the proxy and the hidden host flag', () => {
   assert.equal(c.runtime, undefined);
 });
 
+test('loadConfig reads CHARTER_JOB_DNS, needs CHARTER_PROXY beside it, and refuses anything but a dotted IPv4 address', () => {
+  assert.equal(loadConfig(ENV).jobDns, undefined);
+  assert.equal(loadConfig({ ...ENV, CHARTER_PROXY: 'socks5://172.17.0.1:9150', CHARTER_JOB_DNS: '172.17.0.1' }).jobDns, '172.17.0.1');
+  assert.throws(() => loadConfig({ ...ENV, CHARTER_PROXY: 'socks5://172.17.0.1:9150', CHARTER_JOB_DNS: 'dns.example' }), /CHARTER_JOB_DNS/);
+  assert.throws(() => loadConfig({ ...ENV, CHARTER_PROXY: 'socks5://172.17.0.1:9150', CHARTER_JOB_DNS: '172.17.0.1 --privileged' }), /CHARTER_JOB_DNS/);
+  assert.throws(() => loadConfig({ ...ENV, CHARTER_PROXY: '', CHARTER_JOB_DNS: '172.17.0.1' }), /CHARTER_JOB_DNS/);
+});
+
 test('loadConfig reads CHARTER_RUNTIME and refuses anything that is not a runtime name', () => {
   assert.equal(loadConfig({ ...ENV, CHARTER_RUNTIME: 'runsc' }).runtime, 'runsc');
   assert.throws(() => loadConfig({ ...ENV, CHARTER_RUNTIME: 'runsc --privileged' }), /CHARTER_RUNTIME/);

@@ -70,6 +70,7 @@ async function main(argv: string[]): Promise<number> {
     outRoot: join(cfg.dataDir, 'out'),
     allow: cfg.allowImages,
     proxy: cfg.proxy,
+    jobDns: cfg.jobDns,
     runtime: cfg.runtime,
     home:
       h && homes

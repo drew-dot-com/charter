@@ -1,13 +1,19 @@
 # Opt-in, for a host where only Charter's job containers use docker0 (hel1: the toon relay and
-# Caddy run on the host network). Job containers then forward nothing anywhere: their one way
-# out is charter-socks on 172.17.0.1:9150 (INPUT to the host, open), plus DNS (below). Without
+# Caddy run on the host network). Job containers then forward nothing anywhere. Their two ways
+# out are both on the bridge's own gateway (INPUT to the host, open), neither forwarded:
+# charter-socks on 172.17.0.1:9150, and Charter's anon answering DNS on 172.17.0.1:53. Without
 # this, a fetch job whose renderer ignored its proxy would leave from the host's own IP.
+# Needs job DNS first, or every fetch comes back empty (a dropped lookup hangs; seen on hel1
+# 2026-11-21): run install-home.sh with JOB_DNS_ADDR=172.17.0.1 and set CHARTER_JOB_DNS=172.17.0.1.
 # Check first: `docker network inspect bridge` must list only charter job containers.
 # Install (root): cp to /etc/systemd/system/, then
 #   systemctl daemon-reload && systemctl enable --now charter-job-egress.service
 # Ordered after charter-home-fw (which creates DOCKER-USER before docker starts) and before
 # docker, so the rule is in place before any container runs; RequiredBy keeps docker down if
 # it fails (fail closed).
+# Upgrading from the version that let port 53 through: besides installing this file, delete the
+# two live rules once (a oneshot that already ran is not run again until the next boot):
+#   for p in udp tcp; do iptables -D DOCKER-USER -i docker0 -p $p --dport 53 -j ACCEPT; done
 [Unit]
 Description=Charter job egress: nothing forwarded from docker0
 DefaultDependencies=no
@@ -18,11 +24,7 @@ Requires=charter-home-fw.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# DNS stays open: the fetch job resolves names itself, through the resolvers docker hands it
-# (the host's), before it uses its proxy; dropping port 53 empties every fetch (seen on hel1
-# 2026-11-21). Follow-up: point job containers at charter-anon's DNS so names stop leaving
-# from the host too. The ACCEPT is inserted after the DROP, so it lands above it.
-ExecStart=/bin/sh -c 'iptables -N DOCKER-USER 2>/dev/null; iptables -C DOCKER-USER -i docker0 -j DROP 2>/dev/null || iptables -I DOCKER-USER -i docker0 -j DROP; for p in udp tcp; do iptables -C DOCKER-USER -i docker0 -p $p --dport 53 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -i docker0 -p $p --dport 53 -j ACCEPT; done'
+ExecStart=/bin/sh -c 'iptables -N DOCKER-USER 2>/dev/null; iptables -C DOCKER-USER -i docker0 -j DROP 2>/dev/null || iptables -I DOCKER-USER -i docker0 -j DROP'
 
 [Install]
 RequiredBy=docker.service
