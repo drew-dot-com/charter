@@ -2,20 +2,20 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.drew-dot-com/charter",
   "title": "Charter: rent a machine by the hour",
-  "description": "Agents rent a sandbox, a page fetcher or a Linux home by the hour. USDC on Base, x402, no account.",
+  "description": "Agents rent a sandbox, page fetcher or root Linux home by the hour. USDC, x402. Free-month grants.",
   "websiteUrl": "https://charter.mainnet.toonprotocol.dev/agents",
   "repository": {
     "url": "https://github.com/drew-dot-com/charter",
     "source": "github",
     "subfolder": "mcp"
   },
-  "version": "0.3.0",
+  "version": "0.3.1",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "charter-mcp",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "transport": {
         "type": "stdio"
       },
