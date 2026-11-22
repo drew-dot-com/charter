@@ -574,6 +574,38 @@ test('ensureHome makes the disk and volume once and refuses a new disk under the
   assert.equal((await low.r.ensureHome(other)).port, 22000);
 });
 
+test('a host with a bigger home disk makes disks that size and keeps the free-space floor for it', async () => {
+  const t = await homeSetup(40 * GIB);
+  t.home.diskGib = 10;
+  const disk = join(t.homesDir, HOME_ID, 'disk.img');
+  await t.r.ensureHome(HOME_ID);
+  assert.deepEqual(t.tools, [`truncate -s 10G ${disk}`, `mkfs -F -q -m 0 -E root_owner=10001:10001 ${disk}`]);
+
+  // 12 GiB free holds a 2 GiB disk above the 3 GiB floor, but not a 10 GiB one.
+  const low = await homeSetup(12 * GIB);
+  low.home.diskGib = 10;
+  await assert.rejects(
+    low.r.ensureHome(HOME_ID),
+    (e: unknown) => e instanceof RunnerError && e.code === 'boot_failed' && e.message.includes('no disk'),
+  );
+  assert.deepEqual(low.tools, []);
+});
+
+test('space the existing sparse disks may still grow into counts against a new disk', async () => {
+  // 20 GiB free, a 2 GiB disk and a 3 GiB floor would fit; not once other homes may still fill 16 GiB of it.
+  const t = await homeSetup(20 * GIB);
+  let asked: string | undefined;
+  t.home.pendingGrowthBytes = async (dir) => ((asked = dir), 16 * GIB);
+  await assert.rejects(
+    t.r.ensureHome(HOME_ID),
+    (e: unknown) => e instanceof RunnerError && e.code === 'boot_failed' && e.message.includes('no disk'),
+  );
+  assert.equal(asked, t.homesDir);
+  assert.deepEqual(t.tools, []);
+  t.home.pendingGrowthBytes = async () => 14 * GIB;
+  assert.equal((await t.r.ensureHome(HOME_ID)).port, 22000);
+});
+
 test('after a reboot an existing home is re-attached and its volume re-pointed at the new loop device', async () => {
   const t = await homeSetup();
   const disk = join(t.homesDir, HOME_ID, 'disk.img');

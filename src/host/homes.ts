@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { access, statfs } from 'node:fs/promises';
+import { access, readdir, stat, statfs } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { Exec } from '../exec.js';
 
@@ -11,7 +11,10 @@ export interface HomeRecord {
   lastClosedAt?: number;
 }
 
+/** The default home disk size; a host sets its own with CHARTER_HOME_DISK_GIB. */
 export const HOME_DISK_GIB = 2;
+/** The largest disk a host may offer: a bound on one tenant's share, not a tuning value. */
+export const HOME_DISK_GIB_MAX = 64;
 export const HOME_RETENTION_MS = 7 * 86_400_000;
 export const HOME_FREE_FLOOR_BYTES = 3 * 1024 ** 3;
 export const HOME_PORT_BASE = 22000;
@@ -161,6 +164,24 @@ export async function removeVolume(docker: Exec, name: string): Promise<void> {
 export async function freeBytes(dir: string): Promise<number> {
   const s = await statfs(dir);
   return Number(s.bavail) * Number(s.bsize);
+}
+
+/**
+ * How much the home disks under `homesDir` may still grow: each image is sparse, so its full
+ * size minus what it holds today is space a tenant can take without asking. Free space is only
+ * free for a new disk once this is set aside, or a few part-empty homes filling up later would
+ * leave the host with none. A missing directory, or one with no disks, is 0.
+ */
+export async function pendingGrowthBytes(homesDir: string): Promise<number> {
+  const names = await readdir(homesDir).catch(() => [] as string[]);
+  let total = 0;
+  for (const name of names) {
+    const s = await stat(diskPath(homesDir, name)).catch(() => undefined);
+    if (!s?.isFile()) continue;
+    // `blocks` counts 512-byte units whatever the filesystem's block size.
+    total += Math.max(0, s.size - s.blocks * 512);
+  }
+  return total;
 }
 
 /**

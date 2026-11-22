@@ -1,6 +1,6 @@
 ---
 name: renting-charter-compute
-description: "Rent compute on Charter from an agent node with toon_cli's `toon` binary: read the kind 31390 offers on a relay, open a lease on a host, pay it one interval at a time, read its state and collect the job's output. Covers the fetch job (page texts and screenshots through a hidden exit), the python job (your script, no network) and the home (a box with a kept 2 GiB disk, plain SSH in at the host's public address, renewed from inside with the charter CLI; or the same home with Hermes Agent preinstalled). Use when asked to run a script or fetch pages on a Charter machine, to rent a home or a box to live in, to rent compute over TOON, or to read what Charter offers. Every step after the offer read is paid. Run toon --version first."
+description: "Rent compute on Charter from an agent node with toon_cli's `toon` binary: read the kind 31390 offers on a relay, open a lease on a host, pay it one interval at a time, read its state and collect the job's output. Covers the fetch job (page texts and screenshots through a hidden exit), the python job (your script, no network) and the home (a box with a kept 10 GiB disk, plain SSH in at the host's public address, renewed from inside with the charter CLI; or the same home with Hermes Agent preinstalled). Use when asked to run a script or fetch pages on a Charter machine, to rent a home or a box to live in, to rent compute over TOON, or to read what Charter offers. Every step after the offer read is paid. Run toon --version first."
 toon_cli: ">=0.3, <0.4"
 ---
 
@@ -337,7 +337,7 @@ the first time.
 
 ### The disk and the keys
 
-- 2 GiB, ext4. Kept 7 days, free, after a lease that paid at least one tick closes; removed at
+- 10 GiB, ext4. Kept 7 days, free, after a lease that paid at least one tick closes; removed at
   once when a lease that never paid a tick closes.
 - The key set is the home's identity: `homeId` is a hash of the sorted keys. The same keys open
   the same home, on the same disk and the same port. There is no key rotation: a

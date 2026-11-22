@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Exec } from '../exec.js';
@@ -15,6 +15,7 @@ import {
   diskPath,
   ensureVolume,
   freeBytes,
+  pendingGrowthBytes,
   removeVolume,
   sweepDue,
   volumeName,
@@ -182,6 +183,22 @@ test('removeVolume forces removal and ignores errors', async () => {
   const f = fake(() => ({ code: 1, stderr: 'gone' }));
   await removeVolume(f.exec, 'v');
   assert.deepEqual(f.calls[0]!.args, ['volume', 'rm', '-f', 'v']);
+});
+
+test('pendingGrowthBytes adds up what each home disk may still grow by, and is 0 with no homes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'homes-'));
+  assert.equal(await pendingGrowthBytes(join(dir, 'absent')), 0);
+  assert.equal(await pendingGrowthBytes(dir), 0);
+  // A sparse 64 MiB image with nothing written: nearly all of it is still to grow.
+  await mkdir(join(dir, 'aaaa'));
+  const sparse = await open(join(dir, 'aaaa', 'disk.img'), 'w');
+  await sparse.truncate(64 * 1024 * 1024);
+  await sparse.close();
+  // A directory without a disk, and a stray file, are skipped.
+  await mkdir(join(dir, 'bbbb'));
+  await writeFile(join(dir, 'stray'), 'x');
+  const pending = await pendingGrowthBytes(dir);
+  assert.ok(pending > 60 * 1024 * 1024 && pending <= 64 * 1024 * 1024, String(pending));
 });
 
 test('freeBytes reports a positive number for a real directory', async () => {

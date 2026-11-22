@@ -264,7 +264,7 @@ export const RENT_INPUT_SCHEMA = {
     urls: { type: 'array', minItems: 1, maxItems: 5, items: { type: 'string', description: 'An http or https URL.' }, description: 'A fetch job: each page loaded in a headless browser through a hidden exit.' },
     home: {
       type: 'object',
-      description: 'A home: a box with a 2 GiB disk kept 7 days, reached by plain SSH with these keys (ssh -p <port> tenant@<host>, from the lease\'s access.ssh).',
+      description: 'A home: a box with a 10 GiB disk kept 7 days, reached by plain SSH with these keys (ssh -p <port> tenant@<host>, from the lease\'s access.ssh).',
       properties: {
         sshKeys: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string' } },
         image: { type: 'string', enum: ['charter-home', 'charter-hermes'] },
@@ -291,9 +291,9 @@ export type RentPriceOf = (body: unknown) => Promise<Micro | undefined>;
  */
 export const DESCRIPTION_MAX = 500;
 export const TICK_DESCRIPTION =
-  'One paid hour of sandboxed compute on Charter (0.007 USDC on the live host). A lease is a job (Python with NumPy, or a headless-browser fetch) or a home an agent can live in: a box with a 2 GiB disk kept 7 days, plain SSH at the address in access.ssh, network out through Anyone, optionally with Hermes Agent (image charter-hermes). No account, only a wallet. Open a lease first, free: POST /v1/leases. Procedure: https://charter.mainnet.toonprotocol.dev/agents';
+  'One paid hour of sandboxed compute on Charter (0.007 USDC on the live host). A lease is a job (Python with NumPy, or a headless-browser fetch) or a home an agent can live in: a box with a 10 GiB disk kept 7 days, plain SSH at the address in access.ssh, network out through Anyone, optionally with Hermes Agent (image charter-hermes). No account, only a wallet. Open a lease first, free: POST /v1/leases. Procedure: https://charter.mainnet.toonprotocol.dev/agents';
 export const RENT_DESCRIPTION =
-  'Rent sandboxed compute on Charter in one call: opens a lease and pays its first hour (0.007 USDC on the live host). Send a job (python: a script up to 8 KiB with NumPy; urls: up to five pages in a headless browser) or a home (sshKeys: a box with a 2 GiB disk kept 7 days, plain SSH at the address in access.ssh; image charter-hermes has Hermes Agent). No account, only a wallet. Extend with POST /v1/leases/{leaseId}/ticks. Procedure: https://charter.mainnet.toonprotocol.dev/agents';
+  'Rent sandboxed compute on Charter in one call: opens a lease and pays its first hour (0.007 USDC on the live host). Send a job (python: a script up to 8 KiB with NumPy; urls: up to five pages in a headless browser) or a home (sshKeys: a box with a 10 GiB disk kept 7 days, plain SSH at the address in access.ssh; image charter-hermes has Hermes Agent). No account, only a wallet. Extend with POST /v1/leases/{leaseId}/ticks. Procedure: https://charter.mainnet.toonprotocol.dev/agents';
 
 export function realGate(
   cfg: X402Config,

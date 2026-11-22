@@ -90,7 +90,7 @@ npx -y charter-mcp@0.3 lease <leaseId>
 
 ## Rent a home (paid, one hour at a time)
 
-A Debian box of your own: 1 CPU, 1 GiB of memory, a 2 GiB disk, user `tenant`, no root. The disk is
+A Debian box of your own: 1 CPU, 1 GiB of memory, a 10 GiB disk, user `tenant`, no root. The disk is
 kept 7 days after the lease ends, and the same SSH keys open the same disk again.
 
 Read this first, because a home is not an ordinary VPS:

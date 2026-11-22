@@ -14,6 +14,7 @@ import {
   diskPath,
   ensureVolume,
   freeBytes as statFreeBytes,
+  pendingGrowthBytes as statPendingGrowthBytes,
   HOME_DISK_GIB,
   HOME_FREE_FLOOR_BYTES,
   HomeError,
@@ -118,7 +119,11 @@ export interface HomeRunnerOpts {
   tools: { truncate: Exec; mkfs: Exec; losetup: Exec };
   offerJson: string;
   connectorUrl: string;
+  /** GiB of each new home's disk. Default HOME_DISK_GIB. A disk that exists keeps the size it was made with. */
+  diskGib?: number;
   freeBytes?: (dir: string) => Promise<number>;
+  /** What the existing sparse disks may still grow by. Default: read from the disk images. */
+  pendingGrowthBytes?: (dir: string) => Promise<number>;
   now?: () => number;
 }
 
@@ -258,12 +263,14 @@ export function dockerRunner(opts: {
       const missing = await access(disk).then(() => false, () => true);
       if (missing) {
         await mkdir(h.homesDir, { recursive: true });
+        const gib = h.diskGib ?? HOME_DISK_GIB;
         const free = await (h.freeBytes ?? statFreeBytes)(h.homesDir);
-        // A sparse disk can grow to its full size: keep the floor even then.
-        if (free - HOME_DISK_GIB * 1024 ** 3 < HOME_FREE_FLOOR_BYTES) throw new RunnerError('boot_failed', 'no disk');
+        const pending = await (h.pendingGrowthBytes ?? statPendingGrowthBytes)(h.homesDir);
+        // Every sparse disk can grow to its full size, this one and the ones already here: keep the floor even then.
+        if (free - pending - gib * 1024 ** 3 < HOME_FREE_FLOOR_BYTES) throw new RunnerError('boot_failed', 'no disk');
         madeDir = (await mkdir(dir, { recursive: true })) !== undefined;
         madeDisk = true;
-        await createDisk(h.tools, disk, HOME_DISK_GIB);
+        await createDisk(h.tools, disk, gib);
       }
       // Every call, not only on create: after a reboot the disk is detached and its loop number may differ.
       device = await attachDisk(h.tools.losetup, disk);

@@ -92,6 +92,7 @@ test('a host with homes needs the anon paths and a tenant connector URL and adve
     gateway: '172.19.0.1',
     socksPort: 9050,
     httpPort: 9080,
+    diskGib: 2,
     onion: true,
     anonHsDir: '/etc/anon/hs.d',
     anonPidFile: '/run/anon/anon.pid',
@@ -151,6 +152,18 @@ test('the home image without a home slot is a configuration error', () => {
     () => loadConfig({ ...ENV, CHARTER_ALLOW_IMAGES: 'charter-job-fetch,charter-home' }),
     /CHARTER_MAX_HOMES/,
   );
+});
+
+test('CHARTER_HOME_DISK_GIB sets the home disk size in the config and the offer; default 2', () => {
+  const d = loadConfig(HOME_ENV);
+  assert.equal(d.home?.diskGib, 2);
+  assert.equal(d.offer.home?.diskGiB, 2);
+  const c = loadConfig({ ...HOME_ENV, CHARTER_HOME_DISK_GIB: '10' });
+  assert.equal(c.home?.diskGib, 10);
+  assert.equal(c.offer.home?.diskGiB, 10);
+  for (const bad of ['0', '-1', '1.5', '65', 'ten']) {
+    assert.throws(() => loadConfig({ ...HOME_ENV, CHARTER_HOME_DISK_GIB: bad }), /CHARTER_HOME_DISK_GIB/, bad);
+  }
 });
 
 test('charter-hermes alone also needs CHARTER_MAX_HOMES', () => {

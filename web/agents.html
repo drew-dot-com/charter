@@ -29,7 +29,7 @@
     <ul>
       <li><code>charter-job-python</code>: your Python 3 script, at most 8 KiB, NumPy included, no network. You get stdout, stderr and the exit code back.</li>
       <li><code>charter-job-fetch</code>: one to five pages loaded in a headless browser through a hidden exit. You get the text (32 KiB a page) and a screenshot of each.</li>
-      <li><code>charter-home</code>: a box of your own. A 2 GiB disk that is kept between leases, plain SSH in at the host's public address (<code>ssh -p &lt;port&gt; tenant@&lt;host&gt;</code>), and network out only through the Anyone network. No output: you log in. See <a href="#home">Home</a>.</li>
+      <li><code>charter-home</code>: a box of your own. A 10 GiB disk that is kept between leases, plain SSH in at the host's public address (<code>ssh -p &lt;port&gt; tenant@&lt;host&gt;</code>), and network out only through the Anyone network. No output: you log in. See <a href="#home">Home</a>.</li>
     </ul>
     <table class="recent">
       <tr><th>item</th><th>USDC</th><th>who pays</th></tr>
@@ -37,7 +37,7 @@
       <tr><td>opening a lease</td><td class="num">0.001</td><td>the storefront, when you come in over HTTP; you, from a toon node</td></tr>
       <tr><td>a status read or one output part</td><td class="num">0.0001</td><td>the storefront, when you come in over HTTP; you, from a toon node</td></tr>
     </table>
-    <p>Those are the one live host's prices. The authoritative number is <code>tickPrice</code> in <a href="/v1/offers">/v1/offers</a>, in micro-USDC (<code>7000</code> is 0.007), and <code>intervalSeconds</code> says what a tick buys (3600). A python job that finishes inside its first hour costs 0.007 USDC. A full day costs about 0.17; 30 days about 5 USDC, which is about the price of the cheapest VPS, for a box nobody signed up for. Three jobs run today: the python job has no network and the fetch job hands back pages, while the home has network through the Anyone network, a 2 GiB disk and SSH in. Homes are limited: the count is <code>home.slots</code> in the offer. Until 2026-11-04 the interval was 30 seconds at 0.005.</p>
+    <p>Those are the one live host's prices. The authoritative number is <code>tickPrice</code> in <a href="/v1/offers">/v1/offers</a>, in micro-USDC (<code>7000</code> is 0.007), and <code>intervalSeconds</code> says what a tick buys (3600). A python job that finishes inside its first hour costs 0.007 USDC. A full day costs about 0.17; 30 days about 5 USDC, which is about the price of the cheapest VPS, for a box nobody signed up for. Three jobs run today: the python job has no network and the fetch job hands back pages, while the home has network through the Anyone network, a 10 GiB disk and SSH in. Homes are limited: the count is <code>home.slots</code> in the offer. Until 2026-11-04 the interval was 30 seconds at 0.005.</p>
     <p>Status: live on Base mainnet since 2026-10-17, one host, first-party. Every renter so far has been an operator of the project. The first mainnet leases (2026-10-17 to 2026-10-20) have receipts on <a href="https://charter.ar.io/#proof">the About page</a>; grants and the hours the fund paid are at <a href="/grants">/grants</a>.</p>
 
     <h2>Before you spend</h2>
@@ -125,7 +125,7 @@ Content-Type: application/json
 
     <h3>The disk, and who it belongs to</h3>
     <ul>
-      <li>2 GiB, ext4. A full disk fails inside the box; it does not grow.</li>
+      <li>10 GiB, ext4 (<code>home.diskGiB</code> in the offer says so). A full disk fails inside the box; it does not grow. A home made before 2026-11-22 keeps the 2 GiB disk it was made with.</li>
       <li>Your key set is the home's identity: <code>homeId</code> is a hash of the sorted keys. The same keys open the same home, on the same disk and the same port. There is no key rotation: a different set of keys is a different home, and a lost private key is a lost home once the retention runs out.</li>
       <li>After a lease that paid at least one tick closes, the disk is kept 7 days, free. A lease that never paid a tick has its disk removed when it closes.</li>
       <li>Anyone with your public keys can open your home and hold it, though not enter it: while their lease lives, yours is refused (<code>home_in_use</code>). Add to the set a key whose public half you have shown nobody, and nobody else can name your home (that makes it a new home).</li>
@@ -154,7 +154,7 @@ charter-x402 status                       # free: state, paidThrough, minutes le
     <p><code>renew</code> reads the lease and pays from the host's own count of paid ticks. <code>renew</code> pays each tick when it is due, so restarting <code>boot.sh</code> costs nothing extra. After <code>&lt;n&gt;</code> ticks it exits and nothing pays, so a box that should stay up runs <code>renew</code> again or picks <code>&lt;n&gt;</code> for the time wanted. Put it in <code>boot.sh</code>. The box's wallet needs USDC in a channel to the connector in <code>CHARTER_CONNECTOR_URL</code>, plus a little Base ETH for the one on-chain channel open. 2 USDC runs the box about 10 days: 12 days of rent, less the status reads <code>renew</code> makes (about 8 an hour at 0.0001).</p>
 
     <h3 id="hermes">Hermes in a box</h3>
-    <p>Open the same home with <code>"image": "charter-hermes"</code> and the box has <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a> 0.22.7 and the <code>charter</code> command line already installed, read-only, and a default boot that runs them. Everything above (the keys, the plain SSH access, the 2 GiB disk, the price, the Anyone network) is the same. The offer's <code>images</code> lists it when the host allows it.</p>
+    <p>Open the same home with <code>"image": "charter-hermes"</code> and the box has <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a> 0.22.7 and the <code>charter</code> command line already installed, read-only, and a default boot that runs them. Everything above (the keys, the plain SSH access, the 10 GiB disk, the price, the Anyone network) is the same. The offer's <code>images</code> lists it when the host allows it.</p>
 <pre>{"offerId": "&lt;offerId&gt;", "home": {"sshKeys": ["ssh-ed25519 AAAA… comment"], "image": "charter-hermes"}}</pre>
     <p>From a toon node the open's job is <code>{"image": "charter-hermes", "args": {"SSH_KEYS": "…"}}</code>. With the CLI: <code>charter rent --offer &lt;pubkey&gt;:&lt;offerId&gt; --home keys.pub --image charter-hermes --max-intervals 1 --relay wss://relay.mainnet.toonprotocol.dev</code> (inside a box the relay flag is not needed). A tenant whose keys already name a <code>charter-home</code> opens the same disk under <code>charter-hermes</code>; its files are kept. If that disk already has its own <code>~/.charter/boot.sh</code>, the box runs that one and never the default boot below; copy <code>/app/boot-default.sh</code> over it (or edit your own) to get the image's boot.</p>
     <ul>
@@ -186,7 +186,7 @@ charter-x402 status                       # free: state, paidThrough, minutes le
     <h3 id="openhuman">OpenHuman in a home</h3>
     <p><a href="https://github.com/tinyhumansai/openhuman">OpenHuman</a> is a Rust agent harness. Its official headless build runs in a <code>charter-home</code> as downloaded. Checked 2026-11-16 with release v0.64.15 on the earlier aarch64 host, in a box fenced like a live home. On 2026-11-22 the install, start, <code>/health</code>, <code>core.ping</code> and idle memory were checked again in a live home on today's x86_64 host; the other numbers are from the first check, and what was not checked is listed at the end.</p>
     <p><b>Open the home</b> from wherever your wallet is, with any x402 client: <code>POST /v1/rent</code> with <code>{"home": {"sshKeys": ["ssh-ed25519 AAAA…"]}}</code>, 0.007 USDC by <code>exact</code> on Base. Read <code>GET /v1/leases/&lt;leaseId&gt;</code> about once a minute until <code>lease.access.ssh</code> is set, then <a href="#home">get in</a>. With no x402 client at hand, <code>charter-x402 open --keys keys.pub</code> does the same from any machine with Node 22.</p>
-    <p><b>Install</b>, in the box. On x86_64, 156 MB comes down in about a minute through the hidden network and unpacks to 324 MB of the 2 GiB disk:</p>
+    <p><b>Install</b>, in the box. On x86_64, 156 MB comes down in about a minute through the hidden network and unpacks to 324 MB of the 10 GiB disk:</p>
 <pre>V=0.64.15
 A=openhuman-core-$V-$(uname -m)-unknown-linux-gnu.tar.gz
 U=https://github.com/tinyhumansai/openhuman/releases/download/v$V
@@ -220,7 +220,7 @@ done</pre>
       <li>Release v0.64.15 has no wallet and no x402 RPC: its <code>/schema</code> lists neither. <code>openhuman.x402_fetch</code> exists only on OpenHuman's main branch, in no release as of 2026-11-16. Until a release carries it, the agent cannot pay by itself; <code>charter-x402</code> pays the rent from a key file on the disk.</li>
       <li>Not checked here: an agent turn (it needs your TinyHumans credential), and OpenHuman paying for anything.</li>
       <li>The network is HTTP and HTTPS through a proxy; github.com and api.tinyhumans.ai answered from the box. A raw socket to the internet fails. Read from OpenHuman's source, not tested: its backend Socket.IO connection, used after a session-token login, does not go through a proxy, so sign in with an API key.</li>
-      <li>x86_64 on the live host, 1 CPU, 1 GiB, 2 GiB disk: one core and the renew fit; a second agent or a local model does not.</li>
+      <li>x86_64 on the live host, 1 CPU, 1 GiB, 10 GiB disk: one core and the renew fit; a second agent or a local model does not.</li>
       <li>One host, one operator, no uptime figure. The way in is plain SSH, no Anyone client needed; the box's own outbound traffic is slow, and some services refuse shared exits.</li>
       <li>The operator can read the disk, the wallet key included. Keep in it only what the rent needs.</li>
     </ul>

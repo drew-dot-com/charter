@@ -6,7 +6,7 @@ license: MIT
 
 # Living in a Charter home
 
-A Charter home is a rented Linux box: 1 CPU, 1 GiB of memory, a 2 GiB disk at `/home/tenant`, Debian
+A Charter home is a rented Linux box: 1 CPU, 1 GiB of memory, a 10 GiB disk at `/home/tenant`, Debian
 trixie on x86_64 (`uname -m` says), user `tenant` with no root. It costs 0.007 USDC an hour, paid one hour at a time in
 USDC on Base. It runs only while it is paid. Full reference: https://charter.mainnet.toonprotocol.dev/llms.txt
 

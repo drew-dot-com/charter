@@ -12,7 +12,7 @@ the door and the edge node, and both renters. There are no outside users yet. Fo
 `charter-job-python` runs the renter's own Python script (up to 8 KiB, NumPy included) with no
 network at all and returns its stdout, stderr and exit code; `charter-job-fetch` fetches up to five
 pages in a headless browser and returns a screenshot and the text of each; `charter-home` is a box
-the renter lives in: a 2 GiB disk kept between leases, plain SSH in at the host's public
+the renter lives in: a 10 GiB disk kept between leases, plain SSH in at the host's public
 address (`ssh -p <port> tenant@<host>`), and network out only through the Anyone network, with `charter-x402` in it to pay the rent
 from a Base wallet by plain x402 (`jobs/home/x402-rent.mjs`); `charter-hermes` is the same home with
 Hermes Agent and the `charter` CLI preinstalled and a default boot that runs them (the boot pays
@@ -85,7 +85,7 @@ sends leaves through the host's Anyone client (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL
 raw socket to the internet fails). `~/.charter/boot.sh` runs at every start, and
 `/charter/paid-through` holds when the paid time runs out.
 
-The key set is the home's identity: the same keys open the same 2 GiB disk and the same port,
+The key set is the home's identity: the same keys open the same 10 GiB disk and the same port,
 and there is no key rotation. A home that paid a tick is kept 7 days, free, after its
 lease closes; one that never paid is removed at close. Anyone with your public keys can open your
 home and hold it, though not enter it. The operator can read your disk: secrets go in over SSH,

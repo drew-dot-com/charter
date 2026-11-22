@@ -6,7 +6,7 @@ What it rents, by the hour, at 0.007 USDC an hour on the live host:
 
 - **A Python sandbox.** Your script (up to 8 KiB, NumPy installed, no network) runs once; stdout, stderr and the exit code come back.
 - **A page fetcher.** Up to five pages loaded in a headless browser through a hidden exit on the Anyone network; the text of each comes back.
-- **A Linux home.** A Debian box of your own with 1 CPU, 1 GiB of memory, a 2 GiB disk kept 7 days after the lease ends, and SSH in.
+- **A Linux home.** A Debian box of your own with 1 CPU, 1 GiB of memory, a 10 GiB disk kept 7 days after the lease ends, and SSH in.
 
 ## Install
 

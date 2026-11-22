@@ -242,7 +242,7 @@ Done 2026-11-04, 30 s at 5000 to one hour at 7000, no live lease, in this order:
 
 ## Homes
 
-A home is a lease on `charter-home`: the renter's own box, with a 2 GiB disk kept between leases and
+A home is a lease on `charter-home`: the renter's own box, with a 10 GiB disk kept between leases and
 plain SSH in at the host's public address (`access.ssh`; an onion is optional). toon2 carries one (`CHARTER_MAX_HOMES=1`, counted inside
 `CHARTER_MAX_LEASES=2`), so a home and one job can run at once. Design:
 `docs/superpowers/specs/2026-11-04-home-image-design.md`; variables: `docs/env.md`.
@@ -338,6 +338,8 @@ listens on `172.17.0.1:9150` (`CHARTER_PROXY=socks5://172.17.0.1:9150`) and runs
 `charter-socks-connect` per connection: with `CHARTER_SOCKS_UPSTREAM` set (hel1, by the drop-in) it
 joins `127.0.0.1:9152`, charter-anon's loopback port, since hel1's node is clearnet and runs no anon;
 unset (toon2) it reads the toon node's current SOCKS port from the node's anonrc.
+
+**Home disk size, `CHARTER_HOME_DISK_GIB`.** Each new home gets a sparse ext4 image of that many GiB (default 2; hel1 runs 10 since 2026-11-22, on a 150 GB disk) and the offer advertises it as `home.diskGiB`. A home that already has a disk keeps it at the size it was made with. Before making a disk the host checks that free space, less what every existing image may still grow by (its full size less the blocks it holds), less the new disk, leaves 3 GiB; otherwise the open answers `boot_failed` (`no disk`). So the worst case, every disk full, never fills the host. What that costs: a renter who fills a disk and lets the lease lapse holds that space for the 7 days of retention, and enough of those refuse new homes until the sweep removes them. `du -sh --apparent-size <homes>/*/disk.img` against `du -sh` of the same shows committed against used.
 
 **Job DNS, `CHARTER_JOB_DNS`.** The fetch job looks each name up itself before it lets a request go
 (its guard against private addresses), so a job container needs a resolver. Docker's default hands it

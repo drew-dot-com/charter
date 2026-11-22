@@ -3,7 +3,7 @@ import { FIRST_TICK_GRACE_MS } from '../lease.js';
 import { HOME_IMAGES } from '../jobs.js';
 import { isSealKey, isSealUrl } from '../offer.js';
 import type { Micro, Offer } from '../types.js';
-import { HOME_DISK_GIB, HOME_RETENTION_MS } from './homes.js';
+import { HOME_DISK_GIB, HOME_DISK_GIB_MAX, HOME_RETENTION_MS } from './homes.js';
 
 export interface HostConfig {
   ports: { open: number; tick: number; status: number };
@@ -27,6 +27,8 @@ export interface HostConfig {
     gateway: string;
     socksPort: number;
     httpPort: number;
+    /** GiB of each new home's disk (CHARTER_HOME_DISK_GIB). */
+    diskGib: number;
     /** A public dotted IPv4 address homes are reached on (docker -p binds it, so not a name). Unset: homes are onion-only. */
     publicHost?: string;
     /** Publish each home as an onion service. True unless a public host is set and CHARTER_HOME_ONION is off. */
@@ -136,6 +138,11 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
     if (publicHost !== undefined && !publicIPv4(publicHost)) {
       throw new Error('CHARTER_HOME_PUBLIC_HOST must be a dotted IPv4 address (docker binds it; a hostname is not accepted), without a scheme or port');
     }
+    const rawDisk = env.CHARTER_HOME_DISK_GIB?.trim() || String(HOME_DISK_GIB);
+    const diskGib = /^\d+$/.test(rawDisk) ? Number(rawDisk) : NaN;
+    if (!Number.isInteger(diskGib) || diskGib < 1 || diskGib > HOME_DISK_GIB_MAX) {
+      throw new Error(`CHARTER_HOME_DISK_GIB must be a whole number of GiB from 1 to ${HOME_DISK_GIB_MAX}`);
+    }
     const onion = publicHost === undefined || flag(env, 'CHARTER_HOME_ONION');
     home = {
       dir: env.CHARTER_HOME_DIR?.trim() || join(dataDir, 'homes'),
@@ -143,6 +150,7 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
       gateway,
       socksPort: num(env, 'CHARTER_HOME_SOCKS_PORT', 9050),
       httpPort: num(env, 'CHARTER_HOME_HTTP_PORT', 9080),
+      diskGib,
       ...(publicHost !== undefined ? { publicHost } : {}),
       onion,
       ...(onion ? { anonHsDir: need(env, 'CHARTER_ANON_HS_DIR'), anonPidFile: need(env, 'CHARTER_ANON_PIDFILE') } : {}),
@@ -183,7 +191,7 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
       hiddenEgress: proxy !== undefined,
       expiresAt: 0,
       ...(maxHomes > 0
-        ? { home: { diskGiB: HOME_DISK_GIB, retentionDays: HOME_RETENTION_MS / 86_400_000, slots: maxHomes } }
+        ? { home: { diskGiB: home?.diskGib ?? HOME_DISK_GIB, retentionDays: HOME_RETENTION_MS / 86_400_000, slots: maxHomes } }
         : {}),
     },
   };
