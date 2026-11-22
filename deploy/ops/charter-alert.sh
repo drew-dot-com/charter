@@ -2,6 +2,7 @@
 # charter-alert: one alert on failure, one on recovery, nothing in between.
 #
 #   charter-alert.sh <key> ok|fail <title> [detail]
+#   charter-alert.sh <key> event <title> [detail]   (always sends, keeps no state)
 #
 # <key> names the condition (door, headroom, unpaid). The last state of each key
 # is kept in $CHARTER_OPS_STATE/<key>.state. A fail after an ok (or after no
@@ -34,7 +35,7 @@ key="${1:?usage: charter-alert.sh <key> ok|fail <title> [detail]}"
 new="${2:?usage: charter-alert.sh <key> ok|fail <title> [detail]}"
 title="${3:?usage: charter-alert.sh <key> ok|fail <title> [detail]}"
 detail="${4:-}"
-case "$new" in ok|fail) ;; *) echo "charter-alert: state must be ok or fail" >&2; exit 2 ;; esac
+case "$new" in ok|fail|event) ;; *) echo "charter-alert: state must be ok, fail or event" >&2; exit 2 ;; esac
 
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 log() { echo "$(ts) $key $*" >> "$STATE/alerts.log"; }
@@ -52,6 +53,13 @@ send() { # send <text>
   fi
   [ "$sent" = 1 ] || log "no channel delivered: $text"
 }
+
+if [ "$new" = event ]; then
+  log "EVENT: $title | $detail"
+  send "$title${detail:+
+$detail}"
+  exit 0
+fi
 
 stamp="$STATE/$key.state"
 prev="$(cat "$stamp" 2>/dev/null || echo none)"

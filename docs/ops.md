@@ -11,6 +11,7 @@ What watches the door, what backs it up, and what to do when something fires. Sc
 | door data backup (`charter-backup-pull.sh`) | the Air, launchd `com.drew.charter-backup` | nightly 03:40 Air local | none yet: `~/charter-backups/pull.log` records each run |
 | the host (`charter-host`, `CHARTER_MAX_LEASES=2`) | the `toon2` VM on the Air | always on | the canary sees its offer vanish |
 | the grant fund (`charter-fund`, container) | the Hetzner box, beside `charter-door` | loop, one cycle every 60 s | `charter-fund-check.sh`, in the 5 minute check |
+| outside usage (`charter-usage-check.sh`) | the Hetzner box, in `charter-ops.timer` | every 5 min | Telegram DM to Drew, one per event |
 | home watch (`charter-home-watch.sh`) | the `toon2` VM, user timer `charter-home-watch.timer` | every 5 min | Telegram DM to Drew: a late tick, a lapse, a recovery |
 
 Box side: `/usr/local/bin/charter-*.sh`, config `/etc/charter-ops/env` (template `deploy/ops/env.example`),
@@ -427,6 +428,18 @@ With the node down the host cannot publish its offer or sell a tick, so every le
 Keep at least 1 USDC idle in that wallet: a host-channel top-up must not drain it below 1. Check:
 `journalctl --user -u toon-agent-node -b | grep -m1 "not funded"`; after funding,
 `systemctl --user reset-failed toon-agent-node && systemctl --user start toon-agent-node`.
+
+## Outside usage
+
+`charter-usage-check.sh` (in the 5 minute check) sends Drew one Telegram message per event, never a
+reminder: a new lease from a wallet not in `FIRST_PARTY_PAYERS` (`/etc/charter-ops/env`), such a lease
+paying its second hour (a one-tick probe never does, so this is the signal of a real renter), a new grant
+pitch, and the judge's decision on it. It reads `door-ledger.json` and `grants.jsonl` in
+`CHARTER_DOOR_DATA` and keeps the ids it has reported in `/var/lib/charter-ops/usage-seen.json`; delete
+that file and the next run records everything as seen again without sending. The ledger records the offer,
+not the image, so the message cannot say whether a lease is a home or a job. Dry run:
+`USAGE_SHOW_ALL=1 charter-usage-check.sh` prints every message it would ever send and changes nothing.
+Sends go through `charter-alert.sh usage event`, which always sends and keeps no state. Installed 2026-11-22.
 
 ## Grant fund
 
