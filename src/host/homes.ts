@@ -9,6 +9,13 @@ export interface HomeRecord {
   createdAt: number;
   paidOnce: boolean;
   lastClosedAt?: number;
+  /**
+   * 2: a root home. Its disk holds `home/`, `root/` and `sys/<image>/{usr,etc,var}`, mounted over the
+   * box's own, and the box runs as root. Absent: the first layout, the whole disk at /home/tenant.
+   */
+  layout?: 2;
+  /** Layout 2: the images whose system folders are already on the disk. */
+  sys?: string[];
 }
 
 /** The default home disk size; a host sets its own with CHARTER_HOME_DISK_GIB. */
@@ -99,14 +106,16 @@ export async function createDisk(
   tools: { truncate: Exec; mkfs: Exec },
   file: string,
   gib: number,
+  /** uid:gid of the disk's top folder: the tenant's for the first layout, root's for a root home. */
+  owner = '10001:10001',
 ): Promise<void> {
   // Never touch an existing image: mkfs would wipe a paid home.
   const exists = await access(file).then(() => true, () => false);
   if (exists) throw new HomeError('disk_exists', file);
   const t = await tools.truncate(['-s', `${gib}G`, file], {});
   if (t.code !== 0) throw new HomeError('mkfs_failed', `truncate: ${t.stderr}`);
-  // Nothing in the box can chown, so the tenant uid must own the disk's root from format time.
-  const m = await tools.mkfs(['-F', '-q', '-m', '0', '-E', 'root_owner=10001:10001', file], {});
+  // In the first layout nothing in the box can chown, so the tenant uid must own the disk's root from format time.
+  const m = await tools.mkfs(['-F', '-q', '-m', '0', '-E', `root_owner=${owner}`, file], {});
   if (m.code !== 0) throw new HomeError('mkfs_failed', m.stderr);
 }
 

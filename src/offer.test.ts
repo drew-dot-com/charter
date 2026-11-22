@@ -174,6 +174,19 @@ test('an offer carries its home terms through the event and through JSON', () =>
   assert.deepEqual(back, { ...o, expiresAt: 0 });
 });
 
+test('an offer carries home.root only as true; anything else there is not an offer', () => {
+  const BASE = offer();
+  const o: Offer = { ...BASE, home: { diskGiB: 10, retentionDays: 7, slots: 4, root: true } };
+  const ev = offerToEvent(o);
+  assert.equal(offerFromEvent({ ...ev, pubkey: 'f'.repeat(64) }, 0)!.home?.root, true);
+  const plain = offerFromEvent({ ...offerToEvent({ ...BASE, home: { diskGiB: 10, retentionDays: 7, slots: 4 } }), pubkey: 'f'.repeat(64) }, 0)!;
+  assert.equal('root' in plain.home!, false);
+  for (const bad of [false, 'yes', 1]) {
+    const e = offerToEvent({ ...BASE, home: { diskGiB: 10, retentionDays: 7, slots: 4, root: bad as unknown as true } });
+    assert.equal(offerFromEvent({ ...e, pubkey: 'f'.repeat(64) }, 0), null, String(bad));
+  }
+});
+
 test('parses home.free when 0 <= free <= slots', () => {
   for (const free of [0, 1, 2]) {
     const o = offer({ home: { diskGiB: 2, retentionDays: 7, slots: 2, free } });

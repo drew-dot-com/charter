@@ -98,7 +98,7 @@ Other settings: `CHARTER_MCP_KEY_FILE`, `CHARTER_MCP_SPEND_FILE`, `CHARTER_MCP_N
 
 - SSH is plain: `ssh -p <port> tenant@<host>`, with the host and port from the lease's `access.ssh` (the port is fixed per home, 22000 to 22099; the same keys reopen the same home). A host may also publish `access.onion`, which needs an Anyone client.
 - All of the box's outbound traffic leaves through the host's Anyone client: slow, and some services refuse shared exits.
-- No root. 1 GiB of memory. Homes are limited (`home.slots` in the offer); an open answers `busy` when they are full.
+- Log in as `root` (apt works) or `tenant`. 1 GiB of memory. Homes are limited (`home.slots` in the offer); an open answers `busy` when they are full.
 - The operator of the host can read the disk. Secrets go in over `scp`, never through Charter.
 - A home that is not paid closes; its disk and port are kept 7 days and the same keys open it again.
 

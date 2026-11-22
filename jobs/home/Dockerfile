@@ -42,7 +42,7 @@ RUN set -eu; cd /opt/x402; \
   ln -s /opt/x402/x402-rent.mjs /usr/local/bin/charter-x402
 COPY x402-rent.mjs /opt/x402/
 RUN chmod 755 /opt/x402/x402-rent.mjs
-COPY home.sh logcap.sh sshd_config /app/
+COPY home.sh home-user.sh seed.sh logcap.sh sshd_config sshd_config_root /app/
 ENV HOME=/home/tenant
 USER tenant
 CMD ["/app/home.sh"]

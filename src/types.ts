@@ -23,7 +23,8 @@ export interface Offer {
   /** Epoch ms. */
   expiresAt: number;
   /** Present when the host offers a durable home (the `charter-home` image). */
-  home?: { diskGiB: number; retentionDays: number; slots: number; free?: number };
+  /** `root: true`: a new home is also reached as `root@` with the same keys, and `apt` works in it. */
+  home?: { diskGiB: number; retentionDays: number; slots: number; free?: number; root?: true };
 }
 
 export interface JobSpec {

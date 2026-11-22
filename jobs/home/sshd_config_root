@@ -1,0 +1,22 @@
+# sshd runs as tenant, not root: it can only ever log in tenant, by key.
+Port 2222
+HostKey /root/.ssh/host/ssh_host_ed25519_key
+AuthorizedKeysFile .ssh/authorized_keys
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+# PAM needs root to open a session.
+UsePAM no
+PermitRootLogin prohibit-password
+AllowUsers tenant root
+# The rootfs is read-only and /run belongs to root.
+PidFile none
+AllowTcpForwarding yes
+GatewayPorts no
+X11Forwarding no
+ClientAliveInterval 60
+# Sessions get the box env from ~/.ssh/environment. sshd already runs as the tenant, so this grants nothing new.
+PermitUserEnvironment yes
+# scp from OpenSSH 9 on speaks SFTP: without a subsystem `scp file tenant@host:` is refused
+# ("subsystem request failed") and only `scp -O` works. In-process, so no second program to find.
+Subsystem sftp internal-sftp
+StrictModes yes

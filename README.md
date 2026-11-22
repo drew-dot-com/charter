@@ -80,7 +80,7 @@ ssh -p <port> tenant@<host>
 The host and port come from `access.ssh`. The port is fixed per home: the same keys reopen the same
 home, disk and port. A host may also publish `access.onion` (same shape, `<56 chars>.anyone`, port
 22) as a second way in; that one needs an Anyone client. The box is Debian with
-Python 3, `uv`, Node 22 and git, as user `tenant` with no root, 1 CPU and 1 GiB. Everything it
+Python 3, `uv`, Node 22 and git, as `root` (apt works, on a host with root homes) or `tenant`, 1 CPU and 1 GiB. Everything it
 sends leaves through the host's Anyone client (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` are set; a
 raw socket to the internet fails). `~/.charter/boot.sh` runs at every start, and
 `/charter/paid-through` holds when the paid time runs out.

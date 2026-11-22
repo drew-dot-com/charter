@@ -119,6 +119,11 @@ export interface HomeRunnerOpts {
   tools: { truncate: Exec; mkfs: Exec; losetup: Exec };
   offerJson: string;
   connectorUrl: string;
+  /**
+   * New homes are root homes: the box runs as root on its own copy of the system, kept on its disk
+   * (HomeRecord.layout 2). Only under gVisor. A home made without it keeps the first layout.
+   */
+  root?: boolean;
   /** GiB of each new home's disk. Default HOME_DISK_GIB. A disk that exists keeps the size it was made with. */
   diskGib?: number;
   freeBytes?: (dir: string) => Promise<number>;
@@ -132,6 +137,15 @@ export interface HomeRunnerOpts {
  * intervals). The paid time ends the job now, so the host sets the cap far past any lease: 30 days.
  */
 export const PYTHON_WALL_SECONDS = 2_592_000;
+
+/**
+ * What root in a root home may do: the capabilities apt, dpkg and sshd need, and no others. Without
+ * NET_RAW, NET_ADMIN, SYS_ADMIN or MKNOD it cannot open a raw socket, touch the network setup,
+ * mount, or make a device node.
+ */
+export const ROOT_HOME_CAPS = ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID', 'SETUID', 'SETGID', 'KILL', 'SYS_CHROOT'];
+/** The seed only copies files onto the disk and sets their owners and modes. */
+const SEED_CAPS = ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID'];
 
 const HOME_PROFILE: JobProfile = {
   args: ['SSH_KEYS'],
@@ -172,8 +186,24 @@ function checkHomeId(homeId: string): string {
 }
 
 /** The home's network, disk, port, read-only charter dir and box env, after the shared flags. */
-function homeArgs(profile: JobProfile, rec: HomeRecord, homeId: string, leaseId: string, h: HomeRunnerOpts): string[] {
+function homeArgs(profile: JobProfile, rec: HomeRecord, homeId: string, leaseId: string, h: HomeRunnerOpts, image: string): string[] {
   if (profile.network !== 'home') throw new RunnerError('bad_input', 'not a home profile');
+  const vol = volumeName(homeId);
+  const sub = (dst: string, path: string) => ['--mount', `type=volume,src=${vol},dst=${dst},volume-subpath=${path}`];
+  // A root home: root in the box, on five folders of its own disk. The image's own /usr, /etc and
+  // /var are hidden under the disk's copy, which the seed made; everything else stays read-only.
+  const disk =
+    rec.layout === 2
+      ? [
+          '--user', '0',
+          ...ROOT_HOME_CAPS.flatMap((c) => ['--cap-add', c]),
+          ...sub('/home/tenant', 'home'),
+          ...sub('/root', 'root'),
+          ...sub('/usr', `sys/${image}/usr`),
+          ...sub('/etc', `sys/${image}/etc`),
+          ...sub('/var', `sys/${image}/var`),
+        ]
+      : ['--mount', `type=volume,src=${vol},dst=/home/tenant`];
   const http = `http://${h.gateway}:${h.httpPort}`;
   const env = [
     `HTTP_PROXY=${http}`,
@@ -186,13 +216,14 @@ function homeArgs(profile: JobProfile, rec: HomeRecord, homeId: string, leaseId:
     `CHARTER_OFFER_JSON=${h.offerJson}`,
     `CHARTER_CONNECTOR_URL=${h.connectorUrl}`,
     'CHARTER_PAID_THROUGH_FILE=/charter/paid-through',
+    ...(rec.layout === 2 ? ['CHARTER_HOME_ROOT=1'] : []),
   ];
   return [
     '--network', h.network,
     '--dns', h.gateway,
     // The public address when the host has one; otherwise loopback only, and the onion service is the one way in.
     '-p', `${h.publicHost ?? '127.0.0.1'}:${rec.port}:2222`,
-    '--mount', `type=volume,src=${volumeName(homeId)},dst=/home/tenant`,
+    ...disk,
     '-v', `${join(h.homesDir, homeId, 'charter')}:/charter:ro`,
     // gVisor cannot reach docker's embedded resolver (127.0.0.11); names must resolve over the host's Anyone DNS port.
     '-v', `${join(h.homesDir, homeId, 'charter', 'resolv.conf')}:/etc/resolv.conf:ro`,
@@ -247,12 +278,15 @@ export function dockerRunner(opts: {
     const h = needHome();
     checkHomeId(homeId);
     const existing = h.homes.get(homeId);
+    // Root in a box is only as contained as the sandbox: never without gVisor, whatever the config said.
+    if (h.root && runtime !== 'runsc') throw new RunnerError('boot_failed', 'root homes need gVisor (runtime runsc)');
     // Stored only once its disk and volume exist, so a refused or failed call leaves nothing behind.
     const rec: HomeRecord = existing ?? {
       homeId,
       port: allocatePort(h.homes.all().map((r) => r.port)),
       createdAt: (h.now ?? Date.now)(),
       paidOnce: false,
+      ...(h.root ? { layout: 2 as const } : {}),
     };
     const dir = join(h.homesDir, homeId);
     const disk = diskPath(h.homesDir, homeId);
@@ -270,7 +304,7 @@ export function dockerRunner(opts: {
         if (free - pending - gib * 1024 ** 3 < HOME_FREE_FLOOR_BYTES) throw new RunnerError('boot_failed', 'no disk');
         madeDir = (await mkdir(dir, { recursive: true })) !== undefined;
         madeDisk = true;
-        await createDisk(h.tools, disk, gib);
+        await createDisk(h.tools, disk, gib, rec.layout === 2 ? '0:0' : undefined);
       }
       // Every call, not only on create: after a reboot the disk is detached and its loop number may differ.
       device = await attachDisk(h.tools.losetup, disk);
@@ -329,6 +363,25 @@ export function dockerRunner(opts: {
         if (!keys) throw new RunnerError('bad_input', 'SSH_KEYS');
         const homeId = homeIdOf(keys);
         home = { rec: record(h, homeId), homeId };
+        // A root home's box starts on its own copy of this image's /usr, /etc and /var: made here,
+        // once for each image, by the image itself. Until it exists there is nothing to mount.
+        // Docker's own runtime, not gVisor: the copy is 15,000 files, 3 s this way and 17 s through
+        // gVisor's file proxy, inside the paid open. Nothing of the tenant's runs or is read here:
+        // only /app/seed.sh from the image, with no network, on folders of the disk a tenant cannot
+        // reach (the disk's top, `sys/<image>`) or cannot replace (`home`, `root`: its mount roots).
+        if (home.rec.layout === 2 && !(home.rec.sys ?? []).includes(job.image)) {
+          const seed = await docker([
+            'run', '--rm', '--network', 'none', '--user', '0', '--read-only',
+            '--cap-drop', 'ALL', ...SEED_CAPS.flatMap((c) => ['--cap-add', c]),
+            '--security-opt', 'no-new-privileges', '--cpus', '1', '--memory', '1g', '--pids-limit', '256',
+            '--mount', `type=volume,src=${volumeName(homeId)},dst=/disk`,
+            '--entrypoint', '/app/seed.sh', job.image, job.image,
+          ]);
+          if (seed.code !== 0) throw new RunnerError('boot_failed', `seed: ${seed.stderr.trim()}`);
+          const seeded: HomeRecord = { ...home.rec, sys: [...(home.rec.sys ?? []), job.image] };
+          h.homes.put(seeded);
+          home.rec = seeded;
+        }
       }
 
       const argv = [
@@ -353,7 +406,7 @@ export function dockerRunner(opts: {
       argv.push(...profile.flags);
       if (runtime) argv.push('--runtime', runtime);
       if (h && home) {
-        argv.push(...homeArgs(profile, home.rec, home.homeId, leaseId, h));
+        argv.push(...homeArgs(profile, home.rec, home.homeId, leaseId, h, job.image));
       } else if (profile.network === 'none') {
         argv.push('--network', 'none');
       } else if (proxy) {

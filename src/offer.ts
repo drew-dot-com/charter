@@ -105,6 +105,10 @@ function parseOfferContent(c: Record<string, unknown>, id: string, hostPubkey: s
     if (typeof h !== 'object' || h === null || Array.isArray(h)) return null;
     if (!isPositiveInt(h.diskGiB) || !isPositiveInt(h.retentionDays) || !isPositiveInt(h.slots)) return null;
     home = { diskGiB: h.diskGiB, retentionDays: h.retentionDays, slots: h.slots };
+    if (h.root !== undefined) {
+      if (h.root !== true) return null;
+      home.root = true;
+    }
     if (h.free !== undefined) {
       if (typeof h.free !== 'number' || !Number.isInteger(h.free) || h.free < 0 || h.free > h.slots) return null;
       home.free = h.free;

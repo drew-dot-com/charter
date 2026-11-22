@@ -81,6 +81,7 @@ async function main(argv: string[]): Promise<number> {
             socksPort: h.socksPort,
             httpPort: h.httpPort,
             diskGib: h.diskGib,
+            root: h.root,
             homes,
             ...(h.publicHost ? { publicHost: h.publicHost } : {}),
             ...(h.onion && h.anonHsDir && h.anonPidFile

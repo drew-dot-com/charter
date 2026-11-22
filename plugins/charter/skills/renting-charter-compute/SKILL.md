@@ -317,12 +317,14 @@ the first time.
 
 ### What is inside
 
-- Debian trixie-slim, x86_64 on the live host (glibc 2.41; bookworm until 2026-11-16). User `tenant` (uid 10001),
-  no root, no setuid programs. `charter-x402` pays the rent of a storefront lease from a Base wallet
+- Debian trixie-slim, x86_64 on the live host (glibc 2.41; bookworm until 2026-11-16). Users `root` and `tenant`
+  (uid 10001). `charter-x402` pays the rent of a storefront lease from a Base wallet
   (`charter-x402 address`, then `charter-x402 renew --max-intervals <n>`). Python 3.13 with
   `venv` and `pip`, `uv`, Node 22, `git`, `curl`, `jq`, `rsync`, `tmux`. 1 CPU, 1 GiB, 512
   processes.
-- `/home/tenant` is your disk. The root filesystem is read-only; `/tmp` is 256 MiB in memory.
+- Two logins with your keys: `root` (`apt-get install` works; `/usr`, `/etc`, `/var`, `/root` and
+  `/home/tenant` are on your disk) and `tenant`. The rest of the filesystem is read-only; `/tmp` is
+  256 MiB in memory. No `sudo`: log in as `root`. A home made before 2026-11-22 has only `tenant`.
 - `~/.charter/boot.sh`, if it exists and is executable, runs in the background at every start,
   output in `~/.charter/boot.log`. Put what must come back after a restart there.
 - `/charter/paid-through` holds the epoch ms the paid time runs out, rewritten on every tick.

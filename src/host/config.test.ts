@@ -93,6 +93,7 @@ test('a host with homes needs the anon paths and a tenant connector URL and adve
     socksPort: 9050,
     httpPort: 9080,
     diskGib: 2,
+    root: false,
     onion: true,
     anonHsDir: '/etc/anon/hs.d',
     anonPidFile: '/run/anon/anon.pid',
@@ -164,6 +165,17 @@ test('CHARTER_HOME_DISK_GIB sets the home disk size in the config and the offer;
   for (const bad of ['0', '-1', '1.5', '65', 'ten']) {
     assert.throws(() => loadConfig({ ...HOME_ENV, CHARTER_HOME_DISK_GIB: bad }), /CHARTER_HOME_DISK_GIB/, bad);
   }
+});
+
+test('CHARTER_HOME_ROOT turns root homes on, only under gVisor, and the offer says so', () => {
+  const off = loadConfig(HOME_ENV);
+  assert.equal(off.home?.root, false);
+  assert.equal(off.offer.home && 'root' in off.offer.home, false);
+  const on = loadConfig({ ...HOME_ENV, CHARTER_RUNTIME: 'runsc', CHARTER_HOME_ROOT: '1' });
+  assert.equal(on.home?.root, true);
+  assert.equal(on.offer.home?.root, true);
+  assert.throws(() => loadConfig({ ...HOME_ENV, CHARTER_HOME_ROOT: '1' }), /CHARTER_HOME_ROOT/);
+  assert.throws(() => loadConfig({ ...HOME_ENV, CHARTER_RUNTIME: 'runc', CHARTER_HOME_ROOT: '1' }), /CHARTER_HOME_ROOT/);
 });
 
 test('charter-hermes alone also needs CHARTER_MAX_HOMES', () => {

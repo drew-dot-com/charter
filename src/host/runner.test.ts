@@ -373,7 +373,10 @@ async function homeSetup(free = 10 * GIB, mkfsCode: () => number = () => 0, rmGa
   const tools: string[] = [];
   // Volumes docker knows about, by name to device; inspect succeeds only after create.
   const volumes = new Map<string, string>();
+  // The exit code of `docker run` (the seed of a root home's system folders).
+  const runCode = { value: 0 };
   const { exec: fakeExec, calls } = fake((args) => {
+    if (args[0] === 'run') return { code: runCode.value, stderr: runCode.value === 0 ? '' : 'seed: no space left on device' };
     if (args[0] === 'volume' && args[1] === 'inspect') {
       const dev = volumes.get(args[args.length - 1]!);
       return dev === undefined ? { code: 1 } : { code: 0, stdout: `${dev}\n` };
@@ -440,7 +443,7 @@ async function homeSetup(free = 10 * GIB, mkfsCode: () => number = () => 0, rmGa
     now: () => 1_700_000_000_000,
   };
   const r = dockerRunner({ exec, outRoot: join(root, 'out'), allow, runtime: 'runsc', home });
-  return { r, calls, tools, kills, homes, home, homesDir, root, volumes, loops, loopLog };
+  return { r, calls, tools, kills, homes, home, homesDir, root, volumes, loops, loopLog, runCode };
 }
 
 test('create for a home puts the box on its network with its disk, its port and its env, and nothing of a job\'s', async () => {
@@ -482,6 +485,120 @@ test('create for a home puts the box on its network with its disk, its port and 
   assert.ok(!a.some((x) => x.startsWith('CHARTER_PROXY')));
   assert.equal(a.filter((x) => x === '--pids-limit').length, 1);
   assert.equal(a.indexOf('--network'), a.indexOf('--dns') - 2);
+});
+
+const ROOT_CAPS = ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID', 'SETUID', 'SETGID', 'KILL', 'SYS_CHROOT'];
+
+test('on a root host a new home is recorded as layout 2 and its disk is formatted for root', async () => {
+  const t = await homeSetup();
+  t.home.root = true;
+  const rec = await t.r.ensureHome(HOME_ID);
+  assert.equal(rec.layout, 2);
+  assert.equal(t.homes.get(HOME_ID)?.layout, 2);
+  const disk = join(t.homesDir, HOME_ID, 'disk.img');
+  assert.deepEqual(t.tools, [`truncate -s 2G ${disk}`, `mkfs -F -q -m 0 -E root_owner=0:0 ${disk}`]);
+});
+
+test('create for a root home seeds the image\'s system onto the disk once, then runs the box as root on five folders of it', async () => {
+  const t = await homeSetup();
+  t.home.root = true;
+  await t.r.ensureHome(HOME_ID);
+  t.calls.length = 0;
+  await t.r.create('l1', HOME);
+  const vol = `charter-home-${HOME_ID}`;
+  // First the seed: the image's own script run once as root, no network, the whole volume at /disk.
+  // On docker's own runtime: it runs nothing of the tenant's, and gVisor makes the copy five times slower.
+  assert.deepEqual(t.calls[0]!.args, [
+    'run', '--rm', '--network', 'none', '--user', '0', '--read-only',
+    '--cap-drop', 'ALL', '--cap-add', 'CHOWN', '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'FOWNER', '--cap-add', 'FSETID',
+    '--security-opt', 'no-new-privileges', '--cpus', '1', '--memory', '1g', '--pids-limit', '256',
+    '--mount', `type=volume,src=${vol},dst=/disk`,
+    '--entrypoint', '/app/seed.sh', 'charter-home', 'charter-home',
+  ]);
+  assert.deepEqual(t.homes.get(HOME_ID)?.sys, ['charter-home']);
+
+  const a = t.calls[1]!.args;
+  assert.equal(a[0], 'create');
+  const has = (...seq: string[]) =>
+    assert.ok(a.some((_, i) => seq.every((s, j) => a[i + j] === s)), `argv missing ${seq.join(' ')}: ${a.join(' ')}`);
+  has('--user', '0');
+  has('--runtime', 'runsc');
+  has('--read-only');
+  has('--cap-drop', 'ALL');
+  has('--security-opt', 'no-new-privileges');
+  for (const cap of ROOT_CAPS) has('--cap-add', cap);
+  assert.equal(a.filter((x) => x === '--cap-add').length, ROOT_CAPS.length);
+  has('--mount', `type=volume,src=${vol},dst=/home/tenant,volume-subpath=home`);
+  has('--mount', `type=volume,src=${vol},dst=/root,volume-subpath=root`);
+  has('--mount', `type=volume,src=${vol},dst=/usr,volume-subpath=sys/charter-home/usr`);
+  has('--mount', `type=volume,src=${vol},dst=/etc,volume-subpath=sys/charter-home/etc`);
+  has('--mount', `type=volume,src=${vol},dst=/var,volume-subpath=sys/charter-home/var`);
+  // The old single mount of the whole disk at the tenant's home is gone.
+  assert.ok(!a.includes(`type=volume,src=${vol},dst=/home/tenant`));
+  has('-e', 'CHARTER_HOME_ROOT=1');
+  has('--network', 'charter-home');
+  has('-p', '127.0.0.1:22000:2222');
+  has('-v', `${join(t.homesDir, HOME_ID, 'charter', 'resolv.conf')}:/etc/resolv.conf:ro`);
+  assert.equal(a[a.length - 1], 'charter-home');
+
+  // A second lease on the same home under the same image does not seed again.
+  t.calls.length = 0;
+  await t.r.create('l2', HOME);
+  assert.equal(t.calls[0]!.args[0], 'create');
+});
+
+test('a second image on a root home gets its own system folders, seeded once', async () => {
+  const t = await homeSetup(undefined, undefined, undefined, ['charter-home', 'charter-hermes']);
+  t.home.root = true;
+  await t.r.ensureHome(HOME_ID);
+  await t.r.create('l1', HOME);
+  t.calls.length = 0;
+  await t.r.create('l2', homeJob(normalizeSshKeys([KEY])!, 'charter-hermes'));
+  assert.equal(t.calls[0]!.args[0], 'run');
+  assert.deepEqual(t.calls[0]!.args.slice(-3), ['/app/seed.sh', 'charter-hermes', 'charter-hermes']);
+  assert.ok(t.calls[1]!.args.includes(`type=volume,src=charter-home-${HOME_ID},dst=/usr,volume-subpath=sys/charter-hermes/usr`));
+  assert.deepEqual(t.homes.get(HOME_ID)?.sys, ['charter-home', 'charter-hermes']);
+});
+
+test('a failed seed fails the boot and is tried again at the next create', async () => {
+  const t = await homeSetup();
+  t.home.root = true;
+  await t.r.ensureHome(HOME_ID);
+  t.runCode.value = 1;
+  t.calls.length = 0;
+  await assert.rejects(
+    t.r.create('l1', HOME),
+    (e: unknown) => e instanceof RunnerError && e.code === 'boot_failed' && e.message.includes('seed'),
+  );
+  assert.equal(t.calls.length, 1, 'no container is created on an unseeded disk');
+  assert.equal(t.homes.get(HOME_ID)?.sys, undefined);
+  t.runCode.value = 0;
+  t.calls.length = 0;
+  await t.r.create('l1', HOME);
+  assert.deepEqual(t.calls.map((c) => c.args[0]), ['run', 'create']);
+});
+
+test('a home made before the host turned root on keeps its old layout: the tenant user, one mount, no seed', async () => {
+  const t = await homeSetup();
+  await t.r.ensureHome(HOME_ID);
+  t.home.root = true;
+  t.calls.length = 0;
+  await t.r.create('l1', HOME);
+  const a = t.calls[0]!.args;
+  assert.equal(a[0], 'create');
+  assert.ok(a.includes(`type=volume,src=charter-home-${HOME_ID},dst=/home/tenant`));
+  assert.ok(!a.includes('--user'));
+  assert.ok(!a.includes('--cap-add'));
+  assert.ok(!a.includes('CHARTER_HOME_ROOT=1'));
+});
+
+test('root homes are refused without gVisor', async () => {
+  const t = await homeSetup();
+  const plain = dockerRunner({ exec: async () => ({ code: 0, stdout: '', stderr: '' }), outRoot: join(t.root, 'out2'), allow: ['charter-home'], home: { ...t.home, root: true } });
+  await assert.rejects(
+    plain.ensureHome(HOME_ID),
+    (e: unknown) => e instanceof RunnerError && e.code === 'boot_failed' && e.message.includes('gVisor'),
+  );
 });
 
 test('a hermes home is created with the home args and the hermes image last', async () => {
