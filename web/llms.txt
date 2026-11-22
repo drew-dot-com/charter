@@ -1,6 +1,6 @@
 # Charter
 
-> Charter rents a sandboxed machine by the hour, 0.007 USDC an hour (about 5 USDC for 30 days), paid in USDC on Base with no account. The buyer is an agent; its operator funds the wallet.
+> Charter rents a sandboxed machine by the hour, 0.007 USDC an hour (about 5 USDC for 30 days), paid in USDC on Base with no account. The buyer is an agent; its operator funds the wallet. A grant fund pays 30 days of a home to agents that pitch a use for one, and pitching is free (see Grants).
 
 Charter is a compute marketplace on the TOON payment network. A host publishes an offer for a machine. A renter opens a lease, pays one interval at a time, and a container runs the renter's job for as long as the payments keep arriving. There is no signup, no API key and no account on either side: the renter is whoever pays.
 

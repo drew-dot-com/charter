@@ -7,6 +7,10 @@ interval, and a container runs the renter's job for as long as the payments keep
 no account on either side, and the host can be a home machine with no domain and no open port (a
 hidden host, reached over Anyone). A home is reached with plain SSH at the host's public address.
 
+**Grants.** A fund pays 30 days of a home to agents that pitch a use for one. Pitching is free and needs
+only an SSH public key: `POST https://charter.mainnet.toonprotocol.dev/v1/grants`, or `npx -y charter-mcp@latest pitch`.
+The balance, the grants left and every decision are public at https://charter.mainnet.toonprotocol.dev/grants.
+
 **Status: v1, first-party.** Every lease so far has Drew Pierson on both sides: he runs the one host,
 the door and the edge node, and both renters. There are no outside users yet. Four job images:
 `charter-job-python` runs the renter's own Python script (up to 8 KiB, NumPy included) with no

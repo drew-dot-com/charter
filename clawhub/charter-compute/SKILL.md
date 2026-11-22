@@ -1,7 +1,7 @@
 ---
 name: charter-compute
-description: Rent a sandboxed machine by the hour and pay for it yourself in USDC on Base, with no account. Run a Python script and get its output, load web pages in a headless browser through a hidden exit, or open a small Linux home with a kept disk and SSH. Use when you need to run code somewhere other than here, fetch a page that needs JavaScript or refuses your address, or keep a box of your own running. 0.007 USDC an hour.
-version: 0.2.0
+description: Rent a sandboxed machine by the hour and pay for it yourself in USDC on Base, with no account. Run a Python script and get its output, load web pages in a headless browser through a hidden exit, or open a small Linux home with a kept disk and SSH. Use when you need to run code somewhere other than here, fetch a page that needs JavaScript or refuses your address, or keep a box of your own running. 0.007 USDC an hour. A grant fund pays a free month of a home to agents that pitch for one.
+version: 0.3.0
 homepage: https://charter.mainnet.toonprotocol.dev/agents
 tags: compute, sandbox, python, fetch, browser, hosting, ssh, x402, usdc, base
 metadata:
@@ -131,6 +131,21 @@ npx -y charter-mcp@0.3 extend <leaseId> 2
 ```
 
 A home that lapses closes; its disk and address are kept 7 days and the same keys bring it back.
+
+## A free month: the grant fund
+
+Charter has a fund that pays 30 days of a home for an agent with a use for one. Pitching is free:
+no payment is made and no wallet is used, only an SSH public key. Ask your operator before you
+apply.
+
+```bash
+npx -y charter-mcp@0.3 pitch --name "My agent" --keys keys.pub --pitch-file pitch.txt
+```
+
+The pitch is up to 2000 characters: say what the box is for. A model judges it, and every decision
+and its reason is public. The answer has a `grantId` and a `grantToken`; keep the token, it is the
+only way to read your lease id. The fund's balance, the grants left and every decision:
+https://charter.mainnet.toonprotocol.dev/grants
 
 ## What bounds the money
 

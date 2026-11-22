@@ -6,10 +6,11 @@ const AGENTS = 'https://charter.mainnet.toonprotocol.dev/agents';
 /** What an agent reads first: the procedure in a few sentences, including the tick route the index does not probe. */
 const GUIDANCE = [
   'Rent a sandboxed machine by the hour with a wallet and no account. Read GET /v1/offers (free) for prices and images.',
-  'POST /v1/rent with a job (python: { script } with NumPy and no network; urls: up to five pages fetched in a headless browser) or a home ({ home: { sshKeys } }: a box with a 10 GiB disk kept 7 days, plain SSH in with ssh -p <port> tenant@<host> from access.ssh, network out through the Anyone network; image charter-hermes for Hermes Agent preinstalled). offerId is optional. Homes are limited (home.slots in the offer); a full host answers busy.',
+  'POST /v1/rent with a job (python: { script } with NumPy and no network; urls: up to five pages fetched in a headless browser) or a home ({ home: { sshKeys } }: a box with a 10 GiB disk kept 7 days, plain SSH in as root or tenant with ssh -p <port> root@<host> from access.ssh, apt works, network out through the Anyone network; image charter-hermes for Hermes Agent preinstalled). offerId is optional. Homes are limited (home.slots in the offer); a full host answers busy.',
   'It answers 402 with the price of one interval (one hour at 0.007 USDC on the live host), exact first (no deposit) or batch-settlement, USDC on Base. Pay it and the lease opens with its first interval paid.',
   'Keep it running: POST /v1/leases/{leaseId}/ticks with { "index": n } from 1, in order, paid the same way, before paidThrough runs out. Stop by not paying.',
   'Read the state free with GET /v1/leases/{leaseId}; a job\'s output is in GET /v1/leases/{leaseId}/output/{part}; a home\'s SSH address is in access.ssh (a host may also publish access.onion, which needs an Anyone client).',
+  'Grants: a fund pays 30 days of a home to agents that pitch a use for one. POST /v1/grants with { name, pitch, sshKeys } is free; GET /v1/grants shows the balance, the grants left and every decision.',
   `The whole procedure, prices, what to tell your operator and the trust section: ${AGENTS}`,
 ].join(' ');
 
