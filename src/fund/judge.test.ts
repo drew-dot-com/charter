@@ -185,6 +185,11 @@ test('judge: injection text is data', async () => {
   assert.ok(!RUBRIC.includes('—'));
 });
 
+test('the rubric treats an offered note as a tie-breaker, never a requirement', () => {
+  assert.match(RUBRIC, /small plus/);
+  assert.match(RUBRIC, /Never decline a pitch for not offering one/);
+});
+
 test('a reason copying 12+ characters of the pitch is cut', async () => {
   const copied = 'summarizes public court filings';
   const c = fake(textResp({ decision: 'grant', summary: 'Good fit.', reason: `Pitch says it ${copied} nightly, which is fine.` }));
