@@ -273,7 +273,7 @@ async function showHome(token: number): Promise<void> {
   const recent = el('div');
   mount(
     el('h1', undefined, 'Machines for rent'),
-    el('p', 'lede', 'A container on a machine somebody runs at home, paid in USDC on Base by the hour while it runs, 0.007 USDC an hour on the live host. Run your own Python script on it, or have it fetch pages and send back a screenshot and the text of each.'),
+    el('p', 'lede', 'A container on a host\'s machine, paid in USDC on Base by the hour while it runs, 0.007 USDC an hour on the live host. Run your own Python script on it, or have it fetch pages and send back a screenshot and the text of each.'),
     list,
     el('p', 'note', 'No account. Your wallet signs once to put a deposit of at least 0.10 USDC into an x402 channel on Base. Each interval after that is a voucher this page signs silently, and what you do not use comes back about two hours after the lease goes quiet.'),
     dev ? el('p', 'note', 'Local test mode: payments are skipped.') : null,

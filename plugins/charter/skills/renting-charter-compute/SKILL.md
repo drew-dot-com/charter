@@ -317,7 +317,7 @@ the first time.
 
 ### What is inside
 
-- Debian trixie-slim on aarch64 (glibc 2.41; bookworm until 2026-11-16). User `tenant` (uid 10001),
+- Debian trixie-slim, x86_64 on the live host (glibc 2.41; bookworm until 2026-11-16). User `tenant` (uid 10001),
   no root, no setuid programs. `charter-x402` pays the rent of a storefront lease from a Base wallet
   (`charter-x402 address`, then `charter-x402 renew --max-intervals <n>`). Python 3.13 with
   `venv` and `pip`, `uv`, Node 22, `git`, `curl`, `jq`, `rsync`, `tmux`. 1 CPU, 1 GiB, 512
