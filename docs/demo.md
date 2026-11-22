@@ -663,3 +663,52 @@ grant is first-party (Drew's own pitch and money) and is never counted as a rent
   Finding: onion reachability of a toon2 home is flaky in itself, which is the case for the SSH jump host.
 - [x] Lapse: the lease closed `missed_tick` at 11:52Z after 13 intervals; the fund paid nothing after the stop
   (still 5.909000, no problems). The home watch said so on Telegram at 11:53Z. Disk and onion kept 7 days.
+
+## 17. hel1 bring-up and the first plain-SSH home (2026-11-21/22)
+
+Plan: `docs/superpowers/plans/2026-11-21-plain-ssh-homes.md`, Task 7. Server: charter-host-hel1, Hetzner CPX32,
+Helsinki, 37.27.86.235, Ubuntu 24.04.5, x86_64; admin SSH `ssh -i ~/.ssh/charter_host root@37.27.86.235`.
+toon2 kept running jobs; the door does not list hel1 yet.
+
+- [x] Base: `install-host.sh` (Docker 29.10.0, runsc release-20261116.0, Node 22.23.5, anon
+  0.4.10.2-live from Anyone's signed repository, held). First run failed at anon: the package asks debconf
+  `anon/terms` and refuses without it; Drew accepted Anyone's terms, the script preseeds it (`1c0006e`).
+- [x] Firewall: Hetzner Cloud Firewall `charter-host-hel1` (inbound 22, ICMP, 22000-22099, 80, 443; hel1
+  only), not ufw (Docker-published ports bypass ufw). From outside: SSH open, a test listener on 9999 refused.
+- [x] Node: toon 0.3.0 (release checksum checked) for user `charter`, `toon init --network mainnet --solana
+  --clearnet 37-27-86-235.sslip.io --listen 127.0.0.1:7768` run by Drew (he holds the mnemonic). ILP
+  `g.toon.7aa291d275b05d07`; offer signer `7beede203167265984d53fd1a10b770da69153feaaa25f5ec88cf31a3cbf0166`.
+  Drew funded it (Base 0.0011 ETH + 1.1 USDC; Solana 0.021 SOL + 3.1 USDC). `toon join mainnet --deposit
+  2000000 --chain solana` opened hel1's channel toward the edge (its relay writes). Caddy 2.10.2 (Docker, host
+  network) terminates TLS for `37-27-86-235.sslip.io` with a Let's Encrypt certificate.
+- [x] toon's clearnet mode is broken for peering (0.3.0 through 0.6.0): `render()` advertises
+  `http://<listen>/ilp`, so the edge answered `publishes no endpoint this connector can dial`. Drew chose to
+  patch: `~/src/TOON/toon_cli-clearnet` branch `clearnet-https-0.3.0`, commit `ba12925` (a clearnet app
+  advertises `https://<hostname>/ilp`), built on hel1 in `rust:1.91-bookworm`, same embedded connector
+  18da529; the official binary kept as `~/.local/bin/toon.official-0.3.0`. An issue for the toon_cli
+  maintainer is drafted, not filed.
+- [x] Edge: Drew sent 2 USDC to the edge's Solana address; `POST /peers {"id":"hel1",...,"deposit":2000000}`
+  opened channel `FEFVKrn2jAUTzQM37jJTYLcLsbSLC3CeUxpUPDc28GLW` (edge USDC 3.1 to 1.1 on chain); routes for
+  `g.toon.7aa291d275b05d07` (0) and its charter-open (1000), charter-status (100), charter-tick (7000).
+- [x] Host: `install-home.sh` with `ANON_BIN` (charter-home-fw, charter-home-net, charter-anon, the socks
+  drop-in), images built on hel1 (fetch 3.53 GB, hermes 2.05 GB, home 830 MB, python 288 MB), charter-host
+  with offer `hel1-1` (4 homes in 6 leases, `CHARTER_HOME_PUBLIC_HOST=37.27.86.235`, onion off, runsc),
+  `toon add` charter-open/tick/status at 1000/7000/100, home watch timer with Telegram alerts.
+- [x] Paid status read from the toon VM (route `g.toon.7aa291d275b05d07 -> drew` added there): `fulfilled`,
+  `404 not_found`, 2.3 s. The VM's CLI hid the first failure (`e.code?.startsWith is not a function`):
+  fixed on main (`08ca77c`).
+- [x] Proof home, 23:45Z: lease `0ac00731774572ef61eb64181fec57c0` (throwaway key on the Mac), tick 0 paid,
+  the CLI printed `ssh -p 22000 tenant@37.27.86.235`. From the Mac: logged in as tenant (2.0G disk, 2 CPUs,
+  1 GiB); egress through the proxies 200; direct egress, hel1's own :22, another home's port, the job relay
+  172.17.0.1:9150 and a raw socket to 1.1.1.1:443 all refused; DNS via 172.19.0.1.
+- [x] `systemctl --user restart charter-host`: the home kept running, still reachable.
+- [x] Fetch job `9329a37d` returned example.com through charter-anon (21.6 s, 8300 units).
+- [x] Job egress (ruling R12): only job containers use docker0 on hel1, so `charter-job-egress.service`
+  (`2133457`) drops everything forwarded from docker0 except DNS. Dropping DNS too emptied every fetch (the job
+  resolves names itself, through the host's resolvers 185.12.64.1/2): follow-up to send job DNS through
+  charter-anon. Fetch `a845e9f3` with the rule: done, 917 chars.
+- [x] Second paid hour: paidIntervals 2, paid through 01:45:07Z.
+- [x] Reboot with the home running, 00:20:15Z: back at 00:20:26; charter-home-fw, charter-job-egress, docker,
+  charter-home-net, charter-anon active; DOCKER-USER held every rule; the home re-created (`restarts 1`),
+  caddy and the node up; charter-host's first offer publish failed while the node booted and succeeded a
+  minute later. From the Mac: logged in again and every isolation check held.
