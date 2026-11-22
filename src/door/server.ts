@@ -925,6 +925,14 @@ export function doorApp(deps: DoorDeps): express.Express {
     }
   });
 
+  // A directory that lists Charter (x402-list.com) checks ownership by reading a token here.
+  // express.static skips dot paths, so this one file is served by name, from web/well-known.
+  app.get('/.well-known/x402list.txt', (_req, res) => {
+    const file = join(webDir, 'well-known', 'x402list.txt');
+    if (!existsSync(file)) return void res.status(404).json({ error: 'not_found' });
+    res.type('text/plain').send(readFileSync(file, 'utf8'));
+  });
+
   if (existsSync(webDir)) {
     // `extensions` lets /agents serve agents.html: the address an agent is handed has no file suffix.
     app.use(express.static(webDir, { index: 'index.html', extensions: ['html'] }));

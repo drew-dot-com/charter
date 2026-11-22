@@ -1,0 +1,3 @@
+# Ownership proofs for directories that list Charter. One token a line.
+# x402-list.com, update request 54901c53-9ddb-4f29-bca2-19a97082124c (2026-11-22)
+x402list-verify-DrtRGpJ5eENNoGYALM5ONsQL5YUdJ2DJk8TJ18q9TY4

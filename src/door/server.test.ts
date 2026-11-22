@@ -983,8 +983,28 @@ test('GET / answers a plain "Charter door" when web/dist is missing, and serves 
     // A page is reachable without its extension, so /agents is the address agents are given.
     assert.equal(await (await d2.get('/agents')).text(), '<h1>agents</h1>');
     assert.equal((await d2.get('/agents')).headers.get('content-type')?.split(';')[0], 'text/html');
+    // No token file in this web directory: the directory-proof address answers 404, not a page.
+    assert.equal((await d2.get('/.well-known/x402list.txt')).status, 404);
   } finally {
     d2.close();
+  }
+});
+
+test('the directory ownership proof is served as plain text at /.well-known/x402list.txt', async () => {
+  const web = mkdtempSync(join(tmpdir(), 'web-'));
+  mkdirSync(join(web, 'well-known'));
+  writeFileSync(join(web, 'index.html'), '<h1>hi</h1>');
+  writeFileSync(join(web, 'well-known', 'x402list.txt'), '# proof\nx402list-verify-abc\n');
+  const d = await start(fakeHost(), { webDir: web });
+  try {
+    const r = await d.get('/.well-known/x402list.txt');
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('content-type')?.split(';')[0], 'text/plain');
+    assert.equal(await r.text(), '# proof\nx402list-verify-abc\n');
+    // Only that one file: nothing else under a dot path is served.
+    assert.equal((await d.get('/.well-known/other.txt')).status, 404);
+  } finally {
+    d.close();
   }
 });
 
