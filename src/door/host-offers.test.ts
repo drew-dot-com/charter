@@ -61,5 +61,35 @@ test('listedOffers: listed hosts only, refetched at most every 60 s; a failing h
   clock.t = lastGood + OFFER_KEEP_MS;
   assert.deepEqual(await offers(), [], 'hidden after 10 minutes');
   up = true;
+  clock.t += OFFER_REFRESH_MS;
   assert.equal((await offers()).length, 1, 'back once it answers');
+});
+
+test('listedOffers: a down host is fetched once per refresh window, not on every call', async () => {
+  const reg = new HostRegistry(join(mkdtempSync(join(tmpdir(), 'hostoffers-')), 'hosts.json'));
+  const clock = { t: 1_000_000 };
+  const a = (reg.register(URL_A, clock.t) as { hostId: string }).hostId;
+  reg.probeResult(a, true, clock.t);
+  let up = true;
+  let fetches = 0;
+  const offers = listedOffers({
+    registry: reg,
+    now: () => clock.t,
+    fetchOffer: async (url) => {
+      fetches++;
+      if (!up) throw new Error('down');
+      return offerOf(url);
+    },
+  });
+  await offers();
+  up = false;
+  clock.t += OFFER_REFRESH_MS;
+  for (let i = 0; i < 5; i++) {
+    assert.equal((await offers()).length, 1, 'the last offer is served meanwhile');
+    clock.t += 1000;
+  }
+  assert.equal(fetches, 2, 'one fetch when fresh, one failed refetch');
+  clock.t += OFFER_REFRESH_MS;
+  await offers();
+  assert.equal(fetches, 3, 'tried again after the window');
 });

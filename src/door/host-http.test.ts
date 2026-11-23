@@ -23,6 +23,7 @@ import type { JobSpec, Offer } from '../types.js';
 import { BASE_USDC, type Gate } from '../x402/seller.js';
 import { stubGate } from './x402.js';
 import { CapitalCapError, DepositPendingError, doorPayer, httpHostApi, MAX_OUTPUT_PARTS, PENDING_CHECK_MS, paysOnly, UnexpectedPaymentError, type DepositFor, type DoorPayer, type ReadContract } from './host-http.js';
+import { CapitalBook } from './capital.js';
 import { HostQueue } from './host-queue.js';
 
 const T0 = 1_700_000_000_000;
@@ -113,10 +114,11 @@ async function setup(tickGate: Gate = stubGate(() => PRICE), output?: Buffer) {
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const channelDir = mkdtempSync(join(tmpdir(), 'door-host-http-'));
   const offer = offerAt(base);
-  const payerFor = (o: { depositFor?: DepositFor; onDeposit?: (hostId: string, channelId: string, amount: bigint) => void; readContract?: ReadContract; now?: () => number } = {}) =>
+  type DepositHook = (hostId: string, channelId: string, amount: bigint) => void;
+  const payerFor = (o: { depositFor?: DepositFor; onDeposit?: DepositHook; onDepositLapsed?: DepositHook; readContract?: ReadContract; now?: () => number } = {}) =>
     doorPayer({
       key: KEY, channelDir, depositFor: o.depositFor ?? (() => 500_000n),
-      ...(o.onDeposit ? { onDeposit: o.onDeposit } : {}), ...(o.readContract ? { readContract: o.readContract } : {}), ...(o.now ? { now: o.now } : {}),
+      ...(o.onDeposit ? { onDeposit: o.onDeposit } : {}), ...(o.onDepositLapsed ? { onDepositLapsed: o.onDepositLapsed } : {}), ...(o.readContract ? { readContract: o.readContract } : {}), ...(o.now ? { now: o.now } : {}),
     });
   const apiFor = (o: { depositFor?: DepositFor; timeoutMs?: number; payer?: DoorPayer } = {}) =>
     httpHostApi(offer, {
@@ -405,7 +407,10 @@ test('R5: with a chain reader, a pending deposit the chain shows is cleared and 
     const c = fakeChain(chain);
     const clock = { t: Date.now() };
     const deposits: bigint[] = [];
-    const payer = t.payerFor({ readContract: c.readContract, now: () => clock.t, onDeposit: (_h, _c, a) => void deposits.push(a) });
+    const lapsed: bigint[] = [];
+    const payer = t.payerFor({
+      readContract: c.readContract, now: () => clock.t, onDeposit: (_h, _c, a) => void deposits.push(a), onDepositLapsed: (_h, _c, a) => void lapsed.push(a),
+    });
     const api = t.apiFor({ payer });
     const { leaseId } = await api.open(JOB);
     await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof HostError && e.status === 500);
@@ -423,6 +428,10 @@ test('R5: with a chain reader, a pending deposit the chain shows is cleared and 
     await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof HostError && e.status === 500);
     assert.equal(g.paid.at(-1)!.payload.type, 'voucher');
     assert.deepEqual(deposits, [500_000n], 'no second deposit');
+    // Long after its authorization lapsed, a deposit that landed is never released.
+    clock.t += 3_600_000;
+    await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof HostError && e.status === 500);
+    assert.deepEqual(lapsed, [], 'a landed deposit stays locked');
     const storage = new FileClientChannelStorage({ directory: join(t.channelDir, HOST_ID) });
     assert.equal((await storage.get(askChannelId()))?.balance, '500000');
   } finally {
@@ -430,23 +439,32 @@ test('R5: with a chain reader, a pending deposit the chain shows is cleared and 
   }
 });
 
-test('R5: a pending deposit the chain never shows is cleared once its authorization has lapsed', async () => {
+test('R5/R8: a pending deposit the chain never shows is cleared once its authorization has lapsed, and its capital released', async () => {
   const g = challengeGate([ASK], { answer: 500 });
   const t = await setup(g.gate);
   try {
     const c = fakeChain(new Map());
     const clock = { t: Date.now() };
     const deposits: bigint[] = [];
-    const payer = t.payerFor({ readContract: c.readContract, now: () => clock.t, onDeposit: (_h, _c, a) => void deposits.push(a) });
+    // The door's books: a cap that fits one 500000 deposit.
+    const book = new CapitalBook(join(t.channelDir, 'capital.json'));
+    const payer = t.payerFor({
+      readContract: c.readContract, now: () => clock.t,
+      depositFor: (id) => (book.locked(id) + 500_000n <= 500_000n ? 500_000n : 'over_cap'),
+      onDeposit: (h, _c, a) => (deposits.push(a), book.deposited(h, a)),
+      onDepositLapsed: (h, _c, a) => book.withdrawn(h, a),
+    });
     const api = t.apiFor({ payer });
     const { leaseId } = await api.open(JOB);
     await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof HostError && e.status === 500);
     const validBefore = Number(((g.paid[0]!.payload.deposit as { authorization: { erc3009Authorization: { validBefore: string } } }).authorization.erc3009Authorization.validBefore));
     clock.t = validBefore * 1000 - 1000;
     await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof DepositPendingError, 'still able to land');
+    assert.equal(book.locked(HOST_ID), 500_000n);
     clock.t = validBefore * 1000 + PENDING_CHECK_MS;
     await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof HostError && e.status === 500);
-    assert.equal(deposits.length, 2, 'a lapsed deposit never lands, so a new one is signed');
+    assert.equal(deposits.length, 2, 'the lapsed deposit was released, so the next one fits the cap and is signed');
+    assert.equal(book.locked(HOST_ID), 500_000n, 'only the live deposit is counted');
   } finally {
     t.done();
   }

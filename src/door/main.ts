@@ -132,6 +132,10 @@ async function main(): Promise<void> {
       capital.deposited(hostId, amount);
       console.log(`charter-door: deposit ${amount} micro-USDC signed into channel ${channelId} of host ${hostId}`);
     },
+    onDepositLapsed: (hostId, channelId, amount) => {
+      capital.withdrawn(hostId, amount);
+      console.log(`charter-door: deposit ${amount} micro-USDC into channel ${channelId} of host ${hostId} lapsed unlanded; released`);
+    },
     readContract: baseReader(env),
   });
   // A deposit or settle whose answer was lost before a restart: the chain says what landed.

@@ -34,7 +34,7 @@ export class CapitalBook {
     this.save();
   }
 
-  /** Funds that came back from this host's channel. */
+  /** Funds that came back from this host's channel, or a signed deposit that lapsed without landing. */
   withdrawn(hostId: string, amount: bigint): void {
     const left = this.locked(hostId) - amount;
     this.hosts.set(hostId, left > 0n ? left : 0n);

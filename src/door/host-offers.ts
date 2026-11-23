@@ -25,19 +25,25 @@ export async function fetchHostOffer(url: string, f: typeof fetch): Promise<Offe
 
 /**
  * The door's `offers()`: the offer of every listed host, fetched again once it is OFFER_REFRESH_MS old. A host
- * that fails to answer (or answers a bad offer) keeps its last offer until that is OFFER_KEEP_MS old, and is
- * left out after that until it answers again.
+ * that fails to answer (or answers a bad offer) is not tried again for OFFER_REFRESH_MS, so a dark host does not
+ * slow every call; it keeps its last offer until that is OFFER_KEEP_MS old, and is left out after that until it
+ * answers again.
  */
 export function listedOffers(d: {
   registry: HostRegistry;
   fetchOffer: (url: string) => Promise<Offer | 'bad_offer'>;
   now: () => number;
 }): () => Promise<Offer[]> {
+  /** When each host's last fetch failed (epoch ms). */
+  const failedAt = new Map<string, number>();
   return async () => {
     const offers = await Promise.all(
       d.registry.listed().map(async (r): Promise<Offer | undefined> => {
         const age = r.offer && r.offerFetchedAt !== undefined ? d.now() - r.offerFetchedAt : Infinity;
+        const kept = age < OFFER_KEEP_MS ? r.offer : undefined;
         if (age < OFFER_REFRESH_MS) return r.offer;
+        const failed = failedAt.get(r.hostId);
+        if (failed !== undefined && d.now() - failed < OFFER_REFRESH_MS) return kept;
         let o: Offer | 'bad_offer';
         try {
           o = await d.fetchOffer(r.url);
@@ -45,10 +51,12 @@ export function listedOffers(d: {
           o = 'bad_offer';
         }
         if (o !== 'bad_offer') {
+          failedAt.delete(r.hostId);
           d.registry.setOffer(r.hostId, o, d.now());
           return o;
         }
-        return age < OFFER_KEEP_MS ? r.offer : undefined;
+        failedAt.set(r.hostId, d.now());
+        return kept;
       }),
     );
     return offers.filter((o): o is Offer => o !== undefined);

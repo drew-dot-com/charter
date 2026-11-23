@@ -82,6 +82,8 @@ interface PendingDeposit {
   channelId: string;
   /** The record's balance when the deposit was signed, plus the deposit: what a record that reflects it shows. */
   balanceAfter: bigint;
+  /** The deposit's amount. */
+  amount: bigint;
   /** The deposit authorization's validBefore (epoch seconds): past it, a deposit not on chain never lands. */
   validBefore?: number;
   /** Epoch ms the chain was last read for it. */
@@ -173,6 +175,11 @@ export function doorPayer(o: {
   /** Called once for each deposit the door signs, with its amount in micro-USDC. */
   onDeposit?: (hostId: string, channelId: string, amount: bigint) => void;
   /**
+   * Called once for a signed deposit that can never land: its authorization lapsed and neither the record nor the
+   * chain shows it. No money moved, so the door releases it from its capital. A deposit that landed never fires this.
+   */
+  onDepositLapsed?: (hostId: string, channelId: string, amount: bigint) => void;
+  /**
    * Base reads (viem `readContract` on BASE_RPC_URL). With it the batch client rebuilds a lost record and
    * resyncs one a host reports behind from chain and the door's own voucher signature, and a pending deposit
    * is cleared once the chain shows it (or once its authorization has lapsed without it). Without: records
@@ -230,9 +237,14 @@ export function doorPayer(o: {
     } catch {
       return true;
     }
-    // Read after the chain: a deposit past its validBefore that the chain does not show can never land.
-    if ((await shows()) || (p.validBefore !== undefined && now() / 1000 > p.validBefore)) {
+    if (await shows()) {
       pending.delete(hostId);
+      return false;
+    }
+    // Read after the chain: a deposit past its validBefore that the chain does not show can never land.
+    if (p.validBefore !== undefined && now() / 1000 > p.validBefore) {
+      pending.delete(hostId);
+      o.onDepositLapsed?.(hostId, p.channelId, p.amount);
       return false;
     }
     return true;
@@ -311,7 +323,7 @@ export function doorPayer(o: {
             const before = amountOf((await storage.get(channelId))?.balance);
             const vb = p.deposit.authorization?.erc3009Authorization?.validBefore;
             const validBefore = typeof vb === 'string' && /^\d{1,15}$/.test(vb) ? Number(vb) : undefined;
-            pending.set(offer.hostId, { channelId, balanceAfter: before + amount, ...(validBefore === undefined ? {} : { validBefore }) });
+            pending.set(offer.hostId, { channelId, balanceAfter: before + amount, amount, ...(validBefore === undefined ? {} : { validBefore }) });
             o.onDeposit?.(offer.hostId, channelId, amount);
           });
         // The 402 itself is read first: when it asks for nothing the door pays, the client never sees it.
