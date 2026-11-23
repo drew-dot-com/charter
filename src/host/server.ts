@@ -53,7 +53,7 @@ function newApp(): express.Express {
 }
 
 /** Last in the chain: unknown paths and methods answer 404, a bad body answers 400. */
-function finish(app: express.Express): express.Express {
+export function finish(app: express.Express): express.Express {
   app.use((_req, res) => {
     res.status(404).json({ error: 'not_found' });
   });
@@ -64,21 +64,14 @@ function finish(app: express.Express): express.Express {
   return app;
 }
 
-/**
- * The three apps the node puts behind its three priced TOON apps. Each handles
- * exactly one route, so a packet paid for one price can never reach another.
- * Bind each to 127.0.0.1 only.
- */
-export function hostApps(deps: HostDeps): { open: express.Express; tick: express.Express; status: express.Express } {
+/** `POST` open, body `{ job }`: creates the container (not started) and answers `awaiting_first_tick`, or `closed` with the reason. */
+export function openHandler(deps: HostDeps): express.RequestHandler {
   const { store, runner, offer, now } = deps;
-  const intervalMs = offer.intervalSeconds * 1000;
   const maxLeases = deps.maxLeases ?? 1;
   const maxHomes = deps.maxHomes ?? 0;
-  const log = deps.log ?? ((msg: string) => console.error(msg));
   const live = (): number => store.all().filter(isLive).length;
 
-  const open = newApp();
-  open.post('/open', async (req, res) => {
+  return async (req, res) => {
     const job = parseJob(req.body);
     if (!job) return void res.status(400).json({ error: 'bad_request' });
 
@@ -132,11 +125,23 @@ export function hostApps(deps: HostDeps): { open: express.Express; tick: express
     }
     store.put(onBooted(cur, now()));
     res.json({ leaseId, state: 'awaiting_first_tick' });
-  });
+  };
+}
 
-  const tick = newApp();
-  tick.post('/tick', async (req, res) => {
-    const { leaseId, index } = (req.body ?? {}) as { leaseId?: unknown; index?: unknown };
+/**
+ * `POST` tick, body `{ index }`: records a paid interval, and on tick 0 starts the job. `leaseIdOf` says where
+ * the lease id is: the path (`:id`) by default, the body for the TOON tick app.
+ */
+export function tickHandler(
+  deps: HostDeps, leaseIdOf: (req: express.Request) => unknown = (req) => req.params.id,
+): express.RequestHandler {
+  const { store, runner, offer, now } = deps;
+  const intervalMs = offer.intervalSeconds * 1000;
+  const log = deps.log ?? ((msg: string) => console.error(msg));
+
+  return async (req, res) => {
+    const leaseId = leaseIdOf(req);
+    const { index } = (req.body ?? {}) as { index?: unknown };
     if (typeof leaseId !== 'string' || !LEASE_ID.test(leaseId) || !isNonNegInt(index)) {
       return void res.status(400).json({ error: 'bad_request' });
     }
@@ -186,32 +191,62 @@ export function hostApps(deps: HostDeps): { open: express.Express; tick: express
       }
     }
     res.json(answer);
-  });
+  };
+}
 
-  const status = newApp();
-  status.get('/leases/:id', (req, res) => {
-    const lease = LEASE_ID.test(req.params.id) ? store.get(req.params.id) : undefined;
+/** The lease named by `:id`, or undefined for an unknown or malformed id. */
+export function leaseOf(deps: HostDeps, req: express.Request): Lease | undefined {
+  const id = String(req.params.id ?? '');
+  return LEASE_ID.test(id) ? deps.store.get(id) : undefined;
+}
+
+/** `GET` status of `:id`: `{ lease }`. */
+export function statusHandler(deps: HostDeps): express.RequestHandler {
+  return (req, res) => {
+    const lease = leaseOf(deps, req);
     if (!lease) return void res.status(404).json({ error: 'not_found' });
     res.json({ lease });
-  });
-  status.get('/leases/:id/output/:part', async (req, res) => {
-    const lease = LEASE_ID.test(req.params.id) ? store.get(req.params.id) : undefined;
+  };
+}
+
+/** `GET` output part `:part` of `:id`: `{ part, parts, data }`, data base64. */
+export function outputHandler(deps: HostDeps): express.RequestHandler {
+  return async (req, res) => {
+    const lease = leaseOf(deps, req);
     const parts = lease?.outputParts;
-    if (!lease || parts === undefined || !NON_NEG_INT.test(req.params.part)) {
+    const partRaw = String(req.params.part ?? '');
+    if (!lease || parts === undefined || !NON_NEG_INT.test(partRaw)) {
       return void res.status(404).json({ error: 'not_found' });
     }
     if (lease.paidIntervals === 0) return void res.status(409).json({ error: 'unpaid' });
-    const part = Number(req.params.part);
+    const part = Number(partRaw);
     if (!Number.isSafeInteger(part) || part >= parts) return void res.status(404).json({ error: 'not_found' });
     let bytes: Buffer;
     try {
-      bytes = await runner.output(lease.id);
+      bytes = await deps.runner.output(lease.id);
     } catch {
       return void res.status(500).json({ error: 'output_unreadable' });
     }
     const slice = bytes.subarray(part * OUTPUT_PART_BYTES, (part + 1) * OUTPUT_PART_BYTES);
     res.json({ part, parts, data: slice.toString('base64') });
-  });
+  };
+}
+
+/**
+ * The three apps the node puts behind its three priced TOON apps. Each handles
+ * exactly one route, so a packet paid for one price can never reach another.
+ * Bind each to 127.0.0.1 only.
+ */
+export function hostApps(deps: HostDeps): { open: express.Express; tick: express.Express; status: express.Express } {
+  const open = newApp();
+  open.post('/open', openHandler(deps));
+
+  const tick = newApp();
+  tick.post('/tick', tickHandler(deps, (req) => (req.body as { leaseId?: unknown } | undefined)?.leaseId));
+
+  const status = newApp();
+  status.get('/leases/:id', statusHandler(deps));
+  status.get('/leases/:id/output/:part', outputHandler(deps));
 
   return { open: finish(open), tick: finish(tick), status: finish(status) };
 }
