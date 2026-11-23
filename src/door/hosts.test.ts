@@ -7,7 +7,8 @@ import { test } from 'node:test';
 import type { ChannelConfig } from '@x402/evm';
 import type { Offer } from '../types.js';
 import type { ChannelChain, DoorChannel } from './channel-chain.js';
-import { capitalAllocator, hostFundingWaiting, HostRegistry, hostIdOf, isProven, publicRecord, rankOffers, reapChannels, startChannelReaper, successRate } from './hosts.js';
+import { capitalAllocator, hostFundingWaiting, HostRegistry, hostIdOf, isProven, leasesTicking, publicRecord, rankOffers, reapChannels, startChannelReaper, successRate } from './hosts.js';
+import { snapshotOffer, type DoorLease } from './ledger.js';
 
 const DAY = 86_400_000;
 const T0 = 1_800_000_000_000;
@@ -383,6 +384,8 @@ function fakeChannels() {
   const resynced: string[] = [];
   /** hostId to the channel its current config names (the door pins it at first funding). */
   const pins = new Map<string, string>();
+  /** `<hostId> <channelId>` of channels the reaper marked withdrawing. */
+  const marked = new Set<string>();
   let n = 0;
   /** A channel the door holds to `hostId`; `charged` is the door's record of what its vouchers owe (default: all claimed). */
   const open = (hostId: string, balance: bigint, totalClaimed = 0n, charged = totalClaimed): `0x${string}` => {
@@ -416,8 +419,11 @@ function fakeChannels() {
     channels: async (hostId: string) => byHost.get(hostId) ?? [],
     resync: async (hostId: string, channelId: string) => void resynced.push(`${hostId.slice(0, 4)} ${channelId}`),
     pinnedChannel: async (hostId: string) => pins.get(hostId),
+    withdrawing: async (hostId: string) => [...marked].filter((x) => x.startsWith(`${hostId} `)).map((x) => x.split(' ')[1]!),
+    markWithdrawing: async (hostId: string, channelId: string) => void marked.add(`${hostId} ${channelId}`),
+    clearWithdrawing: async (hostId: string, channelId: string) => void marked.delete(`${hostId} ${channelId}`),
   };
-  return { chain, payer, open, share, state, writes, resynced, clock, pins };
+  return { chain, payer, open, share, state, writes, resynced, clock, pins, marked };
 }
 
 function reaperFor(reg: HostRegistry, f: ReturnType<typeof fakeChannels>, lastLeaseAt: Map<string, number>, locked: Map<string, bigint>, ticking = new Set<string>()) {
@@ -608,4 +614,42 @@ test('C2: registry.drop marks a host dropped for good: a running registry sees i
   assert.equal(again.get(id)!.state, 'dropped');
   assert.deepEqual(again.register('https://a.example', T0 + 20), { hostId: id, state: 'dropped' });
   assert.deepEqual(again.dueProbes(T0 + 10 * DAY, 0, 10), [other]);
+});
+
+test('I4: the reaper marks a channel it asked to withdraw, and clears the mark once finalized and resynced', async () => {
+  const { reg } = registry();
+  const f = fakeChannels();
+  const id = withRecord(reg, 'a', 1, 0);
+  const c = f.open(id, 500_000n, 120_000n);
+  f.clock.t = T0 + 8 * DAY;
+  const r = reaperFor(reg, f, new Map([[id, T0]]), new Map([[id, 500_000n]]));
+  await r.run();
+  assert.deepEqual([...f.marked], [`${id} ${c}`]);
+  f.clock.t += 1000;
+  await r.run();
+  assert.deepEqual([...f.marked], [`${id} ${c}`], 'still pending');
+  f.clock.t += 3600 * 1000;
+  await r.run();
+  assert.deepEqual([...f.marked], []);
+  assert.deepEqual(f.resynced, [`${id.slice(0, 4)} ${c}`]);
+  // A withdrawal asked before a crash (on chain, not marked) is marked at the next round.
+  const d = f.open(id, 100_000n);
+  f.state.get(d)!.initiatedAt = Math.floor(f.clock.t / 1000);
+  await r.run();
+  assert.deepEqual([...f.marked], [`${id} ${d}`]);
+});
+
+test('I4: leasesTicking: an unstopped lease on the host with a host tick within two intervals and 10 s', () => {
+  const NOW = T0 + DAY;
+  const lease = (over: Partial<DoorLease>): DoorLease => ({
+    leaseId: 'a'.repeat(32), offerId: `${OFFER.hostId}:o1`, ticksPaidByRenter: 1, ticksPaidToHost: 1, losses: 0n, stopped: false,
+    createdAt: T0, nextIndex: 1, hostReads: 0, offer: snapshotOffer(OFFER), ...over,
+  });
+  const window = 2 * 3600_000 + 10_000;
+  assert.equal(leasesTicking([lease({ lastTickAt: NOW - window + 1 })], OFFER.hostId, NOW), true, 'paid an interval ahead, or a tick a little late');
+  assert.equal(leasesTicking([lease({ lastTickAt: NOW - 3600_000 - 5_000 })], OFFER.hostId, NOW), true, 'one interval and 5 s: still ticking');
+  assert.equal(leasesTicking([lease({ lastTickAt: NOW - window })], OFFER.hostId, NOW), false);
+  assert.equal(leasesTicking([lease({ lastTickAt: NOW - 1000, stopped: true })], OFFER.hostId, NOW), false);
+  assert.equal(leasesTicking([lease({})], OFFER.hostId, NOW), false, 'never ticked');
+  assert.equal(leasesTicking([lease({ lastTickAt: NOW - 1000 })], 'cd'.repeat(32), NOW), false, 'another host');
 });

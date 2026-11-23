@@ -612,6 +612,29 @@ test('C2: the first deposit pins the host\'s channel config; a 402 naming anothe
   }
 });
 
+test('I4: a channel the reaper asked to withdraw is not paid through (CapitalCapError, nothing signed) until the mark is cleared', async () => {
+  const g = challengeGate([ASK], { settle: 'on2xx' });
+  const t = await setup(g.gate);
+  try {
+    const payer = t.payerFor();
+    const api = t.apiFor({ payer });
+    const { leaseId } = await api.open(JOB);
+    await api.tick(leaseId, 0);
+    assert.deepEqual(await payer.withdrawing(HOST_ID), []);
+    await payer.markWithdrawing(HOST_ID, askChannelId());
+    assert.deepEqual(await t.payerFor().withdrawing(HOST_ID), [askChannelId()], 'kept on disk');
+    const signed = g.paid.length;
+    await assert.rejects(api.tick(leaseId, 1), (e: unknown) => e instanceof CapitalCapError);
+    assert.equal(g.paid.length, signed, 'nothing signed');
+    assert.equal(api.spent(), PRICE);
+    await payer.clearWithdrawing(HOST_ID, askChannelId());
+    await api.tick(leaseId, 1);
+    assert.equal(g.paid.length, signed + 1);
+  } finally {
+    t.done();
+  }
+});
+
 test('output reads stop at MAX_OUTPUT_PARTS', async () => {
   const t = await setup();
   try {

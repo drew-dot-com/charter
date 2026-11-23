@@ -81,6 +81,12 @@ export interface DoorPayer {
   channels(hostId: string): Promise<DoorChannel[]>;
   /** The channel the host's pinned config names: set by the door's first deposit to it, undefined before. */
   pinnedChannel(hostId: string): Promise<string | undefined>;
+  /** Channels of this host the door asked to withdraw: `paidFetch` refuses them (CapitalCapError) until cleared. */
+  withdrawing(hostId: string): Promise<string[]>;
+  /** The reaper asked to withdraw this channel. Kept on disk. */
+  markWithdrawing(hostId: string, channelId: string): Promise<void>;
+  /** The withdrawal is finalized and the record resynced: the channel may be paid through again. */
+  clearWithdrawing(hostId: string, channelId: string): Promise<void>;
   /** Brings one channel record up to the chain, as resyncAll does. Nothing without a chain reader. */
   resync(hostId: string, channelId: string): Promise<void>;
 }
@@ -132,19 +138,19 @@ function carriesPayment(input: RequestInfo | URL, init?: RequestInit): boolean {
 }
 
 /**
- * Whether a 402 offers a payment `pays` allows. One with no readable PAYMENT-REQUIRED header is left to the
+ * What a 402 offers, or undefined when it has no readable PAYMENT-REQUIRED header: that one is left to the
  * client, which refuses it without signing.
  */
-function asksFor(res: Response, pays: (r: PaymentRequirements) => boolean): boolean {
+function acceptsOf(res: Response): PaymentRequirements[] | undefined {
   const h = res.headers.get('payment-required');
-  if (!h) return true;
+  if (!h) return undefined;
   let accepts: unknown;
   try {
     accepts = (decodePaymentRequiredHeader(h) as { accepts?: unknown }).accepts;
   } catch {
-    return true;
+    return undefined;
   }
-  return Array.isArray(accepts) && accepts.some((r) => typeof r === 'object' && r !== null && pays(r as PaymentRequirements));
+  return Array.isArray(accepts) ? accepts.filter((r): r is PaymentRequirements => typeof r === 'object' && r !== null) : [];
 }
 
 /** The host ids the door holds channel records for (one dir each under `channelDir`). */
@@ -199,6 +205,24 @@ function readPin(dir: string): Pin | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** The channels the reaper asked to withdraw (`withdrawing.json` in the host's dir): never paid through until it clears them. */
+const withdrawingFile = (dir: string): string => join(dir, 'withdrawing.json');
+
+function readWithdrawing(dir: string): string[] {
+  try {
+    const ids = JSON.parse(readFileSync(withdrawingFile(dir), 'utf8')) as unknown;
+    return Array.isArray(ids) ? ids.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeWithdrawing(dir: string, ids: string[]): Promise<void> {
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await writeFile(`${withdrawingFile(dir)}.tmp`, JSON.stringify(ids), { mode: 0o600 });
+  await rename(`${withdrawingFile(dir)}.tmp`, withdrawingFile(dir));
 }
 
 async function writePin(dir: string, pin: Pin): Promise<void> {
@@ -342,6 +366,17 @@ export function doorPayer(o: {
       return out;
     },
     pinnedChannel: async (hostId) => readPin(hostChannelDir(o.channelDir, hostId))?.channelId,
+    withdrawing: async (hostId) => readWithdrawing(hostChannelDir(o.channelDir, hostId)),
+    async markWithdrawing(hostId, channelId) {
+      const dir = hostChannelDir(o.channelDir, hostId);
+      const ids = readWithdrawing(dir);
+      if (!ids.includes(channelId.toLowerCase())) await writeWithdrawing(dir, [...ids, channelId.toLowerCase()]);
+    },
+    async clearWithdrawing(hostId, channelId) {
+      const dir = hostChannelDir(o.channelDir, hostId);
+      const ids = readWithdrawing(dir);
+      if (ids.includes(channelId.toLowerCase())) await writeWithdrawing(dir, ids.filter((x) => x !== channelId.toLowerCase()));
+    },
     async resync(hostId, channelId) {
       if (o.readContract) await resyncChannel(hostId, channelId);
     },
@@ -390,7 +425,14 @@ export function doorPayer(o: {
         const pin = readPin(dir);
         return pin === undefined || pin.channelId === id || o.atRisk(offer.hostId) === 0n;
       };
-      const pays = (r: PaymentRequirements): boolean => isTheTick(r, offer.payTo, tickPrice) && onPinned(r);
+      /** A channel the door is withdrawing: nothing more goes into it until the reaper clears it. */
+      const withdrawn = (r: PaymentRequirements): boolean => {
+        const id = channelOf(r);
+        return id !== undefined && readWithdrawing(dir).includes(id);
+      };
+      /** The tick the door would pay, on a channel it may use: else refused, by capital when only the withdrawal stops it. */
+      const allowed = (r: PaymentRequirements): boolean => isTheTick(r, offer.payTo, tickPrice) && onPinned(r);
+      const pays = (r: PaymentRequirements): boolean => allowed(r) && !withdrawn(r);
       return (async (input: RequestInfo | URL, init?: RequestInit) => {
         // A deposit already signed and not yet in the record: the chain may hold it. Nothing more is sent.
         if (await depositPending(offer.hostId)) throw new DepositPendingError(offer.hostId);
@@ -422,13 +464,14 @@ export function doorPayer(o: {
         client
           .registerPolicy((version, reqs) => {
             const kept = keep(version, reqs).filter(onPinned);
-            if (kept.length === 0) refused.unexpected = true;
-            return kept;
+            const usable = kept.filter((r) => !withdrawn(r));
+            if (usable.length === 0) refused[kept.length > 0 ? 'capped' : 'unexpected'] = true;
+            return usable;
           })
           // And once one is chosen, check it again before anything is signed.
           .onBeforePaymentCreation(async ({ selectedRequirements }) => {
             if (pays(selectedRequirements)) return undefined;
-            refused.unexpected = true;
+            refused[allowed(selectedRequirements) ? 'capped' : 'unexpected'] = true;
             return { abort: true, reason: 'unexpected_payment' };
           })
           // A signed deposit is pending until the channel record shows it (a successful settle adds it).
@@ -455,8 +498,10 @@ export function doorPayer(o: {
         // The 402 itself is read first: when it asks for nothing the door pays, the client never sees it.
         const asked: typeof fetch = async (req, reqInit) => {
           const res = await base(req, reqInit);
-          if (res.status === 402 && !carriesPayment(req, reqInit) && !asksFor(res, pays)) {
+          const accepts = res.status === 402 && !carriesPayment(req, reqInit) ? acceptsOf(res) : undefined;
+          if (accepts && !accepts.some(pays)) {
             await res.body?.cancel().catch(() => undefined);
+            if (accepts.some(allowed)) throw new CapitalCapError(offer.hostId);
             throw new UnexpectedPaymentError();
           }
           return res;

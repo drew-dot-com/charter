@@ -16,7 +16,7 @@ import { doorFunding, parseSweepKeep, parseCdpKey, parsePayerKey, parseTrustProx
 import { fetchHostOffer, listedOffers } from './host-offers.js';
 import { HOST_TIMEOUT_MS, doorPayer, httpHostApi, type DoorPayer, type ReadContract } from './host-http.js';
 import { HostQueue } from './host-queue.js';
-import { capitalAllocator, hostFundingWaiting, HOSTS_FILE, HostRegistry, startChannelReaper } from './hosts.js';
+import { capitalAllocator, hostFundingWaiting, HOSTS_FILE, HostRegistry, leasesTicking, startChannelReaper } from './hosts.js';
 import { DoorLedger, LEDGER_FILE } from './ledger.js';
 import { startProbes } from './probe.js';
 import { fileRequestSink } from './reqlog.js';
@@ -216,8 +216,7 @@ async function main(): Promise<void> {
     return last;
   };
   // A renter still paying a dropped host: its channel is left until that lease stops ticking.
-  const ticking = (hostId: string): boolean =>
-    ledger.all().some((l) => l.offer.hostId === hostId && !l.stopped && l.lastTickAt !== undefined && Date.now() - l.lastTickAt < l.offer.intervalSeconds * 1000);
+  const ticking = (hostId: string): boolean => leasesTicking(ledger.all(), hostId, Date.now());
   const stopReaper = startChannelReaper({
     registry, payer, chain: baseChannelChain(baseRpcUrl(env), key), lastLeaseAt, ticking,
     // Releasing what is at risk leaves the book equal to what the host charged: nothing counted once channels are empty.

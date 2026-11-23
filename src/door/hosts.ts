@@ -7,7 +7,7 @@ import type { Offer } from '../types.js';
 import type { CapitalBook } from './capital.js';
 import type { ChannelChain, DoorChannel } from './channel-chain.js';
 import type { DepositFor } from './host-http.js';
-import { utcDay } from './ledger.js';
+import { utcDay, type DoorLease } from './ledger.js';
 import { blockedAddress } from './safe-fetch.js';
 
 /** The registry file's name inside the door data dir. */
@@ -429,18 +429,35 @@ export interface ReaperDeps {
     resync(hostId: string, channelId: string): Promise<void>;
     /** The channel the host's pinned config names; undefined before the door first funded it. */
     pinnedChannel(hostId: string): Promise<string | undefined>;
+    /** Channels of the host the reaper asked to withdraw and has not cleared: the door pays nothing through them. */
+    withdrawing(hostId: string): Promise<string[]>;
+    markWithdrawing(hostId: string, channelId: string): Promise<void>;
+    clearWithdrawing(hostId: string, channelId: string): Promise<void>;
   };
   chain: ChannelChain;
   capital: Pick<CapitalBook, 'locked' | 'withdrawn'>;
   /** Epoch ms of the host's newest lease or probe; undefined when it never had one. */
   lastLeaseAt: (hostId: string) => number | undefined;
-  /** An unstopped lease on the host had a host tick within its last interval: a dropped host is not withdrawn under it. */
+  /** A lease still ticks on the host (leasesTicking): a dropped host is not withdrawn under it. */
   ticking: (hostId: string) => boolean;
   now: () => number;
   log: (msg: string) => void;
 }
 
 const bigMax = (a: bigint, b: bigint): bigint => (a > b ? a : b);
+
+/** Slack on top of two intervals before a lease counts as no longer ticking: a tick may land a little late. */
+export const TICKING_GRACE_MS = 10_000;
+
+/**
+ * Whether a lease still ticks on this host: not stopped, with a host tick within two of its intervals and
+ * TICKING_GRACE_MS. Two, because a renter may pay an interval ahead; the grace, because a tick may be late.
+ */
+export function leasesTicking(leases: DoorLease[], hostId: string, now: number): boolean {
+  return leases.some(
+    (l) => l.offer.hostId === hostId && !l.stopped && l.lastTickAt !== undefined && now - l.lastTickAt < 2 * l.offer.intervalSeconds * 1000 + TICKING_GRACE_MS,
+  );
+}
 
 /**
  * One round of the channel reaper. A host is due when it is dropped with no lease still ticking on it, or its last
@@ -449,7 +466,9 @@ const bigMax = (a: bigint, b: bigint): bigint => (a > b ? a : b);
  * the door's own charged amount) and no withdrawal pending gets one asked for those funds. Once every channel of a
  * due host holds nothing of the door's (withdrawn, or refunded by the host itself), what `capital.locked` counts
  * for it is released. A channel that is not the one the host's pinned config names (an old config's) is withdrawn
- * the same way even while its host is active, and what its withdrawal brings back is released as it lands. The door's record of a channel follows the chain after its balance moved. A channel id kept
+ * the same way even while its host is active, and what its withdrawal brings back is released as it lands. A
+ * channel the reaper asked to withdraw is marked (the door pays nothing through it) until its withdrawal is
+ * finalized and its record resynced. The door's record of a channel follows the chain after its balance moved. A channel id kept
  * under more than one host is never touched: whose it is cannot be told.
  */
 export async function reapChannels(d: ReaperDeps): Promise<void> {
@@ -468,6 +487,7 @@ export async function reapChannels(d: ReaperDeps): Promise<void> {
     const idle = last === undefined || d.now() - last >= IDLE_WITHDRAW_MS;
     const due = (r.state === 'dropped' && !d.ticking(r.hostId)) || idle;
     const pinned = await d.payer.pinnedChannel(r.hostId);
+    const marked = new Set(await d.payer.withdrawing(r.hostId));
     let empty = true;
     for (const c of channels) {
       // Not the channel the door pays this host through now: nothing will be paid into it again.
@@ -491,13 +511,24 @@ export async function reapChannels(d: ReaperDeps): Promise<void> {
           finalized = true;
         }
         // Only on a quiet channel: a busy one's record may be ahead of the chain by a deposit still landing.
-        if (s.balance !== c.balance && (withdraw || finalized)) await d.payer.resync(r.hostId, c.channelId);
+        let resynced = false;
+        if (s.balance !== c.balance && (withdraw || finalized)) {
+          await d.payer.resync(r.hostId, c.channelId);
+          resynced = true;
+        }
+        // The mark follows the chain: set while a withdrawal is pending, cleared once none is and the record follows.
+        if (s.withdrawInitiatedAt > 0 && !marked.has(c.channelId)) await d.payer.markWithdrawing(r.hostId, c.channelId);
+        if (s.withdrawInitiatedAt === 0 && marked.has(c.channelId)) {
+          if (!resynced) await d.payer.resync(r.hostId, c.channelId);
+          await d.payer.clearWithdrawing(r.hostId, c.channelId);
+        }
         // What the door's vouchers already owe the host stays in the channel for it to claim.
         const free = s.balance - bigMax(s.totalClaimed, c.charged);
         if (free <= 0n && s.withdrawInitiatedAt === 0) continue;
         empty = false;
         if (withdraw && s.withdrawInitiatedAt === 0) {
           await d.chain.initiateWithdraw(c, free);
+          await d.payer.markWithdrawing(r.hostId, c.channelId);
           d.log(`channel ${c.channelId} of host ${r.url}: withdrawal of ${free} micro-USDC asked (${idle ? 'idle' : due ? 'dropped' : 'not the pinned channel'})`);
         }
       } catch (e) {
