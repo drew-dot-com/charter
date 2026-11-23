@@ -434,7 +434,9 @@ Keep at least 1 USDC idle in that wallet: a host-channel top-up must not drain i
 `charter-usage-check.sh` (in the 5 minute check) sends Drew one Telegram message per event, never a
 reminder: a new lease from a wallet not in `FIRST_PARTY_PAYERS` (`/etc/charter-ops/env`), such a lease
 paying its second hour (a one-tick probe never does, so this is the signal of a real renter), a new grant
-pitch, and the judge's decision on it. It reads `door-ledger.json` and `grants.jsonl` in
+pitch, and the judge's decision on it. The open message (👀) never says "renter": paying x402 crawlers open
+one-hour leases, and it notes when a wallet's earlier leases each paid one hour. Wallets in `PROBE_PAYERS`
+(known crawlers) get no open message; their second hour (🟢) is still sent. It reads `door-ledger.json` and `grants.jsonl` in
 `CHARTER_DOOR_DATA` and keeps the ids it has reported in `/var/lib/charter-ops/usage-seen.json`; delete
 that file and the next run records everything as seen again without sending. The ledger records the offer,
 not the image, so the message cannot say whether a lease is a home or a job. Dry run:

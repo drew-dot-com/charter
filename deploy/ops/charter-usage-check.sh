@@ -4,8 +4,10 @@
 #   charter-usage-check.sh [--alert]
 #
 # Reads the door's lease ledger and grant log and reports, once each:
-#   - a new lease from a wallet not in FIRST_PARTY_PAYERS (with how many leases that wallet has had)
-#   - such a lease paying its second hour: the renter came back, which a one-tick probe never does
+#   - a new lease from a wallet not in FIRST_PARTY_PAYERS (with how many leases that wallet has had), never
+#     called a renter: paying x402 crawlers open one-hour leases; wallets in PROBE_PAYERS get no message here
+#   - such a lease paying its second hour: the renter came back, which a one-tick probe never does (sent for
+#     every outside wallet, PROBE_PAYERS included)
 #   - a new grant pitch, and the judge's decision on it
 # Seen ids live in $CHARTER_OPS_STATE/usage-seen.json. The first run records everything already
 # there and sends nothing. Without --alert it prints what it would send and changes no state;
@@ -30,12 +32,13 @@ alert=0; [ "${1:-}" = --alert ] && alert=1
 # Python prints one message per event, separated by a NUL, and saves the seen set only with --alert.
 out="$(mktemp)"; trap 'rm -f "$out"' EXIT
 USAGE_ALERT=$alert USAGE_STATE="$STATE/usage-seen.json" USAGE_DATA="$DATA" USAGE_OUT="$out" \
-  USAGE_SHOW_ALL="${USAGE_SHOW_ALL:-0}" FIRST_PARTY_PAYERS="${FIRST_PARTY_PAYERS:-}" python3 -I - <<'EOF'
+  USAGE_SHOW_ALL="${USAGE_SHOW_ALL:-0}" FIRST_PARTY_PAYERS="${FIRST_PARTY_PAYERS:-}" PROBE_PAYERS="${PROBE_PAYERS:-}" python3 -I - <<'EOF'
 import json, os, sys
 alert = os.environ["USAGE_ALERT"] == "1"
 state_file = os.environ["USAGE_STATE"]
 data = os.environ["USAGE_DATA"]
 mine = {a.strip().lower() for a in os.environ["FIRST_PARTY_PAYERS"].split(",") if a.strip()}
+probes = {a.strip().lower() for a in os.environ["PROBE_PAYERS"].split(",") if a.strip()}
 
 try:
     leases = json.load(open(os.path.join(data, "door-ledger.json")))
@@ -70,14 +73,23 @@ out = []
 outside = [l for l in leases if (l.get("payer") or "").lower() not in mine and l.get("payer")]
 for l in outside:
     lid, payer = l["leaseId"], l["payer"].lower()
-    n = sum(1 for x in outside if x["payer"].lower() == payer and x["createdAt"] <= l["createdAt"])
+    earlier = [x for x in outside if x["payer"].lower() == payer and x["createdAt"] < l["createdAt"]]
+    n = len(earlier) + 1
     if lid not in S["leases"]:
         S["leases"].add(lid)
-        nth = "first lease from this wallet" if n == 1 else f"lease number {n} from this wallet"
-        out.append(f"🟢 Charter: a new renter opened {kind(l)}\nwallet {short(payer)}, {nth}\nlease {lid[:8]}")
+        # Paying x402 crawlers open one-hour leases too, so an open is never called a renter.
+        if payer in probes:
+            pass  # a known crawler: only a second hour (below) is worth a message
+        else:
+            nth = "first lease from this wallet" if n == 1 else f"lease number {n} from this wallet"
+            if earlier and all(x.get("ticksPaidByRenter", 0) <= 1 for x in earlier):
+                nth += ("; its earlier lease paid one hour" if len(earlier) == 1
+                        else f"; its {len(earlier)} earlier leases each paid one hour") + " (probe pattern)"
+            out.append(f"👀 Charter: an outside wallet opened {kind(l)}\nwallet {short(payer)}, {nth}\nlease {lid[:8]}\n"
+                       "Not a renter yet: paying crawlers open one-hour leases. A second hour sends 🟢.")
     if l.get("ticksPaidByRenter", 0) >= 2 and lid not in S["renewed"]:
         S["renewed"].add(lid)
-        out.append(f"🔁 Charter: renter {short(payer)} paid a second hour\n{kind(l)}, lease {lid[:8]}, {l['ticksPaidByRenter']} hours paid so far")
+        out.append(f"🟢 Charter: a renter came back, {short(payer)} paid a second hour\n{kind(l)}, lease {lid[:8]}, {l['ticksPaidByRenter']} hours paid so far")
 
 for gid, g in sorted(grants.items(), key=lambda kv: kv[1].get("createdAt", 0)):
     name = str(g.get("name", ""))[:80]
