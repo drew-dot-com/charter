@@ -5,7 +5,7 @@ import { BatchSettlementChannelManager } from '@x402/evm/batch-settlement/server
 import { execFileExec } from '../exec.js';
 import { offerToJson } from '../offer.js';
 import type { Offer } from '../types.js';
-import { REFUND_IDLE_HOST_MS, startClaims } from '../x402/claims.js';
+import { hostX402Command, idleMsFor, REFUND_IDLE_HOST_MS, startClaims } from '../x402/claims.js';
 import { BASE_USDC, buildSchemes, facilitatorOffersBatch, parseClaimKey, type X402Config } from '../x402/seller.js';
 import { loadConfig } from './config.js';
 import { doorWatch, hostRegistrar } from './door-link.js';
@@ -19,7 +19,7 @@ import { hostTickGate } from './x402.js';
 /** How often the host checks whether its free home slots changed, to register again. */
 const OFFER_FREE_CHECK_MS = 60_000;
 
-const USAGE = 'usage: charter-host run | offer --print';
+const USAGE = 'usage: charter-host run | offer --print | x402 status | claim';
 
 function every(ms: number, fn: () => Promise<unknown>, what: string): NodeJS.Timeout {
   let busy = false;
@@ -34,14 +34,35 @@ function every(ms: number, fn: () => Promise<unknown>, what: string): NodeJS.Tim
   }, ms);
 }
 
+/** The host's x402 config: ticks are paid to CHARTER_HOST_PAY_TO, its claim key signs claims, records under the data dir. */
+function x402ConfigOf(cfg: ReturnType<typeof loadConfig>): X402Config {
+  return {
+    payTo: cfg.payTo,
+    network: 'eip155:8453',
+    facilitatorUrl: cfg.facilitatorUrl,
+    claimKey: parseClaimKey(readFileSync(cfg.claimKeyFile, 'utf8')),
+    channelDir: join(cfg.dataDir, 'x402-channels'),
+  };
+}
+
+function claimManager(cfg: ReturnType<typeof loadConfig>, x402: X402Config, schemes: ReturnType<typeof buildSchemes>): BatchSettlementChannelManager {
+  return new BatchSettlementChannelManager({ scheme: schemes.batch, facilitator: schemes.facilitator, receiver: cfg.payTo, token: BASE_USDC, network: x402.network });
+}
+
 async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
-  if (cmd !== 'run' && cmd !== 'offer') {
+  if (cmd !== 'run' && cmd !== 'offer' && cmd !== 'x402') {
     console.error(USAGE);
     return 2;
   }
   const cfg = loadConfig(process.env);
   const now = () => Date.now();
+
+  if (cmd === 'x402') {
+    const x402 = x402ConfigOf(cfg);
+    const schemes = buildSchemes(x402);
+    return hostX402Command(rest, claimManager(cfg, x402, schemes), schemes.batch.getStorage(), now, (m) => console.log(m));
+  }
 
   if (cmd === 'offer') {
     if (!rest.includes('--print')) {
@@ -95,13 +116,7 @@ async function main(argv: string[]): Promise<number> {
   await reconcile(deps);
 
   // Ticks are paid to CHARTER_HOST_PAY_TO by the door's batch-settlement vouchers, claimed here through the facilitator.
-  const x402: X402Config = {
-    payTo: cfg.payTo,
-    network: 'eip155:8453',
-    facilitatorUrl: cfg.facilitatorUrl,
-    claimKey: parseClaimKey(readFileSync(cfg.claimKeyFile, 'utf8')),
-    channelDir: join(cfg.dataDir, 'x402-channels'),
-  };
+  const x402 = x402ConfigOf(cfg);
   const schemes = buildSchemes(x402);
   if (!(await facilitatorOffersBatch(x402.facilitatorUrl, x402.network))) {
     console.error(`charter-host: ${x402.facilitatorUrl} does not list batch-settlement on ${x402.network}; ticks cannot settle`);
@@ -124,9 +139,11 @@ async function main(argv: string[]): Promise<number> {
     offerJson: () => JSON.parse(offerToJson(offerNow())) as unknown,
   });
   const server = app.listen(cfg.port, '127.0.0.1');
-  const claims = new BatchSettlementChannelManager({ scheme: schemes.batch, facilitator: schemes.facilitator, receiver: cfg.payTo, token: BASE_USDC, network: x402.network });
-  // The door's channel is refunded only after a quiet week: a renter's home outlives a quiet few days.
-  startClaims(claims, { log: (m) => console.log(m), idleMs: () => REFUND_IDLE_HOST_MS });
+  const claims = claimManager(cfg, x402, schemes);
+  // Vouchers are claimed once the channel has been quiet for two intervals (10 minutes at least), as the door
+  // claims its own; the door's unspent deposit is refunded only after a quiet week, so a renter's home outlives
+  // a quiet few days.
+  startClaims(claims, { log: (m) => console.log(m), idleMs: () => idleMsFor([cfg.offer.intervalSeconds]), refundIdleMs: () => REFUND_IDLE_HOST_MS });
 
   const registrar = hostRegistrar({ doorUrl: cfg.doorUrl, hostUrl: cfg.hostUrl, log });
   let lastFree = cfg.offer.home ? homesFree(store, cfg.maxHomes) : undefined;

@@ -5,7 +5,7 @@ Secrets never go in these variables: a variable names the file that holds one.
 
 ## charter-host
 
-`charter-host run | offer --print`. The host serves its offer and lease routes over HTTPS (a TLS proxy such as
+`charter-host run | offer --print | x402 status | claim`. The host serves its offer and lease routes over HTTPS (a TLS proxy such as
 Caddy in front of the loopback port; `deploy/host/install-host.sh` with `HOST_NAME` sets one up), answers only
 requests signed by its door, and is paid per tick by the door's x402 `batch-settlement` vouchers on Base, which
 it claims through the facilitator. Opens and status reads are free. Template: `deploy/host/env.example`; the

@@ -239,8 +239,10 @@ What happens next, and where to look:
   unreachable) or a failed probe hide the host until a probe passes; three failed probes in a row drop it,
   and it must register again (a restart of `charter-host` does).
 - **Earnings.** Vouchers land in `<CHARTER_DATA_DIR>/x402-channels/`; `charter-host` claims them through the
-  facilitator when the door's channel has been quiet 7 days or the door starts a withdrawal, and settles to
-  `CHARTER_HOST_PAY_TO` every 10 minutes (log lines `x402 claimed`, `x402 settled`). Back that directory up.
+  facilitator when the door's channel has been quiet two intervals (10 minutes at least) or the door starts a
+  withdrawal, and settles to `CHARTER_HOST_PAY_TO` every 10 minutes (log lines `x402 claimed`, `x402 settled`);
+  it refunds the door's unspent deposit after a quiet week. `charter-host x402 status` lists the channel,
+  `charter-host x402 claim` claims and settles now. Back that directory up.
 - **Limits in v1.** The door is the only payer: the host refuses any request not signed by the door's payer
   address, which it reads from `GET <door>/v1/door`. A host needs a public HTTPS address; hosts behind NAT
   come later. Homes stay on the host that holds their disks, so a host that goes away strands its tenants'

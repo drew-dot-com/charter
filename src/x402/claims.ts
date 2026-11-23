@@ -7,7 +7,7 @@ import type { BatchSettlementChannelManager, Channel, ChannelStorage } from '@x4
 
 /** A channel that paid nothing for this long, with money left in it, is refunded: the renter is done. */
 export const REFUND_IDLE_MS = 600_000;
-/** A host's idle window: 7 days, so a renter's home outlives a quiet week before its channel is refunded. */
+/** A host's refund window: 7 days, so a renter's home outlives a quiet week before the door's deposit is refunded. */
 export const REFUND_IDLE_HOST_MS = 604_800_000;
 /** Claims, settles and refunds go out this often; a channel still ticking within REFUND_IDLE_MS waits for the next round unless withdrawing. */
 export const CLAIM_INTERVAL_SECONDS = 600;
@@ -52,25 +52,28 @@ const SETTLE_AFTER_REFUND_MS = 5_000;
 /**
  * Every 10 min: claim what selectClaimable picks and settle it, and refund idle channels. A refund claims
  * the channel's vouchers in the same transaction but settles nothing, so a settle follows each refund round.
- * Errors are logged, never thrown.
+ * Claims wait `idleMs`; refunds wait `refundIdleMs` (default the same). Errors are logged, never thrown.
  */
 export function startClaims(
   m: ClaimManager,
   opts: {
-    /** The idle window, read on each round: the door's follows its leases, a host's is REFUND_IDLE_HOST_MS. */
+    /** The claim idle window, read on each round (idleMsFor the leases' intervals). */
     idleMs: () => number;
+    /** The refund idle window, read on each round: a host's is REFUND_IDLE_HOST_MS. Default: `idleMs`. */
+    refundIdleMs?: () => number;
     log: (m: string) => void;
     schedule?: (fn: () => void, ms: number) => unknown;
   },
 ): void {
   const { idleMs, log, schedule = setTimeout } = opts;
+  const refundIdleMs = opts.refundIdleMs ?? idleMs;
   let settleDue = false;
   m.start({
     claimIntervalSecs: CLAIM_INTERVAL_SECONDS,
     settleIntervalSecs: CLAIM_INTERVAL_SECONDS,
     refundIntervalSecs: REFUND_INTERVAL_SECONDS,
     selectClaimChannels: (channels, ctx) => selectClaimable(channels, ctx.now, idleMs()),
-    selectRefundChannels: (channels, ctx) => selectRefundable(channels, ctx.now, idleMs()),
+    selectRefundChannels: (channels, ctx) => selectRefundable(channels, ctx.now, refundIdleMs()),
     onClaim: (r) => log(`x402 claimed ${r.vouchers} vouchers tx ${r.transaction}`),
     onSettle: (r) => log(`x402 settled tx ${r.transaction}`),
     onRefund: (r) => {
@@ -138,4 +141,15 @@ export async function x402Command(
   }
   for (const r of await m.refund(targets.map((c) => c.channelId))) out(`refunded ${r.channel} tx ${r.transaction}`);
   return 0;
+}
+
+export const HOST_X402_USAGE = 'usage: charter-host x402 status | claim';
+
+/** `charter-host x402 status | claim`: the host's channel records, or claim and settle every voucher now. Safe beside a running host. */
+export async function hostX402Command(args: string[], m: ClaimManager, storage: ChannelStorage, now: () => number, out: (m: string) => void): Promise<number> {
+  if (args.length !== 1 || (args[0] !== 'status' && args[0] !== 'claim')) {
+    out(HOST_X402_USAGE);
+    return 2;
+  }
+  return x402Command(args, m, storage, now, out);
 }

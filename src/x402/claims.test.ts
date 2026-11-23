@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { InMemoryChannelStorage, type Channel } from '@x402/evm/batch-settlement/server';
-import { REFUND_IDLE_HOST_MS, REFUND_IDLE_MS, idleMsFor, selectClaimable, selectRefundable, startClaims, x402Command, type ClaimManager } from './claims.js';
+import { hostX402Command, REFUND_IDLE_HOST_MS, REFUND_IDLE_MS, idleMsFor, selectClaimable, selectRefundable, startClaims, x402Command, type ClaimManager } from './claims.js';
 
 const NOW = 1_000_000_000;
 const addr = (c: string) => `0x${c.repeat(40)}` as `0x${string}`;
@@ -183,4 +183,37 @@ test('selectRefundable keeps a channel idle under REFUND_IDLE_HOST_MS', () => {
   const eightDays = channel({ lastRequestTimestamp: NOW - 8 * day });
   assert.equal(REFUND_IDLE_HOST_MS, 7 * day);
   assert.deepEqual(selectRefundable([sixDays, eightDays], NOW, REFUND_IDLE_HOST_MS), [eightDays]);
+});
+
+test('I1: startClaims with a refund window claims by the short window and refunds only after the long one', () => {
+  let config: Parameters<ClaimManager['start']>[0] | undefined;
+  const m: ClaimManager = { ...silent, start: (c) => { config = c; } };
+  // A host: claims by its own interval, refunds the door's deposit after a quiet week.
+  startClaims(m, { log: () => undefined, idleMs: () => idleMsFor([30]), refundIdleMs: () => REFUND_IDLE_HOST_MS, schedule: () => 0 });
+  assert.ok(config);
+  const quiet = channel({ lastRequestTimestamp: NOW - 11 * 60_000 });
+  const ctx = { now: NOW } as Parameters<NonNullable<typeof config.selectRefundChannels>>[1];
+  assert.deepEqual(config.selectClaimChannels!([quiet], ctx), [quiet], 'claimed after 10 quiet minutes');
+  assert.deepEqual(config.selectRefundChannels!([quiet], ctx), [], 'the deposit is not refunded for a week');
+  const week = channel({ lastRequestTimestamp: NOW - REFUND_IDLE_HOST_MS });
+  assert.deepEqual(config.selectRefundChannels!([week], ctx), [week]);
+});
+
+test('I1: charter-host x402 status | claim; anything else prints its usage', async () => {
+  const storage = new InMemoryChannelStorage();
+  await storage.updateChannel(channel().channelId, () => channel());
+  const out: string[] = [];
+  assert.equal(await hostX402Command(['status'], silent, storage, () => NOW, (msg) => out.push(msg)), 0);
+  assert.deepEqual(out, [`${channel().channelId} balance 100000 charged 15000 claimed 0 idle 600 s`]);
+  const claims: unknown[] = [];
+  const m: ClaimManager = { ...silent, claim: async (o) => (claims.push(o), [{ vouchers: 3, transaction: '0xc' }]), settle: async () => ({ transaction: '0xs' }) };
+  out.length = 0;
+  assert.equal(await hostX402Command(['claim'], m, storage, () => NOW, (msg) => out.push(msg)), 0);
+  assert.deepEqual(claims, [{ idleSecs: 0 }]);
+  assert.deepEqual(out, ['claimed 3 vouchers tx 0xc', 'settled tx 0xs']);
+  for (const bad of [['refund'], ['settle'], [], ['claim', 'x']]) {
+    out.length = 0;
+    assert.equal(await hostX402Command(bad, m, storage, () => NOW, (msg) => out.push(msg)), 2);
+    assert.deepEqual(out, ['usage: charter-host x402 status | claim']);
+  }
 });

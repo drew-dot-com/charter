@@ -206,10 +206,12 @@ top for renters.
    daily probe. Three failed probes in a row drop you, and the host must register again. Check your state: `GET <door>/v1/hosts`.
 6. **Earnings.** Every paid tick is a voucher on the door's channel to you, kept in
    `<CHARTER_DATA_DIR>/x402-channels/`. `charter-host` claims them through the facilitator
-   (`X402_FACILITATOR_URL`, PayAI by default, no key) once the channel has been quiet 7 days, or at once
-   when the door starts withdrawing it, and settles what it claimed to `CHARTER_HOST_PAY_TO` every 10
-   minutes; it also refunds the door's unspent deposit after the quiet week. Until claimed, earnings
-   exist only as those vouchers: back the directory up and never delete it.
+   (`X402_FACILITATOR_URL`, PayAI by default, no key) once the channel has been quiet for two of your
+   intervals (10 minutes at least), or at once when the door starts withdrawing it, and settles what it
+   claimed to `CHARTER_HOST_PAY_TO` every 10 minutes; it refunds the door's unspent deposit only after a
+   quiet week. `charter-host x402 status` lists the channel, `charter-host x402 claim` claims and settles
+   every voucher now. Until claimed, earnings exist only as those vouchers: back the directory up and never
+   delete it.
 
 A job container gets 1 CPU, 1 GiB, 256 pids, a read-only root, no capabilities and
 `no-new-privileges`; set `CHARTER_RUNTIME=runsc` so renters' code runs under gVisor. With
