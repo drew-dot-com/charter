@@ -608,7 +608,7 @@ test('C1: each output part is fetched once, kept on disk, and served from disk a
   }
 });
 
-test('C1: a done lease with its landing is served from its cached final status with no further host calls', async () => {
+test('C1: a done or closed lease is served from its cached final status with no further host calls', async () => {
   for (const state of ['done', 'closed'] as const) {
     const host = fakeHost({ status: async () => lease({ state, landing: { chain: 'solana', tx: '1'.repeat(88), shared: true } }) });
     const d = await start(host);
@@ -625,66 +625,21 @@ test('C1: a done lease with its landing is served from its cached final status w
   }
 });
 
-test('a done lease that has paid intervals and no landing is read again from the host, at most once per 10 minutes, on the read budget', async () => {
-  let landing: Lease['landing'];
-  const host = fakeHost({ status: async () => lease({ state: 'done', paidIntervals: 3, outputParts: 1, ...(landing ? { landing } : {}) }) });
-  const d = await start(host);
-  const statusCalls = () => host.calls.filter((c) => c === 'status').length;
-  try {
-    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
-    assert.equal(((await (await d.get(`/v1/leases/${LEASE}`)).json()) as { lease: Lease }).lease.landing, undefined);
-    assert.equal(statusCalls(), 1);
-    d.clock.t += 9 * 60_000;
-    await d.get(`/v1/leases/${LEASE}`);
-    assert.equal(statusCalls(), 1, 'not before 10 minutes');
-    landing = { chain: 'solana', tx: '2'.repeat(88), shared: true };
-    d.clock.t += 2 * 60_000;
-    const body = (await (await d.get(`/v1/leases/${LEASE}`)).json()) as { lease: Lease };
-    assert.equal(statusCalls(), 2, 'after 10 minutes it asks the host again');
-    assert.deepEqual(body.lease.landing, landing);
-    assert.equal(d.ledger.get(LEASE)!.hostReads, 2, 'charged to the read budget');
-    // With the landing in, the status is final for good.
-    d.clock.t += 24 * 3_600_000;
-    await d.get(`/v1/leases/${LEASE}`);
-    assert.equal(statusCalls(), 2);
-  } finally {
-    d.close();
-  }
-});
-
-test('the landing refresh never serves an error: a host that fails, or a spent budget, gives the last status; a lease that paid nothing is not refreshed', async () => {
-  let fail = false;
-  const host = fakeHost({
-    status: async () => {
-      if (fail) throw new HostError(500, 'boom');
-      return lease({ state: 'done', paidIntervals: 3 });
-    },
-  });
+test('M4: a done lease that paid intervals and has no landing is final too: never read from the host again', async () => {
+  const host = fakeHost({ status: async () => lease({ state: 'done', paidIntervals: 3, outputParts: 1 }) });
   const d = await start(host);
   try {
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
-    await d.get(`/v1/leases/${LEASE}`);
-    fail = true;
-    d.clock.t += 11 * 60_000;
-    const r = await d.get(`/v1/leases/${LEASE}`);
-    assert.equal(r.status, 200);
-    assert.equal(((await r.json()) as { lease: Lease }).lease.state, 'done');
-    const calls = host.calls.filter((c) => c === 'status').length;
-    await d.get(`/v1/leases/${LEASE}`);
-    assert.equal(host.calls.filter((c) => c === 'status').length, calls, 'a failed refresh waits another 10 minutes');
+    for (let i = 0; i < 4; i++) {
+      const r = await d.get(`/v1/leases/${LEASE}`);
+      assert.equal(r.status, 200);
+      assert.equal(((await r.json()) as { lease: Lease }).lease.state, 'done');
+      d.clock.t += 11 * 60_000;
+    }
+    assert.equal(host.calls.filter((c) => c === 'status').length, 1);
+    assert.equal(d.ledger.get(LEASE)!.hostReads, 1);
   } finally {
     d.close();
-  }
-  const none = fakeHost({ status: async () => lease({ state: 'done', paidIntervals: 0 }) });
-  const d2 = await start(none);
-  try {
-    await d2.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
-    await d2.get(`/v1/leases/${LEASE}`);
-    d2.clock.t += 60 * 60_000;
-    await d2.get(`/v1/leases/${LEASE}`);
-    assert.equal(none.calls.filter((c) => c === 'status').length, 1);
-  } finally {
-    d2.close();
   }
 });
 

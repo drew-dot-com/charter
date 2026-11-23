@@ -86,8 +86,6 @@ export const READS_PER_PAID_MINUTE = 1;
 export function readBudget(ticks: number, intervalSeconds: number): number {
   return READS_BASE + READS_PER_TICK * ticks + Math.floor((ticks * intervalSeconds) / 60) * READS_PER_PAID_MINUTE;
 }
-/** A done lease with paid intervals and no landing yet is read from the host again after this long, at most. */
-const LANDING_REFRESH_MS = 10 * 60_000;
 const GETS_PER_MINUTE = 120;
 const TICKS_PER_MINUTE = 30;
 const MINUTE_MS = 60_000;
@@ -337,9 +335,8 @@ export function doorApp(deps: DoorDeps): express.Express {
   const leaseStatus = (id: string): Promise<Lease> => {
     const last = statuses.get(id);
     if (last && now() - last.at < STATUS_TTL_MS) return Promise.resolve(last.lease);
-    // A final status is kept for good, except that the host records a landing after a lease is done.
-    const awaitingLanding = last !== undefined && last.lease.state === 'done' && last.lease.paidIntervals > 0 && !last.lease.landing;
-    if (last && final(last.lease) && !(awaitingLanding && now() - last.at >= LANDING_REFRESH_MS)) return Promise.resolve(last.lease);
+    // A final status is kept for good.
+    if (last && final(last.lease)) return Promise.resolve(last.lease);
     const running = statusInflight.get(id);
     if (running) return running;
     try {
@@ -348,19 +345,10 @@ export function doorApp(deps: DoorDeps): express.Express {
       return last ? Promise.resolve(last.lease) : Promise.reject(e);
     }
     const p = (async () => {
-      try {
-        const api = deps.api(leaseOffer(id));
-        const lease = await unpaid(api, () => api.status(id));
-        seen(id, lease);
-        return lease;
-      } catch (e) {
-        // A failed look at a finished lease changes nothing, and is not repeated for another 10 minutes.
-        if (last && final(last.lease)) {
-          statuses.set(id, { lease: last.lease, at: now() });
-          return last.lease;
-        }
-        throw e;
-      }
+      const api = deps.api(leaseOffer(id));
+      const lease = await unpaid(api, () => api.status(id));
+      seen(id, lease);
+      return lease;
     })();
     statusInflight.set(id, p);
     const clear = () => void statusInflight.delete(id);
