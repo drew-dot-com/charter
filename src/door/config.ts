@@ -38,6 +38,8 @@ export interface DoorFunding {
   doorFee: bigint;
   /** CHARTER_HOST_DAILY_LOSS: what one host's refused ticks may cost the door in a UTC day before it is hidden. */
   hostDailyLoss: bigint;
+  /** CHARTER_DEPOSIT_TIMEOUT_DAILY_CAP: what hosts' first deposit timeouts may cost the door in a UTC day, all together. */
+  depositTimeoutDailyCap: bigint;
 }
 
 function wholeEnv(env: Record<string, string | undefined>, name: string, dflt: bigint, min: bigint): bigint {
@@ -58,6 +60,7 @@ export function doorFunding(env: Record<string, string | undefined>): DoorFundin
     selfAddrs: (env.CHARTER_DOOR_SELF_ADDRS ?? '').split(',').map((a) => a.trim()).filter(Boolean),
     doorFee: wholeEnv(env, 'CHARTER_DOOR_FEE', 0n, 0n),
     hostDailyLoss: wholeEnv(env, 'CHARTER_HOST_DAILY_LOSS', 50_000n, 0n),
+    depositTimeoutDailyCap: wholeEnv(env, 'CHARTER_DEPOSIT_TIMEOUT_DAILY_CAP', 100_000n, 0n),
   };
 }
 

@@ -1497,6 +1497,29 @@ test('I5: a host\'s second deposit timeout in a UTC day counts against its loss 
   }
 });
 
+test('I5: past the door-wide deposit_timeout sub-cap, another host\'s first deposit timeout of the day goes to that host\'s budget', async () => {
+  const host = fakeHost({ open: counterOpen() }, () => new DepositTimeoutError());
+  const d = await start(host, { hostDailyLoss: 5000n, depositTimeoutDailyCap: 5000n });
+  try {
+    // Another host's first deposit timeout today already used the whole sub-cap.
+    const other = 'b'.repeat(32);
+    d.ledger.open({ leaseId: other, offerId: `${'cd'.repeat(32)}:o`, createdAt: d.clock.t, offer: snapshotOffer({ ...OFFER, hostId: 'cd'.repeat(32) }) });
+    d.ledger.loss(other, 5000n, 'deposit_timeout', d.clock.t);
+    assert.equal(d.ledger.depositTimeoutSpendToday(d.clock.t), 5000n);
+    assert.equal(new DoorLedger(join(d.dir, 'ledger.json')).depositTimeoutSpendToday(d.clock.t), 5000n, 'kept across a restart');
+    assert.equal(d.ledger.depositTimeoutSpendToday(d.clock.t + 86_400_000), 0n, 'a new UTC day starts at 0');
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' })).status, 502);
+    assert.equal(d.ledger.depositTimeoutsToday(OFFER.hostId, d.clock.t), 1, 'its first of the day');
+    assert.equal(d.ledger.get(LEASE_1)!.lossKind, 'host_refused');
+    assert.equal(d.ledger.hostLossToday(OFFER.hostId, d.clock.t), 5000n);
+    assert.equal(d.ledger.unpaidToday(d.clock.t), 5000n, 'only the other host\'s door spend');
+    assert.equal(d.registry.get(OFFER.hostId)!.state, 'hidden');
+  } finally {
+    d.close();
+  }
+});
+
 test('N3: a tick whose send timed out answers 502 host_timeout, books host_refused (it may have been paid) and stops the lease', async () => {
   const host = fakeHost({ tick: async () => { throw new SendTimeoutError(); } });
   const d = await start(host);

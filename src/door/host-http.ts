@@ -20,6 +20,11 @@ import type { HostQueue } from './host-queue.js';
 export const DOOR_NETWORK = 'eip155:8453' as const;
 /** The longest channel `withdrawDelay` the door accepts from a host: its deposit is never locked past a day. */
 export const MAX_WITHDRAW_DELAY_SECONDS = 86_400;
+/**
+ * The longest `maxTimeoutSeconds` the door accepts from a host (the door's own seller's MAX_TIMEOUT_SECONDS). It
+ * sets a deposit's validBefore, so a host cannot hold a deposit pending, and its lapse, for hours.
+ */
+export const DOOR_MAX_TIMEOUT_SECONDS = 300;
 /** A host call's default time limit. */
 export const HOST_TIMEOUT_MS = 30_000;
 /** A tick that carries a deposit: the facilitator puts the deposit on chain before the host answers. */
@@ -124,7 +129,10 @@ interface PendingDeposit {
 
 const sameAddress = (a: unknown, b: string): boolean => typeof a === 'string' && a.toLowerCase() === b.toLowerCase();
 
-/** One tick, as the door pays it: batch-settlement on Base in USDC to the offer's payTo, for exactly the snapshotted price. */
+/**
+ * One tick, as the door pays it: batch-settlement on Base in USDC to the offer's payTo, for exactly the snapshotted
+ * price, with a maxTimeoutSeconds of at most DOOR_MAX_TIMEOUT_SECONDS.
+ */
 function isTheTick(r: PaymentRequirements, payTo: string, tickPrice: Micro): boolean {
   const extra = (r.extra ?? {}) as Record<string, unknown>;
   const delay = extra.withdrawDelay;
@@ -138,7 +146,8 @@ function isTheTick(r: PaymentRequirements, payTo: string, tickPrice: Micro): boo
     // Absent, the client uses the library's floor; present, a host may not lock the door's deposit past a day.
     (delay === undefined || (typeof delay === 'number' && Number.isSafeInteger(delay) && delay >= 0 && delay <= MAX_WITHDRAW_DELAY_SECONDS)) &&
     // The door deposits by EIP-3009 only, as it is paid: no Permit2 approvals.
-    (method === undefined || method === 'eip3009')
+    (method === undefined || method === 'eip3009') &&
+    Number.isSafeInteger(r.maxTimeoutSeconds) && r.maxTimeoutSeconds > 0 && r.maxTimeoutSeconds <= DOOR_MAX_TIMEOUT_SECONDS
   );
 }
 

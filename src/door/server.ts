@@ -32,6 +32,8 @@ export interface DoorDeps {
   fee?: Micro;
   /** What one host's refused ticks may cost the door in a UTC day (CHARTER_HOST_DAILY_LOSS); past it the host is hidden. Default 50000. */
   hostDailyLoss?: Micro;
+  /** Door-wide `deposit_timeout` spend allowed in a UTC day (CHARTER_DEPOSIT_TIMEOUT_DAILY_CAP); past it they go to the host's budget. Default 100000. */
+  depositTimeoutDailyCap?: Micro;
   /** A proven host the door cannot fund now: listed with `funding: 'waiting'`, never picked. Default: none. */
   fundingWaiting?: (hostId: string) => boolean;
   /** fetch for a registering host's offer. Default: safeFetch. */
@@ -97,13 +99,19 @@ const HOUR_MS = 3_600_000;
 export const DOOR_OPENS_PER_HOUR = 30;
 /**
  * Door spend no renter paid for (opens, free reads, losses a renter's payment caused, a host's first deposit
- * timeout of the UTC day unless its deposit lapses unlanded) in one UTC day, in micro-USDC. Past it: 503
- * capacity. A host's refused ticks, and its later deposit timeouts that day, count against its own budget
- * instead (HOST_DAILY_LOSS).
+ * timeout of the UTC day within DEPOSIT_TIMEOUT_DAILY_CAP unless its deposit lapses unlanded) in one UTC day, in
+ * micro-USDC. Past it: 503 capacity. A host's refused ticks, and its other deposit timeouts, count against its own
+ * budget instead (HOST_DAILY_LOSS).
  */
 export const DAILY_UNPAID_CAP: Micro = 500_000n;
 /** What one host's refused ticks may cost the door in a UTC day, unless CHARTER_HOST_DAILY_LOSS says otherwise. */
 export const HOST_DAILY_LOSS: Micro = 50_000n;
+/**
+ * What hosts' first deposit timeouts of the day may cost the door in a UTC day, all hosts together, unless
+ * CHARTER_DEPOSIT_TIMEOUT_DAILY_CAP says otherwise: 20% of DAILY_UNPAID_CAP. Past it, a deposit timeout counts
+ * against the host's own budget.
+ */
+export const DEPOSIT_TIMEOUT_DAILY_CAP: Micro = 100_000n;
 /** The most the door pays for an offer's open, status read and tick, in micro-USDC. A pricier offer is not listed. */
 export const MAX_OPEN_PRICE: Micro = 10_000n;
 export const MAX_STATUS_PRICE: Micro = 1_000n;
@@ -167,6 +175,7 @@ export function doorApp(deps: DoorDeps): express.Express {
   const fee = deps.fee ?? 0n;
   const waiting = deps.fundingWaiting ?? (() => false);
   const hostDailyLoss = deps.hostDailyLoss ?? HOST_DAILY_LOSS;
+  const depositTimeoutDailyCap = deps.depositTimeoutDailyCap ?? DEPOSIT_TIMEOUT_DAILY_CAP;
   const listed = (hostId: string): boolean => registry.get(hostId)?.state === 'listed';
   const webDir = deps.webDir ?? fileURLToPath(new URL('../../web/dist', import.meta.url));
 
@@ -792,8 +801,13 @@ export function doorApp(deps: DoorDeps): express.Express {
       const lost = e instanceof SendTimeoutError ? offer.tickPrice : api.spent() - before;
       if (lost > 0n) {
         // A host's first deposit timeout in a UTC day is the door's own wait: door spend, credited back if the
-        // deposit lapses unlanded. A second one that day is the host's: it counts against its budget like a refusal.
-        if (e instanceof DepositTimeoutError && ledger.countDepositTimeout(offer.hostId, now()) === 1) ledger.loss(id, lost, 'deposit_timeout', now(), payer);
+        // deposit lapses unlanded, while all hosts' such spend that day stays within its sub-cap. A second one that
+        // day, or one past the sub-cap, is the host's: it counts against its budget like a refusal.
+        const doorWait =
+          e instanceof DepositTimeoutError &&
+          ledger.countDepositTimeout(offer.hostId, now()) === 1 &&
+          ledger.depositTimeoutSpendToday(now()) + lost <= depositTimeoutDailyCap;
+        if (doorWait) ledger.loss(id, lost, 'deposit_timeout', now(), payer);
         else hostRefused(id, lost, payer);
         ledger.stop(id);
       }

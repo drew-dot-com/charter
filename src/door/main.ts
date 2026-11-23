@@ -188,6 +188,7 @@ async function main(): Promise<void> {
     registry,
     fee: funding.doorFee,
     hostDailyLoss: funding.hostDailyLoss,
+    depositTimeoutDailyCap: funding.depositTimeoutDailyCap,
     fundingWaiting,
     ledger,
     dataDir,

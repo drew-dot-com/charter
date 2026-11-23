@@ -22,7 +22,7 @@ import { HostError } from '../tenant/host-api.js';
 import type { JobSpec, Offer } from '../types.js';
 import { BASE_USDC, type Gate } from '../x402/seller.js';
 import { stubGate } from './x402.js';
-import { CapitalCapError, channelSalt, DepositPendingError, DepositTimeoutError, doorPayer, httpHostApi, MAX_OUTPUT_PARTS, PENDING_CHECK_MS, paysOnly, UnexpectedPaymentError, type DepositFor, type DoorPayer, type ReadContract } from './host-http.js';
+import { CapitalCapError, channelSalt, DepositPendingError, DepositTimeoutError, doorPayer, httpHostApi, DOOR_MAX_TIMEOUT_SECONDS, MAX_OUTPUT_PARTS, PENDING_CHECK_MS, paysOnly, UnexpectedPaymentError, type DepositFor, type DoorPayer, type ReadContract } from './host-http.js';
 import { CapitalBook } from './capital.js';
 import { HostQueue } from './host-queue.js';
 import { reapChannels } from './hosts.js';
@@ -234,11 +234,16 @@ test('a 402 asking more than the snapshot, another payTo, network, asset or exac
     ['a withdrawDelay over one day', { ...ASK, extra: { ...ASK.extra, withdrawDelay: 86_401 } }],
     ['a withdrawDelay that is not a number', { ...ASK, extra: { ...ASK.extra, withdrawDelay: '60' } }],
     ['a Permit2 deposit', { ...ASK, extra: { ...ASK.extra, assetTransferMethod: 'permit2' } }],
+    ['a maxTimeoutSeconds over DOOR_MAX_TIMEOUT_SECONDS', { ...ASK, maxTimeoutSeconds: DOOR_MAX_TIMEOUT_SECONDS + 1 }],
+    ['a maxTimeoutSeconds that is not a number', { ...ASK, maxTimeoutSeconds: '300' as unknown as number }],
   ];
   for (const [why, r] of variants) assert.deepEqual(keep(2, [r]), [], why);
   const oneDay = { ...ASK, extra: { ...ASK.extra, withdrawDelay: 86_400 } };
   const upper = { ...ASK, payTo: PAY_TO.toUpperCase().replace('0X', '0x'), asset: BASE_USDC.toLowerCase() };
   assert.deepEqual(keep(2, [ASK, oneDay, upper]), [ASK, oneDay, upper], 'the exact ask is kept; addresses compare case-insensitively');
+  const longest = { ...ASK, maxTimeoutSeconds: 300 };
+  assert.equal(DOOR_MAX_TIMEOUT_SECONDS, 300);
+  assert.deepEqual(keep(2, [longest]), [longest], 'a maxTimeoutSeconds of 300 is kept');
   assert.deepEqual(keep(2, [variants[0]![1], ASK]), [ASK], 'only the matching entry of several is kept');
 
   // End to end: a host whose 402 asks for another payTo gets nothing signed and the door spends nothing.

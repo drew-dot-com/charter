@@ -82,13 +82,15 @@ back); the running door picks it up and withdraws the host's channels once no le
 | `CHARTER_SWEEP_KEEP` | no | `15000000` | micro-USDC the payer wallet keeps; only the free balance above it is swept. |
 | `CHARTER_DOOR_FEE` | no | `0` | Micro-USDC the door adds to each tick a renter pays, on top of the host's price. A lease keeps the fee of its open. |
 | `CHARTER_HOST_DAILY_LOSS` | no | `50000` | micro-USDC one host's refused ticks (it took the door's payment and refused or never answered) may cost the door in a UTC day, kept in `door-ledger.json.hostloss`. Past it the host is hidden until its next probe passes; these losses never count toward the door-wide daily cap. |
+| `CHARTER_DEPOSIT_TIMEOUT_DAILY_CAP` | no | `100000` | micro-USDC that hosts' first deposit timeouts of a UTC day (a tick carrying a deposit got no answer in time) may cost the door, all hosts together, kept in `door-ledger.json.deposittimeouts`. Within it such a timeout is door spend, credited back if the deposit lapses unlanded the same UTC day; a host's second deposit timeout that day, or any past this cap, counts against its `CHARTER_HOST_DAILY_LOSS`. |
 | `CHARTER_DOOR_SELF_ADDRS` | no | none | Comma list of the box's own IPs or CIDRs. A registered host URL resolving to one is refused, as loopback and private addresses always are. |
 
 Fixed, not configurable: 10 host registrations (`POST /v1/hosts`) an hour per IP and 1 per host URL; 10 opens an hour per IP and 30 across all IPs; 120 GETs a minute per IP on
 `/v1/leases/*`; 30 tick POSTs a minute per IP; at most 500000 micro-USDC a UTC day of door spend no
 renter paid for (opens, free reads, the status read before each tick, losses a renter's payment caused), past which opens,
 ticks and uncached reads answer 503 `capacity` (opens and status reads are free at the host, so in practice this counts losses). A tick a host
-took and refused counts against that host's own `CHARTER_HOST_DAILY_LOSS` instead. A host's offer is fetched again at most once a minute; one
+took and refused counts against that host's own `CHARTER_HOST_DAILY_LOSS` instead. A 402 from a host whose
+`maxTimeoutSeconds` exceeds 300 is refused (`unexpected_payment`). A host's offer is fetched again at most once a minute; one
 that cannot be fetched stays listed 10 minutes, then is hidden until it answers.
 
 ## charter (tenant CLI)

@@ -49,7 +49,8 @@ export interface DoorLease {
   lossAt?: number;
   /**
    * Epoch ms a `deposit_timeout` loss was credited back: its deposit lapsed unlanded, so no money moved. `losses`
-   * keeps what was booked; the day's unpaid spend no longer counts it.
+   * keeps what was booked. The unpaid total (and the deposit_timeout total) is reduced only when the lapse is seen
+   * in the same UTC day the loss was booked: the ledger keeps no earlier day's totals.
    */
   lossReversedAt?: number;
   /** The door will not pay another tick for this lease. */
@@ -123,8 +124,11 @@ export class DoorLedger {
   private unpaid: { day: string; micro: Micro } = { day: '', micro: 0n };
   /** host_refused losses per hostId in one UTC day: each host's own budget, apart from `unpaid`. */
   private hostLoss: { day: string; hosts: Map<string, Micro> } = { day: '', hosts: new Map() };
-  /** Deposit timeouts per hostId in one UTC day: the first is door spend, later ones count against the host. */
-  private depositTimeouts: { day: string; hosts: Map<string, number> } = { day: '', hosts: new Map() };
+  /**
+   * Deposit timeouts per hostId in one UTC day (the first is door spend, later ones count against the host), and
+   * the door-wide `deposit_timeout` spend that day (held under the door's sub-cap).
+   */
+  private depositTimeouts: { day: string; hosts: Map<string, number>; micro: Micro } = { day: '', hosts: new Map(), micro: 0n };
   /**
    * Per host, the `deposit_timeout` loss whose deposit is still pending: a lapse of that host's pending deposit
    * credits it back. Cleared by the next deposit signed for the host. In memory, like the payer's pending deposits.
@@ -142,11 +146,12 @@ export class DoorLedger {
     this.depositTimeoutsFile = `${file}.deposittimeouts`;
     const timeouts = readIfThere(this.depositTimeoutsFile);
     if (timeouts !== undefined) {
-      const t = JSON.parse(timeouts) as { day?: unknown; hosts?: Record<string, unknown> };
+      const t = JSON.parse(timeouts) as { day?: unknown; hosts?: Record<string, unknown>; micro?: unknown };
       if (typeof t.day === 'string' && t.hosts && typeof t.hosts === 'object') {
         const hosts = new Map<string, number>();
         for (const [id, v] of Object.entries(t.hosts)) if (Number.isSafeInteger(v) && (v as number) > 0) hosts.set(id, v as number);
-        this.depositTimeouts = { day: t.day, hosts };
+        const micro = typeof t.micro === 'string' && /^\d+$/.test(t.micro) ? BigInt(t.micro) : 0n;
+        this.depositTimeouts = { day: t.day, hosts, micro };
       }
     }
     const hostLoss = readIfThere(this.hostLossFile);
@@ -229,7 +234,10 @@ export class DoorLedger {
     const hostId = this.leases.get(leaseId)?.offer.hostId;
     if (kind === 'host_refused' && hostId) this.addHostLoss(hostId, amount, at);
     else this.addUnpaid(amount, at);
-    if (kind === 'deposit_timeout' && hostId && amount > 0n) this.awaitingLapse.set(hostId, { leaseId, amount, at });
+    if (kind === 'deposit_timeout' && amount > 0n) {
+      this.addDepositTimeoutSpend(amount, at);
+      if (hostId) this.awaitingLapse.set(hostId, { leaseId, amount, at });
+    }
     this.update(leaseId, (l) => {
       l.losses += amount;
       l.lossKind = kind;
@@ -319,6 +327,7 @@ export class DoorLedger {
       const micro = this.unpaid.micro > w.amount ? this.unpaid.micro - w.amount : 0n;
       this.writeUnpaid({ day, micro });
     }
+    if (this.depositTimeouts.day === day) this.addDepositTimeoutSpend(-w.amount, w.at);
     this.update(w.leaseId, (r) => void (r.lossReversedAt = at));
   }
 
@@ -329,15 +338,37 @@ export class DoorLedger {
 
   /** Counts a deposit timeout of this host in the UTC day of `at` and returns that day's count. Kept across a restart. */
   countDepositTimeout(hostId: string, at: number): number {
-    const day = utcDay(at);
-    if (this.depositTimeouts.day !== day) this.depositTimeouts = { day, hosts: new Map() };
+    this.depositTimeoutDay(at);
     const n = (this.depositTimeouts.hosts.get(hostId) ?? 0) + 1;
     this.depositTimeouts.hosts.set(hostId, n);
+    this.saveDepositTimeouts();
+    return n;
+  }
+
+  /** Door-wide `deposit_timeout` spend in the UTC day of `at` (epoch ms), net of lapses credited back that day. */
+  depositTimeoutSpendToday(at: number): Micro {
+    return this.depositTimeouts.day === utcDay(at) ? this.depositTimeouts.micro : 0n;
+  }
+
+  private addDepositTimeoutSpend(amount: Micro, at: number): void {
+    this.depositTimeoutDay(at);
+    const micro = this.depositTimeouts.micro + amount;
+    this.depositTimeouts.micro = micro > 0n ? micro : 0n;
+    this.saveDepositTimeouts();
+  }
+
+  /** Starts the deposit-timeout counts afresh when `at` is in a new UTC day. */
+  private depositTimeoutDay(at: number): void {
+    const day = utcDay(at);
+    if (this.depositTimeouts.day !== day) this.depositTimeouts = { day, hosts: new Map(), micro: 0n };
+  }
+
+  private saveDepositTimeouts(): void {
+    const t = this.depositTimeouts;
     mkdirSync(dirname(this.depositTimeoutsFile), { recursive: true, mode: 0o700 });
     const tmp = `${this.depositTimeoutsFile}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ day, hosts: Object.fromEntries(this.depositTimeouts.hosts) }), { mode: 0o600 });
+    writeFileSync(tmp, JSON.stringify({ day: t.day, hosts: Object.fromEntries(t.hosts), micro: t.micro.toString() }), { mode: 0o600 });
     renameSync(tmp, this.depositTimeoutsFile);
-    return n;
   }
 
   /** What this host's refused ticks cost the door in the UTC day of `at` (epoch ms). */
