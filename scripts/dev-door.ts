@@ -12,6 +12,7 @@ import { doorApp } from '../src/door/server.js';
 import type { HostApi, OpenResult, OutputPart, TickResult } from '../src/tenant/host-api.js';
 import { HostError } from '../src/tenant/host-api.js';
 import type { Lease, Offer } from '../src/types.js';
+import { listedRegistry } from '../src/tenant/test-host.js';
 import { SAMPLE_JPEG_BASE64 } from './dev-door-sample.js';
 
 const port = Number(process.env.DEV_DOOR_PORT ?? 8787);
@@ -127,6 +128,8 @@ const dir = mkdtempSync(join(tmpdir(), 'charter-dev-door-'));
 const app = doorApp({
   offers: async () => OFFERS,
   api: apiFor,
+  // Both fake hosts listed, as if each had passed a probe.
+  registry: listedRegistry(dir, OFFERS.map((o) => o.hostId)),
   ledger: new DoorLedger(join(dir, 'ledger.json')),
   dataDir: dir,
   x402: 'free-for-tests',

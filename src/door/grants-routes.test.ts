@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
-import { OFFER } from '../tenant/test-host.js';
+import { listedRegistry, OFFER } from '../tenant/test-host.js';
 import { DoorLedger } from './ledger.js';
 import { doorApp } from './server.js';
 import { normalizeSshKeys } from '../jobs.js';
@@ -22,6 +22,7 @@ async function start(over: { fundOpen?: () => boolean; noGrants?: boolean; fundT
   const server = doorApp({
     offers: async () => [OFFER],
     api: () => { throw new Error('no host'); },
+    registry: listedRegistry(dir),
     ledger: new DoorLedger(join(dir, 'ledger.json')),
     x402: 'free-for-tests',
     now: () => clock.t,

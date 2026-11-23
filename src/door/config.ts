@@ -34,6 +34,8 @@ export interface DoorFunding {
   hostCap: bigint;
   /** CHARTER_DOOR_SELF_ADDRS: the box's own addresses (IPs or CIDRs), never fetched as a host. */
   selfAddrs: string[];
+  /** CHARTER_DOOR_FEE: what the door adds to each tick a renter pays, on top of the host's price. */
+  doorFee: bigint;
 }
 
 function wholeEnv(env: Record<string, string | undefined>, name: string, dflt: bigint, min: bigint): bigint {
@@ -52,6 +54,7 @@ export function doorFunding(env: Record<string, string | undefined>): DoorFundin
     hostDeposit: wholeEnv(env, 'CHARTER_HOST_DEPOSIT', 500_000n, 1n),
     hostCap: wholeEnv(env, 'CHARTER_HOST_CAPITAL_CAP', 10_000_000n, 0n),
     selfAddrs: (env.CHARTER_DOOR_SELF_ADDRS ?? '').split(',').map((a) => a.trim()).filter(Boolean),
+    doorFee: wholeEnv(env, 'CHARTER_DOOR_FEE', 0n, 0n),
   };
 }
 

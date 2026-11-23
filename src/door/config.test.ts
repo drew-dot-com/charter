@@ -47,17 +47,18 @@ test('parsePayerKey: one 0x-prefixed 64-hex key; refusals name CHARTER_DOOR_PAYE
 test('doorFunding applies the defaults and reads overrides', () => {
   assert.deepEqual(doorFunding({}), {
     probesPerDay: 10, probeMaxTick: 10_000n, probeDeposit: 100_000n, probeCap: 1_000_000n,
-    hostDeposit: 500_000n, hostCap: 10_000_000n, selfAddrs: [],
+    hostDeposit: 500_000n, hostCap: 10_000_000n, selfAddrs: [], doorFee: 0n,
   });
   const f = doorFunding({
     CHARTER_PROBES_PER_DAY: '3', CHARTER_PROBE_MAX_TICK: '7000', CHARTER_PROBE_DEPOSIT: '200000', CHARTER_PROBE_CAPITAL_CAP: '2000000',
     CHARTER_HOST_DEPOSIT: '1000000', CHARTER_HOST_CAPITAL_CAP: '20000000', CHARTER_DOOR_SELF_ADDRS: ' 37.27.86.235, 2a01:4f9::/64 ,',
+    CHARTER_DOOR_FEE: '500',
   });
   assert.deepEqual(f, {
     probesPerDay: 3, probeMaxTick: 7000n, probeDeposit: 200_000n, probeCap: 2_000_000n,
-    hostDeposit: 1_000_000n, hostCap: 20_000_000n, selfAddrs: ['37.27.86.235', '2a01:4f9::/64'],
+    hostDeposit: 1_000_000n, hostCap: 20_000_000n, selfAddrs: ['37.27.86.235', '2a01:4f9::/64'], doorFee: 500n,
   });
-  for (const [k, v] of [['CHARTER_PROBES_PER_DAY', '-1'], ['CHARTER_PROBE_MAX_TICK', '0'], ['CHARTER_HOST_DEPOSIT', '1.5'], ['CHARTER_HOST_CAPITAL_CAP', 'lots']] as const) {
+  for (const [k, v] of [['CHARTER_PROBES_PER_DAY', '-1'], ['CHARTER_PROBE_MAX_TICK', '0'], ['CHARTER_HOST_DEPOSIT', '1.5'], ['CHARTER_HOST_CAPITAL_CAP', 'lots'], ['CHARTER_DOOR_FEE', '-5']] as const) {
     assert.throws(() => doorFunding({ [k]: v }), new RegExp(k));
   }
 });

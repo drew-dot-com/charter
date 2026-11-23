@@ -18,7 +18,7 @@ import express, { type Response } from 'express';
 import { privateKeyToAccount } from 'viem/accounts';
 import { computeChannelId } from '@x402/evm/batch-settlement/client';
 import { BATCH_SETTLEMENT_ADDRESS, voucherTypes } from '@x402/evm';
-import { OFFER } from '../tenant/test-host.js';
+import { listedRegistry, OFFER } from '../tenant/test-host.js';
 import type { HostApi, OpenResult, OutputPart, TickResult } from '../tenant/host-api.js';
 import type { Lease, Micro } from '../types.js';
 import { DoorLedger } from './ledger.js';
@@ -173,6 +173,7 @@ async function realDoor(fac: Facilitator, over: Partial<DoorDeps> = {}) {
   const app = doorApp({
     offers: async () => [OFFER],
     api: () => host.api,
+    registry: listedRegistry(dir),
     ledger,
     x402: cfg,
     webDir: join(dir, 'no-web'),

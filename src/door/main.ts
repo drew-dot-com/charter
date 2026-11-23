@@ -11,11 +11,12 @@ import { privateKeyToAccount } from 'viem/accounts';
 import type { HostApi } from '../tenant/host-api.js';
 import type { Offer } from '../types.js';
 import { CAPITAL_FILE, CapitalBook } from './capital.js';
+import { baseChannelChain } from './channel-chain.js';
 import { doorFunding, parseCdpKey, parsePayerKey, parseTrustProxy } from './config.js';
 import { fetchHostOffer, listedOffers } from './host-offers.js';
 import { HOST_TIMEOUT_MS, doorPayer, httpHostApi, type DoorPayer, type ReadContract } from './host-http.js';
 import { HostQueue } from './host-queue.js';
-import { capitalAllocator, HOSTS_FILE, HostRegistry } from './hosts.js';
+import { capitalAllocator, hostFundingWaiting, HOSTS_FILE, HostRegistry, startChannelReaper } from './hosts.js';
 import { DoorLedger, LEDGER_FILE } from './ledger.js';
 import { startProbes } from './probe.js';
 import { fileRequestSink } from './reqlog.js';
@@ -66,9 +67,12 @@ function claimManager(cfg: X402Config, schemes: Schemes): BatchSettlementChannel
   return new BatchSettlementChannelManager({ scheme: schemes.batch, facilitator: schemes.facilitator, receiver: cfg.payTo as `0x${string}`, token: BASE_USDC, network: cfg.network });
 }
 
-/** Base reads for the door's host channels (BASE_RPC_URL, default the public Base endpoint). */
+/** BASE_RPC_URL, default the public Base endpoint. */
+const baseRpcUrl = (env: NodeJS.ProcessEnv): string => env.BASE_RPC_URL?.trim() || 'https://mainnet.base.org';
+
+/** Base reads for the door's host channels. */
 function baseReader(env: NodeJS.ProcessEnv): ReadContract {
-  const client = createPublicClient({ chain: base, transport: http(env.BASE_RPC_URL?.trim() || 'https://mainnet.base.org') });
+  const client = createPublicClient({ chain: base, transport: http(baseRpcUrl(env)) });
   return (args) => client.readContract(args as Parameters<typeof client.readContract>[0]);
 }
 
@@ -123,8 +127,9 @@ async function main(): Promise<void> {
   const depositFor = capitalAllocator({
     registry, locked, probeDeposit: funding.probeDeposit, hostDeposit: funding.hostDeposit, probeCap: funding.probeCap, hostCap: funding.hostCap,
   });
+  const key = payerKey(env);
   const payer = doorPayer({
-    key: payerKey(env),
+    key,
     channelDir: env.CHARTER_HOST_CHANNEL_DIR?.trim() || join(dataDir, 'host-channels'),
     depositFor,
     fetch: hostFetch,
@@ -165,10 +170,14 @@ async function main(): Promise<void> {
     }
   }
 
+  const fundingWaiting = hostFundingWaiting({ registry, locked, depositFor });
   const app = doorApp({
     offers: listedOffers({ registry, fetchOffer, now: Date.now }),
     api: apiOf,
     payer: payer.address,
+    registry,
+    fee: funding.doorFee,
+    fundingWaiting,
     ledger,
     dataDir,
     grants,
@@ -191,9 +200,24 @@ async function main(): Promise<void> {
     registry, apiOf, fetchOffer, depositFor, locked, probeMaxTick: funding.probeMaxTick, perDay: funding.probesPerDay,
     now: Date.now, log: (m) => console.log(`charter-door: ${m}`),
   });
+  // A host's channel goes quiet once neither a renter's lease nor a probe has paid through it.
+  const lastLeaseAt = (hostId: string): number | undefined => {
+    let last = registry.get(hostId)?.probes.lastAt;
+    for (const l of ledger.all()) {
+      if (l.offer.hostId !== hostId) continue;
+      const at = Math.max(l.createdAt, l.lastTickAt ?? 0);
+      if (last === undefined || at > last) last = at;
+    }
+    return last;
+  };
+  const stopReaper = startChannelReaper({
+    registry, payer, chain: baseChannelChain(baseRpcUrl(env), key), capital, lastLeaseAt,
+    now: Date.now, log: (m) => console.log(`charter-door: ${m}`),
+  });
   await new Promise<void>((resolve) => {
     const stop = () => {
       stopProbes();
+      stopReaper();
       void claims.stop();
       server.close();
       resolve();

@@ -353,6 +353,26 @@ test('a first tick deposits exactly what depositFor allows', async () => {
   }
 });
 
+test('a paid tick keeps its channel config on disk, so the door can withdraw the channel later', async () => {
+  const g = challengeGate([ASK], { settle: 'on2xx' });
+  const t = await setup(g.gate);
+  try {
+    const payer = t.payerFor();
+    assert.deepEqual(await payer.channels(HOST_ID), [], 'no channel yet');
+    const api = t.apiFor({ payer });
+    const { leaseId } = await api.open(JOB);
+    await api.tick(leaseId, 0);
+    await api.tick(leaseId, 1);
+    const sent = g.paid[0]!.payload.channelConfig as Record<string, unknown>;
+    const want = [{ channelId: askChannelId(), config: sent, balance: 500_000n }];
+    assert.equal((sent.receiver as string).toLowerCase(), PAY_TO.toLowerCase());
+    assert.deepEqual(await payer.channels(HOST_ID), want);
+    assert.deepEqual(await t.payerFor().channels(HOST_ID), want, 'a restarted door reads it back');
+  } finally {
+    t.done();
+  }
+});
+
 test('a deposit tick that fails leaves the deposit pending: no second deposit is signed', async () => {
   const g = challengeGate([ASK], { answer: 500 });
   const t = await setup(g.gate);

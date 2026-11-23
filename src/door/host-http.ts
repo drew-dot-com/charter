@@ -1,7 +1,7 @@
-import { readdir } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { decodePaymentRequiredHeader } from '@x402/core/http';
-import type { ClientEvmSigner } from '@x402/evm';
+import type { ChannelConfig, ClientEvmSigner } from '@x402/evm';
 import { BatchSettlementEvmScheme, readChannelBalanceAndTotalClaimed } from '@x402/evm/batch-settlement/client';
 import { FileClientChannelStorage } from '@x402/evm/batch-settlement/client/file-storage';
 import { wrapFetchWithPayment, x402Client, type PaymentRequirements } from '@x402/fetch';
@@ -12,6 +12,7 @@ import { DeadlinePassedError, MIN_SEND_MS, SendTimeoutError } from '../errors.js
 import { HostError, type HostApi, type OpenResult, type OutputPart, type TickResult } from '../tenant/host-api.js';
 import type { JobSpec, Lease, Micro, Offer } from '../types.js';
 import { BASE_USDC } from '../x402/seller.js';
+import type { DoorChannel } from './channel-chain.js';
 import type { HostQueue } from './host-queue.js';
 
 /** The only network the door pays hosts on. */
@@ -73,6 +74,10 @@ export interface DoorPayer {
    * it at boot, so a deposit or a settle whose answer was lost before a restart is not paid twice.
    */
   resyncAll(): Promise<void>;
+  /** The door's channels to this host whose config it kept (every channel a payment of this door opened). */
+  channels(hostId: string): Promise<DoorChannel[]>;
+  /** Brings one channel record up to the chain, as resyncAll does. Nothing without a chain reader. */
+  resync(hostId: string, channelId: string): Promise<void>;
 }
 
 /** Reads a channel's `[balance, totalClaimed]` on chain (x402BatchSettlement `channels(channelId)`). */
@@ -162,6 +167,24 @@ async function channelKeys(dir: string): Promise<string[]> {
 }
 
 const amountOf = (v: string | undefined): bigint => (v !== undefined && /^\d+$/.test(v) ? BigInt(v) : 0n);
+
+/** Where the door keeps each channel's config (`config/<channelId>.json` in the host's dir): what a withdrawal names on chain. */
+const configDir = (dir: string): string => join(dir, 'config');
+
+/** Keeps a channel's config the first time a payment carries it. */
+async function keepConfig(dir: string, channelId: string, config: unknown): Promise<void> {
+  if (!/^0x[0-9a-f]{64}$/.test(channelId) || typeof config !== 'object' || config === null) return;
+  const file = join(configDir(dir), `${channelId}.json`);
+  try {
+    await readFile(file);
+    return;
+  } catch {
+    // Not kept yet.
+  }
+  await mkdir(configDir(dir), { recursive: true, mode: 0o700 });
+  await writeFile(`${file}.tmp`, JSON.stringify(config), { mode: 0o600 });
+  await rename(`${file}.tmp`, file);
+}
 
 /**
  * The door as an x402 payer of hosts: one Base key, one batch-settlement channel per host, its records on
@@ -262,6 +285,26 @@ export function doorPayer(o: {
         if (p && amountOf((await storageOf(hostId).get(p.channelId))?.balance) >= p.balanceAfter) pending.delete(hostId);
       }
     },
+    async channels(hostId) {
+      const dir = hostChannelDir(o.channelDir, hostId);
+      let files: string[];
+      try {
+        files = (await readdir(configDir(dir))).filter((f) => /^0x[0-9a-f]{64}\.json$/.test(f));
+      } catch {
+        return [];
+      }
+      const storage = storageOf(hostId);
+      const out: DoorChannel[] = [];
+      for (const f of files.sort()) {
+        const channelId = f.slice(0, -'.json'.length) as `0x${string}`;
+        const config = JSON.parse(await readFile(join(configDir(dir), f), 'utf8')) as ChannelConfig;
+        out.push({ channelId, config, balance: amountOf((await storage.get(channelId))?.balance) });
+      }
+      return out;
+    },
+    async resync(hostId, channelId) {
+      if (o.readContract) await resyncChannel(hostId, channelId);
+    },
     async charged(hostId) {
       const storage = storageOf(hostId);
       let sum = 0n;
@@ -314,9 +357,11 @@ export function doorPayer(o: {
           .onAfterPaymentCreation(async ({ paymentPayload }) => {
             const p = paymentPayload.payload as {
               type?: unknown;
+              channelConfig?: unknown;
               deposit?: { amount?: unknown; authorization?: { erc3009Authorization?: { validBefore?: unknown } } };
               voucher?: { channelId?: unknown };
             };
+            if (typeof p.voucher?.channelId === 'string') await keepConfig(dir, p.voucher.channelId.toLowerCase(), p.channelConfig);
             if (p.type !== 'deposit' || typeof p.deposit?.amount !== 'string' || typeof p.voucher?.channelId !== 'string') return;
             const channelId = p.voucher.channelId.toLowerCase();
             const amount = amountOf(p.deposit.amount);

@@ -4,11 +4,16 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { HostError, type HostApi, type OpenResult } from '../tenant/host-api.js';
-import { JOB_IMAGES, homeIdOf, jobFromBody } from '../jobs.js';
+import { JOB_IMAGES, homeIdOf, isHomeImage, jobFromBody } from '../jobs.js';
 import { ALLOWED_MOVES, BadMove, ownerView, publicView, readFundPublic, validatePitch, type Grant, type GrantState, type GrantStore } from './grants.js';
 import type { JobSpec, Lease, Micro, Offer } from '../types.js';
 import { DeadlinePassedError, SendTimeoutError } from '../errors.js';
-import { offerOfSnapshot, snapshotOffer, type DoorLedger, type LossKind } from './ledger.js';
+import { offerOfSnapshot, snapshotOffer, type DoorLedger, type LeaseOutcome, type LossKind } from './ledger.js';
+import { CapitalCapError, DepositPendingError } from './host-http.js';
+import { publicRecord, rankOffers, type HostRecord, type HostRegistry } from './hosts.js';
+import { hostRoutes } from './hosts-routes.js';
+import { slidingLimit } from './limit.js';
+import { safeFetch } from './safe-fetch.js';
 import { logRequests, type RequestSink } from './reqlog.js';
 import { MAX_TIMEOUT_SECONDS, MIN_WINDOW_SECONDS, SETTLE_MARGIN_SECONDS, isPayerFault, microToUsdc, paymentIdOf, settleReasonOf, type Gate, type PaymentId, type Schemes, type TestHooks, type X402Config } from '../x402/seller.js';
 import { realGate, stubGate } from './x402.js';
@@ -21,6 +26,14 @@ export interface DoorDeps {
   api: (o: Offer) => HostApi;
   /** The door's payer address, which pays hosts and is paid by renters. `GET /v1/door` answers it. */
   payer?: `0x${string}`;
+  /** Every host the door knows: who is listed, their records, which host holds each home. Serves `/v1/hosts`. */
+  registry: HostRegistry;
+  /** Micro-USDC the door adds to each tick a renter pays (CHARTER_DOOR_FEE). Default 0. A lease keeps the fee of its open. */
+  fee?: Micro;
+  /** A proven host the door cannot fund now: listed with `funding: 'waiting'`, never picked. Default: none. */
+  fundingWaiting?: (hostId: string) => boolean;
+  /** fetch for a registering host's offer. Default: safeFetch. */
+  hostFetch?: typeof fetch;
   ledger: DoorLedger;
   x402: X402Config | 'free-for-tests';
   /** The x402 schemes built from `x402`, when the caller also runs the claim timers on them. Default: built here. */
@@ -94,22 +107,6 @@ const NON_NEG_INT = /^\d+$/;
 const EXPOSED = 'PAYMENT-REQUIRED, PAYMENT-RESPONSE, X-PAYMENT-RESPONSE';
 const ALLOWED = 'Content-Type, PAYMENT-SIGNATURE, X-PAYMENT';
 
-/** At most `max` hits per key within `windowMs`. Counts the attempt it allows. */
-function slidingLimit(now: () => number, max: number, windowMs: number): (key: string) => boolean {
-  const hits = new Map<string, number[]>();
-  return (key) => {
-    const t = now();
-    if (hits.size > 256) {
-      for (const [k, v] of hits) if (v[v.length - 1]! <= t - windowMs) hits.delete(k);
-    }
-    const recent = (hits.get(key) ?? []).filter((x) => x > t - windowMs);
-    const ok = recent.length < max;
-    if (ok) recent.push(t);
-    hits.set(key, recent);
-    return ok;
-  };
-}
-
 /** The id a renter names an offer by: `<hostId>:<id>`. */
 const offerIdOf = (o: Offer): string => `${o.hostId}:${o.id}`;
 
@@ -120,19 +117,24 @@ function findOfferExact(offers: Offer[], ref: string): Offer | undefined {
   return offers.find((x) => x.hostId === m[1] && x.id === m[2]);
 }
 
-/** An offer as the door shows it: what `GET /v1/offers` lists, and what a lease's status carries. */
-function publicOffer(o: Offer) {
+/**
+ * An offer as the door shows it: what `GET /v1/offers` lists, and what a lease's status carries. `tickPrice` is
+ * what the renter pays: the host's tick plus the door's `fee`. Every host is run by an independent operator.
+ */
+function publicOffer(o: Offer, r: HostRecord | undefined, fee: Micro, fundingWaiting = false) {
   return {
     offerId: offerIdOf(o),
     cpu: o.cpu,
     memoryMiB: o.memoryMiB,
     intervalSeconds: o.intervalSeconds,
-    tickPrice: o.tickPrice.toString(),
+    tickPrice: (o.tickPrice + fee).toString(),
     images: o.images,
     hiddenHost: o.hiddenHost,
     hiddenEgress: o.hiddenEgress,
     expiresAt: o.expiresAt,
-    ...(o.home ? { home: o.home } : {}),
+    ...(o.home ? { home: { ...o.home, tested: r?.homeTested ?? false } } : {}),
+    operator: 'independent' as const,
+    ...(r ? { record: publicRecord(r, fundingWaiting) } : {}),
   };
 }
 
@@ -153,13 +155,19 @@ function hostMessage(e: unknown): string {
 }
 
 export function doorApp(deps: DoorDeps): express.Express {
-  const { ledger } = deps;
+  const { ledger, registry } = deps;
   const now = deps.now ?? Date.now;
+  const fee = deps.fee ?? 0n;
+  const waiting = deps.fundingWaiting ?? (() => false);
+  const listed = (hostId: string): boolean => registry.get(hostId)?.state === 'listed';
   const webDir = deps.webDir ?? fileURLToPath(new URL('../../web/dist', import.meta.url));
 
   /** The offer a lease was opened on, from the ledger's snapshot: a price or a host call never depends on the host still listing it. */
   const leaseOffer = (leaseId: string): Offer => offerOfSnapshot(ledger.get(leaseId)!.offer);
-  const priceOf = (leaseId: string): Micro | undefined => (ledger.get(leaseId) ? leaseOffer(leaseId).tickPrice : undefined);
+  /** The door's fee a lease pays per tick: the one at its open. */
+  const leaseFee = (leaseId: string): Micro => BigInt(ledger.get(leaseId)?.fee ?? '0');
+  /** What a renter pays for one tick of a lease: its host's tick price and the door's fee, both as at open. */
+  const priceOf = (leaseId: string): Micro | undefined => (ledger.get(leaseId) ? leaseOffer(leaseId).tickPrice + leaseFee(leaseId) : undefined);
   const withdrawing: (channelId: string) => Promise<boolean> =
     deps.withdrawing ?? (deps.schemes ? async (id) => ((await deps.schemes!.batch.getStorage().get(id))?.withdrawRequestedAt ?? 0) > 0 : async () => false);
   /**
@@ -168,9 +176,9 @@ export function doorApp(deps: DoorDeps): express.Express {
    */
   const rentPicks = new WeakMap<object, Offer>();
   const rentPriceOf = async (body: unknown): Promise<Micro | undefined> => {
-    if (typeof body === 'object' && body !== null && rentPicks.has(body)) return rentPicks.get(body)!.tickPrice;
+    if (typeof body === 'object' && body !== null && rentPicks.has(body)) return rentPicks.get(body)!.tickPrice + fee;
     const pick = pickRentOffer(await offers(), body);
-    return typeof pick === 'string' ? undefined : pick.offer.tickPrice;
+    return typeof pick === 'string' ? undefined : pick.offer.tickPrice + fee;
   };
   const gate: Gate =
     deps.x402 === 'free-for-tests' ? stubGate(priceOf, deps.testHooks) : realGate(deps.x402, priceOf, deps.schemes, deps.offerBatch ?? true, rentPriceOf);
@@ -192,29 +200,56 @@ export function doorApp(deps: DoorDeps): express.Express {
     o.statusPrice <= MAX_STATUS_PRICE &&
     o.tickPrice <= MAX_TICK_PRICE;
   const overCap = (): boolean => ledger.unpaidToday(now()) >= DAILY_UNPAID_CAP;
-  /** Offers a renter can open a job on now: trusted, unexpired, carrying a job image. */
-  const rentable = (list: Offer[]): Offer[] => list.filter((o) => trusted(o) && o.expiresAt > now() && o.images.some((i) => JOB_IMAGES.includes(i)));
+  /** Offers a renter can open a job on now: trusted, unexpired, carrying a job image, of a listed host. */
+  const rentable = (list: Offer[]): Offer[] =>
+    list.filter((o) => trusted(o) && o.expiresAt > now() && o.images.some((i) => JOB_IMAGES.includes(i)) && listed(o.hostId));
+
+  /** The id of the home a job is, or undefined for a job that is not a home. */
+  const homeOf = (job: JobSpec | null): string | undefined =>
+    job && isHomeImage(job.image) ? homeIdOf((job.args.SSH_KEYS ?? '').split('\n')) : undefined;
+
+  /**
+   * A home whose disk is on a host opens there, whatever the ranking or a named offer says: the named offer
+   * when it is that host's, else that host's best offer for the image. 'home_host_gone' when that host is not
+   * listed or lists nothing open; undefined for a home no host holds yet, or a job that is not a home.
+   */
+  const pinnedOffer = (open: Offer[], job: JobSpec | null, named?: Offer): Offer | 'home_host_gone' | 'image_not_offered' | undefined => {
+    const homeId = homeOf(job);
+    const hostId = homeId === undefined ? undefined : registry.homeHost(homeId);
+    if (!job || hostId === undefined) return undefined;
+    if (named?.hostId === hostId) return named;
+    const its = open.filter((o) => o.hostId === hostId);
+    if (its.length === 0) return 'home_host_gone';
+    return rankOffers(its.filter((o) => o.images.includes(job.image)), registry, { home: true })[0] ?? 'image_not_offered';
+  };
 
   /**
    * The offer a rent body opens on, and its job (null for an empty body: a probe, priced at the default).
-   * A named offerId must be listed; with none, the cheapest offer that runs the job, ties by offerId.
+   * A home goes to the host that holds it (pinnedOffer). Else a named offerId must be listed; with none, the
+   * first offer that runs the job as rankOffers orders them.
    */
-  const pickRentOffer = (list: Offer[], body: unknown): { offer: Offer; job: JobSpec | null } | 'bad_request' | 'not_found' | 'image_not_offered' => {
+  const pickRentOffer = (list: Offer[], body: unknown): { offer: Offer; job: JobSpec | null } | 'bad_request' | 'not_found' | 'image_not_offered' | 'home_host_gone' => {
     if (body !== undefined && (typeof body !== 'object' || body === null || Array.isArray(body))) return 'bad_request';
     const b = (body ?? {}) as { offerId?: unknown; urls?: unknown; python?: unknown; home?: unknown };
     const empty = Object.keys(b).length === 0;
     const job = empty ? null : jobFromBody(b);
     if (!empty && (!job || (b.offerId !== undefined && typeof b.offerId !== 'string'))) return 'bad_request';
     const open = rentable(list);
+    let named: Offer | undefined;
     if (typeof b.offerId === 'string') {
-      const o = findOfferExact(open, b.offerId);
-      if (!o) return 'not_found';
-      if (job && !o.images.includes(job.image)) return 'image_not_offered';
-      return { offer: o, job };
+      named = findOfferExact(open, b.offerId);
+      if (!named) return 'not_found';
+      if (job && !named.images.includes(job.image)) return 'image_not_offered';
     }
-    const fits = open
-      .filter((o) => !job || o.images.includes(job.image))
-      .sort((x, y) => (x.tickPrice === y.tickPrice ? (offerIdOf(x) < offerIdOf(y) ? -1 : 1) : x.tickPrice < y.tickPrice ? -1 : 1));
+    const pinned = pinnedOffer(open, job, named);
+    if (typeof pinned === 'string') return pinned;
+    if (pinned) return { offer: pinned, job };
+    if (named) return { offer: named, job };
+    const fits = rankOffers(
+      open.filter((o) => !job || o.images.includes(job.image)),
+      registry,
+      { home: homeOf(job) !== undefined, waiting },
+    );
     return fits[0] ? { offer: fits[0], job } : 'not_found';
   };
   /** Runs a host call and books whatever it cost the door as spend no renter paid for. */
@@ -242,6 +277,30 @@ export function doorApp(deps: DoorDeps): express.Express {
   /** Payment keys claimed by a request that has not finished verifying. */
   const claimed = new Set<string>();
   const partFile = (id: string, part: number): string => join(deps.dataDir, 'output', id, `${part}.json`);
+
+  /** Tells the registry how a lease went on its host, once per lease. A lease of a host the registry lacks tells nothing. */
+  const outcome = (id: string, kind: LeaseOutcome): void => {
+    const hostId = ledger.get(id)?.offer.hostId;
+    if (!hostId || !registry.get(hostId) || !ledger.outcome(id, kind)) return;
+    if (kind === 'finished') registry.leaseFinished(hostId, ledger.get(id)!.ticksPaidToHost);
+    else registry.leaseHostFailed(hostId, now());
+  };
+  /** A status the host just answered: kept for reads, and what it says of the host told to the registry. */
+  const seen = (id: string, lease: Lease): void => {
+    statuses.set(id, { lease, at: now() });
+    if (lease.state === 'done' || (lease.state === 'closed' && lease.closedReason === 'max_intervals')) outcome(id, 'finished');
+    else if (lease.state === 'closed' && lease.closedReason === 'boot_failed') outcome(id, 'host_failed');
+    const rec = ledger.get(id);
+    const host = rec && registry.get(rec.offer.hostId);
+    // A paid home lease running with its access published: the host's homes work.
+    if (host && !host.homeTested && rec!.homeId && rec!.ticksPaidToHost > 0 && lease.state === 'running' && lease.access) registry.markHomeTested(host.hostId);
+  };
+  /** A lease the door just opened on a host: counted, its home pinned there, a host that could not boot it told. */
+  const opened = (r: OpenResult, offer: Offer, homeId: string | undefined): void => {
+    if (registry.get(offer.hostId)) registry.leaseOpened(offer.hostId);
+    if (homeId !== undefined && r.state !== 'closed') registry.setHomeHost(homeId, offer.hostId);
+    if (r.state === 'closed' && r.closedReason === 'boot_failed') outcome(r.leaseId, 'host_failed');
+  };
 
   /** Spends one of the lease's paid host reads, or throws BudgetError (or CapacityError past the daily cap). */
   const spendRead = (id: string): void => {
@@ -273,7 +332,7 @@ export function doorApp(deps: DoorDeps): express.Express {
       try {
         const api = deps.api(leaseOffer(id));
         const lease = await unpaid(api, () => api.status(id));
-        statuses.set(id, { lease, at: now() });
+        seen(id, lease);
         return lease;
       } catch (e) {
         // A failed look at a finished lease changes nothing, and is not repeated for another 10 minutes.
@@ -431,6 +490,14 @@ export function doorApp(deps: DoorDeps): express.Express {
     });
   }
 
+  app.use(hostRoutes({
+    registry,
+    fetch: deps.hostFetch ?? ((input, init) => safeFetch(input as string | URL | Request, init ?? {})),
+    now,
+    maxTickPrice: MAX_TICK_PRICE,
+    waiting,
+  }));
+
   /** What the door's ledger says about a host: leases with a renter-paid interval, and the newest one. */
   const hostStats = (hostId: string): { leases: number; lastLeaseAt?: number } => {
     let leases = 0;
@@ -452,8 +519,8 @@ export function doorApp(deps: DoorDeps): express.Express {
     }
     res.json(
       list
-        .filter((o) => trusted(o) && o.images.some((i) => JOB_IMAGES.includes(i)) && o.expiresAt > now())
-        .map((o) => ({ ...publicOffer(o), ...hostStats(o.hostId) })),
+        .filter((o) => trusted(o) && o.images.some((i) => JOB_IMAGES.includes(i)) && o.expiresAt > now() && listed(o.hostId))
+        .map((o) => ({ ...publicOffer(o, registry.get(o.hostId), fee, waiting(o.hostId)), ...hostStats(o.hostId) })),
     );
   });
 
@@ -485,14 +552,19 @@ export function doorApp(deps: DoorDeps): express.Express {
     const { offerId } = body;
     const job = jobFromBody(body);
     if (typeof offerId !== 'string' || !job) return void res.status(400).json({ error: 'bad_request' });
-    let offer: Offer | undefined;
+    let list: Offer[];
     try {
-      offer = findOfferExact((await offers()).filter(trusted), offerId);
+      list = await offers();
     } catch {
       return void res.status(502).json({ error: 'offers_unavailable' });
     }
+    let offer = findOfferExact(list.filter((o) => trusted(o) && listed(o.hostId)), offerId);
     if (!offer || offer.expiresAt <= now()) return void res.status(404).json({ error: 'not_found' });
     if (!offer.images.includes(job.image)) return void res.status(400).json({ error: 'image_not_offered' });
+    const pinned = pinnedOffer(rentable(list), job, offer);
+    if (pinned === 'home_host_gone') return void res.status(409).json({ error: pinned });
+    if (pinned === 'image_not_offered') return void res.status(400).json({ error: pinned });
+    if (pinned) offer = pinned;
     // Door-wide: an open costs the door and no renter pays for it.
     if (overCap() || !allowDoorOpen('door')) return void res.status(503).json({ error: 'capacity' });
 
@@ -500,7 +572,9 @@ export function doorApp(deps: DoorDeps): express.Express {
       const api = deps.api(offer);
       const r = await unpaid(api, () => api.open(job));
       if (!LEASE_ID.test(r.leaseId) || ledger.get(r.leaseId)) return void res.status(502).json({ error: 'bad_host_answer' });
-      ledger.open({ leaseId: r.leaseId, offerId, createdAt: now(), offer: snapshotOffer(offer) });
+      const homeId = homeOf(job);
+      ledger.open({ leaseId: r.leaseId, offerId: offerIdOf(offer), createdAt: now(), offer: snapshotOffer(offer), fee: fee.toString(), ...(homeId ? { homeId } : {}) });
+      opened(r, offer, homeId);
       res.json({
         leaseId: r.leaseId,
         state: r.state,
@@ -635,9 +709,11 @@ export function doorApp(deps: DoorDeps): express.Express {
       fresh = await unpaid(api, () => api.status(id, { priority: 'high', ...sendOpts }));
     } catch (e) {
       if (e instanceof DeadlinePassedError) return void res.status(503).json({ error: 'retry_later' });
+      // The host could not say how its lease stands when it was due a tick.
+      outcome(id, 'host_failed');
       return void res.status(502).json({ error: hostMessage(e) });
     }
-    statuses.set(id, { lease: fresh, at: now() });
+    seen(id, fresh);
     if (fresh.state === 'done') return void res.status(409).json({ error: 'lease_done' });
     if (fresh.state === 'closed') return void res.status(409).json({ error: 'not_running' });
     await payHostTick(res, api, id, res.locals.index as number, offer, (t) => t);
@@ -664,17 +740,25 @@ export function doorApp(deps: DoorDeps): express.Express {
       if (t.duplicate) {
         // The host already counted this index: it was paid for nothing, and the renter is not charged.
         const lost = api.spent() - before;
-        if (lost > 0n) ledger.loss(id, lost, 'host_refused', now(), payer);
+        if (lost > 0n) {
+          ledger.loss(id, lost, 'host_refused', now(), payer);
+          outcome(id, 'host_failed');
+        }
         ledger.stop(id);
         return void res.status(409).json({ error: 'duplicate', ...extra });
       }
-      ledger.hostTick(id);
+      ledger.hostTick(id, now());
       res.locals.hostPaid = { leaseId: id, price: offer.tickPrice };
       res.status(200).json(answer(t));
     } catch (e) {
       // The send waited too long to start: nothing was sent, nothing is owed, and the renter's payment
       // will not settle (non-2xx). The renter retries the same index with a fresh authorization.
       if (e instanceof DeadlinePassedError) return void res.status(503).json({ error: 'retry_later', ...extra });
+      // The door's own capital refused the deposit: nothing was sent, the host did nothing wrong, the renter may retry.
+      if (e instanceof CapitalCapError || e instanceof DepositPendingError) return void res.status(503).json({ error: 'capacity', ...extra });
+      const over = e instanceof HostError && e.status === 409 && (e.error === 'lease_done' || e.error === 'not_running');
+      // A refused, failed or unanswered tick (a 402 the door will not pay included) counts against the host.
+      if (!over) outcome(id, 'host_failed');
       // A host that answered, even with an error, took the door's money. It will not be paid again.
       // A send that timed out may have been paid, though nothing was counted.
       const lost = e instanceof SendTimeoutError ? offer.tickPrice : api.spent() - before;
@@ -682,9 +766,7 @@ export function doorApp(deps: DoorDeps): express.Express {
         ledger.loss(id, lost, 'host_refused', now(), payer);
         ledger.stop(id);
       }
-      if (e instanceof HostError && e.status === 409 && (e.error === 'lease_done' || e.error === 'not_running')) {
-        return void res.status(409).json({ error: e.error, ...extra });
-      }
+      if (over) return void res.status(409).json({ error: (e as HostError).error, ...extra });
       res.status(502).json({ error: hostMessage(e), ...extra });
     }
   };
@@ -717,6 +799,7 @@ export function doorApp(deps: DoorDeps): express.Express {
     }
     const pick = pickRentOffer(list, body);
     if (pick === 'not_found') return void res.status(404).json({ error: 'not_found' });
+    if (pick === 'home_host_gone') return void res.status(409).json({ error: pick });
     if (typeof pick === 'string') return void res.status(400).json({ error: pick });
     const { offer, job } = pick;
     if (overCap()) return void res.status(503).json({ error: 'capacity' });
@@ -777,7 +860,9 @@ export function doorApp(deps: DoorDeps): express.Express {
     }
     if (!LEASE_ID.test(r.leaseId) || ledger.get(r.leaseId)) return void res.status(502).json({ error: 'bad_host_answer' });
     const leaseId = r.leaseId;
-    ledger.open({ leaseId, offerId: offerIdOf(offer), createdAt: now(), offer: snapshotOffer(offer) });
+    const homeId = homeOf(job);
+    ledger.open({ leaseId, offerId: offerIdOf(offer), createdAt: now(), offer: snapshotOffer(offer), fee: fee.toString(), ...(homeId ? { homeId } : {}) });
+    opened(r, offer, homeId);
     res.locals.leaseId = leaseId;
     // The tick route waits for this one: the lease is the rent's until it answers.
     ticking.add(leaseId);
@@ -796,7 +881,7 @@ export function doorApp(deps: DoorDeps): express.Express {
       leaseId,
       0,
       offer,
-      (t) => ({ leaseId, state: 'running', ...t, next: { path: `/v1/leases/${leaseId}/ticks`, index: 1 }, offer: publicOffer(offer) }),
+      (t) => ({ leaseId, state: 'running', ...t, next: { path: `/v1/leases/${leaseId}/ticks`, index: 1 }, offer: publicOffer(offer, registry.get(offer.hostId), fee) }),
       { leaseId },
     );
   };
@@ -807,12 +892,12 @@ export function doorApp(deps: DoorDeps): express.Express {
   app.get('/openapi.json', async (_req, res) => {
     let prices: Micro[] = [];
     try {
-      prices = rentable(await offers()).map((o) => o.tickPrice);
+      prices = rentable(await offers()).map((o) => o.tickPrice + fee);
     } catch {
       // No offers to read: the document still describes the routes, priced as a range up to the door's maximum.
     }
     res.set('Access-Control-Allow-Origin', '*');
-    res.json(openApiDoc(prices, MAX_TICK_PRICE, microToUsdc, deps.contactEmail));
+    res.json(openApiDoc(prices, MAX_TICK_PRICE + fee, microToUsdc, deps.contactEmail));
   });
 
   /** The ledger's lease id, or a 404 written to `res`. */
@@ -840,7 +925,8 @@ export function doorApp(deps: DoorDeps): express.Express {
     try {
       const lease = await leaseStatus(id);
       const rec = ledger.get(id);
-      res.json({ lease, stopped: rec?.stopped ?? false, ...(rec ? { offer: publicOffer(offerOfSnapshot(rec.offer)) } : {}) });
+      const offer = rec && offerOfSnapshot(rec.offer);
+      res.json({ lease, stopped: rec?.stopped ?? false, ...(offer ? { offer: publicOffer(offer, registry.get(offer.hostId), leaseFee(id)) } : {}) });
     } catch (e) {
       failRead(res, e);
     }

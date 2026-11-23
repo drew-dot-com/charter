@@ -4,8 +4,10 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import type { ChannelConfig } from '@x402/evm';
 import type { Offer } from '../types.js';
-import { capitalAllocator, HostRegistry, hostIdOf, isProven, successRate } from './hosts.js';
+import type { ChannelChain, DoorChannel } from './channel-chain.js';
+import { capitalAllocator, hostFundingWaiting, HostRegistry, hostIdOf, isProven, publicRecord, rankOffers, reapChannels, startChannelReaper, successRate } from './hosts.js';
 
 const DAY = 86_400_000;
 const T0 = 1_800_000_000_000;
@@ -268,4 +270,212 @@ test('allocator: an unknown or dropped host gets nothing', () => {
   const id = add(reg, 'a');
   for (let i = 0; i < 3; i++) reg.probeResult(id, false, T0 + i);
   assert.equal(alloc(id), 'over_cap');
+});
+
+/** A listed host with `finished` and `failed` real leases (failures first, so it is never hidden). */
+function withRecord(reg: HostRegistry, name: string, finished: number, failed: number): string {
+  const id = add(reg, name);
+  reg.probeResult(id, true, T0);
+  for (let i = 0; i < failed; i++) (reg.leaseOpened(id), reg.leaseHostFailed(id, T0), reg.leaseFinished(id, 1), (finished -= 1));
+  for (let i = 0; i < finished; i++) (reg.leaseOpened(id), reg.leaseFinished(id, 1));
+  return id;
+}
+const offerOn = (hostId: string, tickPrice: bigint, over: Partial<Offer> = {}): Offer => ({ ...OFFER, hostId, url: `https://${hostId.slice(0, 8)}.example`, tickPrice, ...over });
+
+test('rankOffers: a 0.95 host beats a cheaper 0.5 host; a 0.5 host is picked when it is the only one', () => {
+  const { reg } = registry();
+  const good = withRecord(reg, 'good', 19, 1);
+  const flaky = withRecord(reg, 'flaky', 1, 1);
+  assert.equal(successRate(reg.get(good)!), 0.95);
+  assert.equal(successRate(reg.get(flaky)!), 0.5);
+  const cheap = offerOn(flaky, 1000n);
+  const dear = offerOn(good, 9000n);
+  assert.deepEqual(rankOffers([cheap, dear], reg), [dear]);
+  assert.deepEqual(rankOffers([cheap], reg), [cheap]);
+});
+
+test('rankOffers: proven beats new; a tie on price breaks by hostId', () => {
+  const { reg } = registry();
+  const proven = withRecord(reg, 'proven', 3, 0);
+  const fresh = withRecord(reg, 'fresh', 0, 0);
+  assert.deepEqual(rankOffers([offerOn(fresh, 1000n), offerOn(proven, 9000n)], reg).map((o) => o.hostId), [proven, fresh]);
+  const a = withRecord(reg, 'a', 3, 0);
+  const b = withRecord(reg, 'b', 3, 0);
+  const [lo, hi] = a < b ? [a, b] : [b, a];
+  assert.deepEqual(rankOffers([offerOn(hi, 5000n), offerOn(lo, 5000n)], reg).map((o) => o.hostId), [lo, hi]);
+});
+
+test('rankOffers: only listed hosts appear, and a host waiting for funding is skipped', () => {
+  const { reg } = registry();
+  const listed = withRecord(reg, 'listed', 1, 0);
+  const hidden = withRecord(reg, 'hidden', 1, 0);
+  reg.probeResult(hidden, false, T0 + DAY);
+  const probing = add(reg, 'probing');
+  const waiting = withRecord(reg, 'waiting', 5, 0);
+  const list = [offerOn(listed, 9000n), offerOn(hidden, 1000n), offerOn(probing, 1000n), offerOn(waiting, 1000n)];
+  assert.deepEqual(rankOffers(list, reg, { waiting: (id) => id === waiting }).map((o) => o.hostId), [listed]);
+  assert.deepEqual(rankOffers(list, reg).map((o) => o.hostId), [waiting, listed]);
+});
+
+test('rankOffers: for a home job, an untested home offer comes after a tested one', () => {
+  const { reg } = registry();
+  const tested = withRecord(reg, 'tested', 1, 0);
+  reg.markHomeTested(tested);
+  const untested = withRecord(reg, 'untested', 1, 0);
+  const home = { diskGiB: 10, retentionDays: 7, slots: 2 };
+  const list = [offerOn(untested, 1000n, { home }), offerOn(tested, 9000n, { home })];
+  assert.deepEqual(rankOffers(list, reg, { home: true }).map((o) => o.hostId), [tested, untested]);
+  assert.deepEqual(rankOffers(list, reg).map((o) => o.hostId), [untested, tested], 'a job that is not a home ranks by price');
+});
+
+test('publicRecord: what a renter sees of a host', () => {
+  const { reg } = registry();
+  const id = withRecord(reg, 'a', 2, 0);
+  reg.probeResult(id, false, T0 + DAY);
+  reg.probeResult(id, true, T0 + 2 * DAY);
+  assert.deepEqual(publicRecord(reg.get(id)!), { probesPassed: 2, leasesFinished: 2, successRate: 1, new: false, lastProbeFailedAt: T0 + DAY });
+  const fresh = withRecord(reg, 'b', 0, 0);
+  assert.deepEqual(publicRecord(reg.get(fresh)!, true), { probesPassed: 1, leasesFinished: 0, successRate: 1, new: true, funding: 'waiting' });
+});
+
+test('hostFundingWaiting: a proven host with nothing locked that the allocator refuses', () => {
+  const { reg } = registry();
+  const id = withRecord(reg, 'a', 1, 0);
+  const unproven = add(reg, 'u');
+  const locked = new Map<string, bigint>();
+  let answer: bigint | 'over_cap' = 'over_cap';
+  const waiting = hostFundingWaiting({ registry: reg, locked: (h) => locked.get(h) ?? 0n, depositFor: () => answer });
+  assert.equal(waiting(id), true);
+  assert.equal(waiting(unproven), false, 'an unproven host is not listed, so never waiting');
+  locked.set(id, 100_000n);
+  assert.equal(waiting(id), false, 'a channel that holds funds needs no deposit');
+  locked.delete(id);
+  answer = 500_000n;
+  assert.equal(waiting(id), false);
+});
+
+/** A fake chain and payer for the reaper: channels by id, writes recorded. */
+function fakeChannels() {
+  const config = (n: number): ChannelConfig => ({
+    payer: `0x${'1'.repeat(40)}`, payerAuthorizer: `0x${'1'.repeat(40)}`, receiver: `0x${'3'.repeat(40)}`, receiverAuthorizer: `0x${'4'.repeat(40)}`,
+    token: `0x${'5'.repeat(40)}`, withdrawDelay: 3600, salt: `0x${n.toString(16).padStart(64, '0')}`,
+  });
+  const state = new Map<string, { balance: bigint; totalClaimed: bigint; pending: bigint; initiatedAt: number }>();
+  const byHost = new Map<string, DoorChannel[]>();
+  const writes: string[] = [];
+  const resynced: string[] = [];
+  let n = 0;
+  const open = (hostId: string, balance: bigint, totalClaimed = 0n): `0x${string}` => {
+    const channelId = `0x${(++n).toString(16).padStart(64, 'c')}` as `0x${string}`;
+    state.set(channelId, { balance, totalClaimed, pending: 0n, initiatedAt: 0 });
+    byHost.set(hostId, [...(byHost.get(hostId) ?? []), { channelId, config: config(n), balance }]);
+    return channelId;
+  };
+  const clock = { t: T0 };
+  const chain: ChannelChain = {
+    state: async (id) => {
+      const s = state.get(id)!;
+      return { balance: s.balance, totalClaimed: s.totalClaimed, withdrawInitiatedAt: s.initiatedAt };
+    },
+    initiateWithdraw: async (c, amount) => {
+      writes.push(`initiate ${c.channelId} ${amount}`);
+      Object.assign(state.get(c.channelId)!, { pending: amount, initiatedAt: Math.floor(clock.t / 1000) });
+    },
+    finalizeWithdraw: async (c) => {
+      writes.push(`finalize ${c.channelId}`);
+      const s = state.get(c.channelId)!;
+      Object.assign(s, { balance: s.balance - s.pending, pending: 0n, initiatedAt: 0 });
+    },
+  };
+  const payer = {
+    channels: async (hostId: string) => byHost.get(hostId) ?? [],
+    resync: async (hostId: string, channelId: string) => void resynced.push(`${hostId.slice(0, 4)} ${channelId}`),
+  };
+  return { chain, payer, open, state, writes, resynced, clock };
+}
+
+function reaperFor(reg: HostRegistry, f: ReturnType<typeof fakeChannels>, lastLeaseAt: Map<string, number>, locked: Map<string, bigint>) {
+  const logs: string[] = [];
+  const capital = {
+    locked: (h: string) => locked.get(h) ?? 0n,
+    withdrawn: (h: string, a: bigint) => void locked.set(h, (locked.get(h) ?? 0n) - a > 0n ? (locked.get(h) ?? 0n) - a : 0n),
+  };
+  return { logs, run: () => reapChannels({ registry: reg, payer: f.payer, chain: f.chain, capital, lastLeaseAt: (h) => lastLeaseAt.get(h), now: () => f.clock.t, log: (m) => void logs.push(m) }) };
+}
+
+test('the reaper withdraws a channel idle 7 days and a dropped host\'s channel, and leaves a 6-day-idle one', async () => {
+  const { reg } = registry();
+  const f = fakeChannels();
+  const idle = withRecord(reg, 'idle', 1, 0);
+  const recent = withRecord(reg, 'recent', 1, 0);
+  const dropped = withRecord(reg, 'dropped', 1, 0);
+  for (let i = 1; i <= 3; i++) reg.probeResult(dropped, false, T0 + i * DAY);
+  assert.equal(reg.get(dropped)!.state, 'dropped');
+  const cIdle = f.open(idle, 500_000n, 120_000n);
+  const cRecent = f.open(recent, 500_000n);
+  const cDropped = f.open(dropped, 100_000n, 7000n);
+  f.clock.t = T0 + 10 * DAY;
+  const last = new Map([[idle, f.clock.t - 7 * DAY], [recent, f.clock.t - 6 * DAY], [dropped, f.clock.t - 60_000]]);
+  const r = reaperFor(reg, f, last, new Map());
+  await r.run();
+  assert.deepEqual(f.writes.sort(), [`initiate ${cDropped} 93000`, `initiate ${cIdle} 380000`].sort());
+  assert.ok(!f.writes.some((w) => w.includes(cRecent)), 'a channel idle 6 days is left alone');
+  // A round inside the withdraw delay asks nothing again.
+  f.clock.t += 1000 * 1000;
+  await r.run();
+  assert.equal(f.writes.length, 2);
+});
+
+test('the reaper finalizes a withdrawal past its delay, and an emptied host\'s capital leaves locked', async () => {
+  const { reg } = registry();
+  const f = fakeChannels();
+  const id = withRecord(reg, 'a', 1, 0);
+  const c = f.open(id, 500_000n, 120_000n);
+  const locked = new Map([[id, 500_000n]]);
+  const last = new Map([[id, T0]]);
+  f.clock.t = T0 + 8 * DAY;
+  const r = reaperFor(reg, f, last, locked);
+  await r.run();
+  assert.deepEqual(f.writes, [`initiate ${c} 380000`]);
+  assert.equal(locked.get(id), 500_000n, 'nothing has come back yet');
+  f.clock.t += 3600 * 1000;
+  await r.run();
+  assert.deepEqual(f.writes, [`initiate ${c} 380000`, `finalize ${c}`]);
+  assert.equal(f.state.get(c)!.balance, 120_000n);
+  assert.equal(locked.get(id), 0n, 'the channel holds nothing of the door\'s: its capital is free');
+  assert.deepEqual(f.resynced, [`${id.slice(0, 4)} ${c}`], 'the door\'s record follows the chain');
+  assert.ok(r.logs.some((l) => l.includes('380000')), r.logs.join('\n'));
+  await r.run();
+  assert.equal(f.writes.length, 2, 'an empty channel is not withdrawn again');
+});
+
+test('the reaper frees an idle host\'s capital once the host refunded its channel itself', async () => {
+  const { reg } = registry();
+  const f = fakeChannels();
+  const id = withRecord(reg, 'a', 1, 0);
+  const c = f.open(id, 500_000n, 70_000n);
+  const locked = new Map([[id, 500_000n]]);
+  // The host refunded the unspent 430000 back to the door.
+  f.state.get(c)!.balance = 70_000n;
+  f.clock.t = T0 + 8 * DAY;
+  const r = reaperFor(reg, f, new Map([[id, T0]]), locked);
+  await r.run();
+  assert.deepEqual(f.writes, [], 'nothing left to withdraw');
+  assert.equal(locked.get(id), 0n);
+});
+
+test('startChannelReaper runs a round at once and stops', async () => {
+  const { reg } = registry();
+  const f = fakeChannels();
+  const id = withRecord(reg, 'a', 1, 0);
+  f.open(id, 500_000n);
+  f.clock.t = T0 + 8 * DAY;
+  const stop = startChannelReaper({
+    registry: reg, payer: f.payer, chain: f.chain, capital: { locked: () => 0n, withdrawn: () => undefined },
+    lastLeaseAt: () => undefined, now: () => f.clock.t, log: () => undefined,
+  });
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  stop();
+  assert.equal(f.writes.length, 1);
 });

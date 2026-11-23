@@ -74,7 +74,7 @@ export function openApiDoc(prices: Micro[], max: Micro, usd: (m: Micro) => strin
             '402': { description: 'Payment Required: one interval, exact first or batch-settlement, USDC on Base.' },
             '403': error('payer_blocked: this payer cost the door a failed settlement in the last 24 hours.'),
             '404': error('No listed offer for this body.'),
-            '409': error('payment_reused, busy, or channel_withdrawing.'),
+            '409': error('payment_reused, busy, channel_withdrawing, or home_host_gone: the host that holds this home\'s disk is not listed.'),
             '429': error('rate_limited'),
             '502': error('The host failed. When the lease opened, leaseId is in the body: pay index 0 on the tick route.'),
             '503': error('capacity, or retry_later with leaseId.'),
@@ -88,6 +88,30 @@ export function openApiDoc(prices: Micro[], max: Micro, usd: (m: Micro) => strin
           tags: ['Compute'],
           security: [],
           responses: { '200': json({ type: 'array', items: { type: 'object' } }) },
+        },
+      },
+      '/v1/hosts': {
+        get: {
+          operationId: 'listHosts',
+          summary: 'Every host the door knows, with its state and track record. Hosts are run by independent operators.',
+          tags: ['Hosts'],
+          security: [],
+          responses: { '200': json({ type: 'array', items: { type: 'object' } }) },
+        },
+        post: {
+          operationId: 'registerHost',
+          summary: 'Register a host by its HTTPS URL: the door reads GET {url}/v1/offer, then probes it with a paid job before listing it',
+          tags: ['Hosts'],
+          security: [],
+          requestBody: {
+            required: true,
+            content: { 'application/json': { schema: { type: 'object', properties: { url: { type: 'string', description: 'The host\'s https base URL.' } }, required: ['url'] } } },
+          },
+          responses: {
+            '202': json({ type: 'object', properties: { hostId: { type: 'string' }, state: { type: 'string' } }, required: ['hostId', 'state'] }, 'Registered; listed once a probe passes.'),
+            '400': error('bad_url, or bad_offer with a reason: open and status reads must be free, the tick at most the door\'s maximum, payTo an address, url the registered one.'),
+            '429': error('rate_limited: 10 registrations an hour per IP, 1 per URL.'),
+          },
         },
       },
       '/v1/leases': {

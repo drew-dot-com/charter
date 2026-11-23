@@ -4,6 +4,8 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { dirname } from 'node:path';
 import type { Offer } from '../types.js';
+import type { CapitalBook } from './capital.js';
+import type { ChannelChain, DoorChannel } from './channel-chain.js';
 import type { DepositFor } from './host-http.js';
 import { utcDay } from './ledger.js';
 import { blockedAddress } from './safe-fetch.js';
@@ -93,6 +95,49 @@ export function isProven(r: HostRecord): boolean {
 export function successRate(r: HostRecord): number {
   const n = r.leases.finished + r.leases.hostFailed;
   return n === 0 ? 1 : r.leases.finished / n;
+}
+
+/** A host no real lease has ended on yet: it has no track record. */
+export function isNewHost(r: HostRecord): boolean {
+  return r.leases.finished + r.leases.hostFailed === 0;
+}
+
+/** Below this success rate a host is skipped while one at or above it fits. */
+export const SUCCESS_FLOOR = 0.8;
+
+/** A host's track record as renters see it, on each offer in `/v1/offers` and in `/v1/hosts`. */
+export function publicRecord(r: HostRecord, fundingWaiting = false) {
+  return {
+    probesPassed: r.probes.passed,
+    leasesFinished: r.leases.finished,
+    successRate: successRate(r),
+    new: isNewHost(r),
+    ...(r.probes.lastFailedAt === undefined ? {} : { lastProbeFailedAt: r.probes.lastFailedAt }),
+    ...(fundingWaiting ? { funding: 'waiting' as const } : {}),
+  };
+}
+
+/**
+ * Offers in the order the door picks them, for one job. Only listed hosts' offers appear, and none of a host
+ * `waiting` for funding. Hosts under SUCCESS_FLOOR are dropped while one at or above it fits. Then: for a home
+ * job a tested home before an untested one; a host with a record before a new one; the lower price; the lower
+ * hostId; the lower offer id.
+ */
+export function rankOffers(list: Offer[], registry: HostRegistry, o: { home?: boolean; waiting?: (hostId: string) => boolean } = {}): Offer[] {
+  const recs = new Map(registry.listed().map((r) => [r.hostId, r]));
+  const fits = list.filter((x) => recs.has(x.hostId) && !o.waiting?.(x.hostId));
+  const rec = (x: Offer): HostRecord => recs.get(x.hostId)!;
+  const floorMet = fits.some((x) => successRate(rec(x)) >= SUCCESS_FLOOR);
+  const kept = floorMet ? fits.filter((x) => successRate(rec(x)) >= SUCCESS_FLOOR) : fits;
+  const flag = (b: boolean): number => (b ? 0 : 1);
+  return kept.sort(
+    (x, y) =>
+      (o.home ? flag(rec(x).homeTested) - flag(rec(y).homeTested) : 0) ||
+      flag(!isNewHost(rec(x))) - flag(!isNewHost(rec(y))) ||
+      (x.tickPrice < y.tickPrice ? -1 : x.tickPrice > y.tickPrice ? 1 : 0) ||
+      cmp(x.hostId, y.hostId) ||
+      cmp(x.id, y.id),
+  );
 }
 
 interface Stored {
@@ -302,4 +347,99 @@ export function capitalAllocator(o: {
     const [deposit, cap] = proven ? [o.hostDeposit, o.hostCap] : [o.probeDeposit, o.probeCap];
     return tier + deposit <= cap ? deposit : 'over_cap';
   };
+}
+
+/**
+ * A proven host the door cannot fund now: nothing locked in its channels, and the allocator has no deposit for
+ * it. It stays listed with `funding: 'waiting'` and is not picked. A host whose channel already holds funds needs
+ * no deposit, so a full tier never freezes the hosts already funded.
+ */
+export function hostFundingWaiting(o: { registry: HostRegistry; locked: (hostId: string) => bigint; depositFor: DepositFor }): (hostId: string) => boolean {
+  return (hostId) => {
+    const r = o.registry.get(hostId);
+    return r !== undefined && isProven(r) && o.locked(hostId) === 0n && o.depositFor(hostId) === 'over_cap';
+  };
+}
+
+/** A channel with no lease or probe on its host for this long is withdrawn. */
+export const IDLE_WITHDRAW_MS = 7 * 86_400_000;
+/** How often the reaper looks. */
+export const REAP_EVERY_MS = 3_600_000;
+
+export interface ReaperDeps {
+  registry: HostRegistry;
+  payer: { channels(hostId: string): Promise<DoorChannel[]>; resync(hostId: string, channelId: string): Promise<void> };
+  chain: ChannelChain;
+  capital: Pick<CapitalBook, 'locked' | 'withdrawn'>;
+  /** Epoch ms of the host's newest lease or probe; undefined when it never had one. */
+  lastLeaseAt: (hostId: string) => number | undefined;
+  now: () => number;
+  log: (msg: string) => void;
+}
+
+/**
+ * One round of the channel reaper. A host is due when it is dropped or its last lease is IDLE_WITHDRAW_MS old.
+ * Every channel: a withdrawal past its delay is finalized, whatever the host's state. A due host's channel with
+ * unclaimed funds and no withdrawal pending gets one asked for all of it. Once every channel of a due host holds
+ * nothing of the door's (withdrawn, or refunded by the host itself), what the door had locked there is released:
+ * the rest was paid to the host. The door's record of a channel follows the chain after its balance moved.
+ */
+export async function reapChannels(d: ReaperDeps): Promise<void> {
+  for (const r of d.registry.all()) {
+    const channels = await d.payer.channels(r.hostId);
+    if (channels.length === 0) continue;
+    const last = d.lastLeaseAt(r.hostId);
+    const due = r.state === 'dropped' || last === undefined || d.now() - last >= IDLE_WITHDRAW_MS;
+    let empty = true;
+    for (const c of channels) {
+      try {
+        let s = await d.chain.state(c.channelId);
+        let finalized = false;
+        if (s.withdrawInitiatedAt > 0 && d.now() / 1000 >= s.withdrawInitiatedAt + c.config.withdrawDelay) {
+          await d.chain.finalizeWithdraw(c);
+          const after = await d.chain.state(c.channelId);
+          d.log(`channel ${c.channelId} of host ${r.url}: withdrawal finalized, ${s.balance - after.balance} micro-USDC back`);
+          s = after;
+          finalized = true;
+        }
+        // Only on a quiet channel: a busy one's record may be ahead of the chain by a deposit still landing.
+        if (s.balance !== c.balance && (due || finalized)) await d.payer.resync(r.hostId, c.channelId);
+        const free = s.balance - s.totalClaimed;
+        if (free <= 0n && s.withdrawInitiatedAt === 0) continue;
+        empty = false;
+        if (due && s.withdrawInitiatedAt === 0) {
+          await d.chain.initiateWithdraw(c, free);
+          d.log(`channel ${c.channelId} of host ${r.url}: withdrawal of ${free} micro-USDC asked (${r.state === 'dropped' ? 'dropped' : 'idle'})`);
+        }
+      } catch (e) {
+        empty = false;
+        d.log(`channel ${c.channelId} of host ${r.url}: ${String(e instanceof Error ? e.message : e).slice(0, 200)}`);
+      }
+    }
+    const locked = d.capital.locked(r.hostId);
+    if (due && empty && locked > 0n) {
+      d.capital.withdrawn(r.hostId, locked);
+      d.log(`host ${r.url}: channels empty, ${locked} micro-USDC of door capital released`);
+    }
+  }
+}
+
+/** Runs reapChannels now and every REAP_EVERY_MS, never two rounds at once. Returns a stop function. */
+export function startChannelReaper(d: ReaperDeps): () => void {
+  let busy = false;
+  const round = async (): Promise<void> => {
+    if (busy) return;
+    busy = true;
+    try {
+      await reapChannels(d);
+    } catch (e) {
+      d.log(`channel reaper: ${String(e instanceof Error ? e.message : e).slice(0, 200)}`);
+    } finally {
+      busy = false;
+    }
+  };
+  const timer = setInterval(() => void round(), REAP_EVERY_MS);
+  timer.unref();
+  void round();
+  return () => clearInterval(timer);
 }

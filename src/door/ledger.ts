@@ -57,7 +57,18 @@ export interface DoorLease {
   hostReads: number;
   /** The offer as resolved when the lease was opened. Every host call and price for this lease comes from here, never the host's current offer. */
   offer: OfferSnapshot;
+  /** The door's fee per tick at open (CHARTER_DOOR_FEE), micro-USDC as a decimal string: the renter pays the tick price plus this. Absent: 0. */
+  fee?: string;
+  /** A home lease: the home's id (homeIdOf its keys). */
+  homeId?: string;
+  /** Epoch ms of the newest tick the host accepted. */
+  lastTickAt?: number;
+  /** How the lease went for its host, once known: told to the host registry once. */
+  outcome?: LeaseOutcome;
 }
+
+/** finished: the lease ended `done` or `max_intervals`. host_failed: boot_failed, a refused or unanswered tick. */
+export type LeaseOutcome = 'finished' | 'host_failed';
 
 /**
  * settle_failed: the payer's payment failed for a reason that is theirs (no balance, a used nonce, a bad signature).
@@ -139,17 +150,25 @@ export class DoorLedger {
     return [...this.leases.values()].map((l) => ({ ...l }));
   }
 
-  open(o: { leaseId: string; offerId: string; createdAt: number; offer: OfferSnapshot }): void {
+  open(o: { leaseId: string; offerId: string; createdAt: number; offer: OfferSnapshot; fee?: string; homeId?: string }): void {
     this.leases.set(o.leaseId, { ...o, ticksPaidByRenter: 0, ticksPaidToHost: 0, losses: 0n, stopped: false, nextIndex: 0, hostReads: 0 });
     this.save();
   }
 
-  /** The host answered a tick 2xx. */
-  hostTick(leaseId: string): void {
+  /** The host answered a tick 2xx, at `at` (epoch ms). */
+  hostTick(leaseId: string, at?: number): void {
     this.update(leaseId, (l) => {
       l.ticksPaidToHost++;
       l.nextIndex++;
+      if (at !== undefined) l.lastTickAt = at;
     });
+  }
+
+  /** Records how the lease went for its host. True only the first time: a lease has one outcome. */
+  outcome(leaseId: string, kind: LeaseOutcome): boolean {
+    if (this.leases.get(leaseId)?.outcome !== undefined) return false;
+    this.update(leaseId, (l) => void (l.outcome = kind));
+    return true;
   }
 
   /** The renter's payment for a tick settled. */

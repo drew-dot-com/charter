@@ -63,7 +63,7 @@ one (a paid python job that hashes a nonce) before it lists it, and pays each ho
 | `CHARTER_DATA_DIR` | yes | | `door-ledger.json`, its sidecars (`.payments`, `.unblocks`, `.unpaid`), cached output parts, `hosts.json` (the host registry) and `capital.json` (what the door has deposited into each host's channels). |
 | `CHARTER_DOOR_PAYER_KEY_FILE` | yes | | File (mode 0400) holding the door's Base key: one `0x` + 64 hex private key. Its address is where renters' x402 payments go (`payTo`, `payer` in `GET /v1/door`) and what pays hosts and signs every request to them. |
 | `CHARTER_HOST_CHANNEL_DIR` | no | `<CHARTER_DATA_DIR>/host-channels` | The door's channel records, one directory per host. Losing them makes the door rebuild each record from chain. |
-| `BASE_RPC_URL` | no | `https://mainnet.base.org` | Base RPC the door reads host channels from: at boot, and to resync a record or a pending deposit a lost answer left behind. |
+| `BASE_RPC_URL` | no | `https://mainnet.base.org` | Base RPC the door reads host channels from: at boot, and to resync a record or a pending deposit a lost answer left behind. The door also withdraws its own channels through it, hourly: one idle 7 days (no lease or probe) or of a dropped host. Those transactions pay gas in ETH from the payer address. |
 | `CHARTER_CLAIM_KEY_FILE` | yes | | File holding the door's x402 claim key: one `0x` + 64 hex secp256k1 private key (`deploy/door/new-claim-key.mjs`). It authorizes claims and refunds on renters' batch-settlement channels and holds no funds. Channel records live in `<CHARTER_DATA_DIR>/x402-channels/`. |
 | `X402_FACILITATOR_URL` | no | `https://facilitator.payai.network` | x402 facilitator for verify and settle. |
 | `CHARTER_PROBES_PER_DAY` | no | `10` | First probes of new hosts the door starts in a UTC day; the rest wait. |
@@ -72,9 +72,10 @@ one (a paid python job that hashes a nonce) before it lists it, and pays each ho
 | `CHARTER_PROBE_CAPITAL_CAP` | no | `1000000` | All unproven hosts' deposits together. |
 | `CHARTER_HOST_DEPOSIT` | no | `500000` | The deposit into a proven host's channel. |
 | `CHARTER_HOST_CAPITAL_CAP` | no | `10000000` | All proven hosts' deposits together. |
+| `CHARTER_DOOR_FEE` | no | `0` | Micro-USDC the door adds to each tick a renter pays, on top of the host's price. A lease keeps the fee of its open. |
 | `CHARTER_DOOR_SELF_ADDRS` | no | none | Comma list of the box's own IPs or CIDRs. A registered host URL resolving to one is refused, as loopback and private addresses always are. |
 
-Fixed, not configurable: 10 opens an hour per IP and 30 across all IPs; 120 GETs a minute per IP on
+Fixed, not configurable: 10 host registrations (`POST /v1/hosts`) an hour per IP and 1 per host URL; 10 opens an hour per IP and 30 across all IPs; 120 GETs a minute per IP on
 `/v1/leases/*`; 30 tick POSTs a minute per IP; at most 500000 micro-USDC a UTC day of door spend no
 renter paid for (opens, free reads, the status read before each tick, losses), past which opens,
 ticks and uncached reads answer 503 `capacity`. A host's offer is fetched again at most once a minute; one

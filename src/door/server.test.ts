@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { HostError, type HostApi, type OpenResult, type OutputPart, type TickResult } from '../tenant/host-api.js';
-import { OFFER } from '../tenant/test-host.js';
+import { listedRegistry, OFFER } from '../tenant/test-host.js';
 import type { Lease, Micro, Offer } from '../types.js';
 import { DoorLedger, offerOfSnapshot, snapshotOffer } from './ledger.js';
 import { doorApp, readBudget, type DoorDeps } from './server.js';
@@ -16,7 +16,8 @@ import { SendTimeoutError } from '../errors.js';
 import { hostHttpApp } from '../host/http.js';
 import type { Runner } from '../host/runner.js';
 import { LeaseStore } from '../host/store.js';
-import { doorPayer, httpHostApi, type DoorPayer } from './host-http.js';
+import { CapitalCapError, doorPayer, httpHostApi, type DoorPayer } from './host-http.js';
+import { homeIdOf, normalizeSshKeys } from '../jobs.js';
 import { HostQueue } from './host-queue.js';
 import { stubGate } from './x402.js';
 import { facilitatorOffersBatch, isPayerFault, MIN_WINDOW_SECONDS, paymentIdOf } from '../x402/seller.js';
@@ -113,6 +114,7 @@ async function start(host: ReturnType<typeof fakeHost>, over: Partial<DoorDeps> 
   const deps: DoorDeps = {
     offers: async () => (offerCalls++, [OFFER]),
     api: () => host.api,
+    registry: listedRegistry(dir),
     ledger,
     x402: 'free-for-tests',
     now: () => clock.t,
@@ -247,7 +249,7 @@ test('a home body reaches the host and its access comes back through the door', 
   const d = await start(host, { offers: async () => [home] });
   try {
     const list = (await (await d.get('/v1/offers')).json()) as Array<{ home?: unknown }>;
-    assert.deepEqual(list[0]!.home, { diskGiB: 10, retentionDays: 30, slots: 2 }, 'the offer shows its home terms');
+    assert.deepEqual(list[0]!.home, { diskGiB: 10, retentionDays: 30, slots: 2, tested: false }, 'the offer shows its home terms, untested');
     const open = await d.post('/v1/leases', { offerId: OFFER_ID, home: { sshKeys: [key] } });
     assert.equal(open.status, 200);
     assert.deepEqual(host.opened, [{ image: 'charter-home', args: { SSH_KEYS: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' } }]);
@@ -255,7 +257,7 @@ test('a home body reaches the host and its access comes back through the door', 
     assert.deepEqual(st.lease.access, access);
     assert.equal(st.lease.restarts, 2);
     assert.equal(st.lease.homeId, '0123456789abcdef');
-    assert.deepEqual(st.offer.home, { diskGiB: 10, retentionDays: 30, slots: 2 });
+    assert.deepEqual(st.offer.home, { diskGiB: 10, retentionDays: 30, slots: 2, tested: false }, 'no tick paid: not yet a tested home');
     assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, home: { sshKeys: ['not a key'] } })).status, 400);
   } finally {
     d.close();
@@ -465,6 +467,7 @@ test('GET /v1/offers is free, CORS-open, trimmed to what a renter needs, and cac
     assert.deepEqual(body[0], {
       offerId: OFFER_ID, cpu: 1, memoryMiB: 1024, intervalSeconds: 30, tickPrice: '5000', images: ['charter-job-fetch'],
       hiddenHost: true, hiddenEgress: false, expiresAt: OFFER.expiresAt, leases: 0,
+      operator: 'independent', record: { probesPassed: 1, leasesFinished: 0, successRate: 1, new: true },
     });
     assert.ok(!JSON.stringify(body).includes('payTo') && !JSON.stringify(body).includes(OFFER.url), 'where a host answers and is paid stays with the door');
   } finally {
@@ -671,6 +674,7 @@ test('the status answer carries the offer the door resolved at open time, which 
     assert.deepEqual(body.offer, {
       offerId: OFFER_ID, cpu: OFFER.cpu, memoryMiB: OFFER.memoryMiB, intervalSeconds: 30, tickPrice: '5000',
       images: ['charter-job-fetch'], hiddenHost: true, hiddenEgress: false, expiresAt: OFFER.expiresAt,
+      operator: 'independent', record: { probesPassed: 1, leasesFinished: 0, successRate: 1, new: true },
     });
     assert.equal(new DoorLedger(join(d.dir, 'ledger.json')).get(LEASE)!.offer?.tickPrice, '5000', 'persisted in the ledger');
   } finally {
@@ -1411,7 +1415,7 @@ async function queuedDoor() {
   const account = privateKeyToAccount(('0x' + '11'.repeat(32)) as `0x${string}`);
   let charged = 0n;
   const payer: DoorPayer = {
-    address: account.address, account, clearPendingDeposit: () => undefined, resyncAll: async () => undefined,
+    address: account.address, account, clearPendingDeposit: () => undefined, resyncAll: async () => undefined, channels: async () => [], resync: async () => undefined,
     charged: async () => charged,
     paidFetch: (_o, price) => (async (input, init) => {
       const res = await host(input, init);
@@ -2024,7 +2028,7 @@ test('GET /openapi.json describes the paid rent route for x402 indexes, with the
     assert.deepEqual(rent['x-payment-info'], { price: { mode: 'fixed', currency: 'USD', amount: '0.005000' }, protocols: [{ x402: {} }] });
     assert.ok(rent.requestBody);
     assert.ok(rent.responses['200'] && rent.responses['402']);
-    for (const [p, m] of [['/v1/offers', 'get'], ['/v1/leases', 'post'], ['/v1/leases/{leaseId}', 'get']] as const) {
+    for (const [p, m] of [['/v1/offers', 'get'], ['/v1/leases', 'post'], ['/v1/leases/{leaseId}', 'get'], ['/v1/hosts', 'get'], ['/v1/hosts', 'post']] as const) {
       assert.deepEqual(doc.paths[p]![m]!.security, [], `${m} ${p} is public`);
       assert.equal(doc.paths[p]![m]!['x-payment-info'], undefined);
     }
@@ -2131,5 +2135,211 @@ test('the door opens and ticks a host over httpHostApi', async () => {
   } finally {
     d.close();
     hostServer.close();
+  }
+});
+
+const KEY_A = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl you@host';
+const H2 = 'cd'.repeat(32);
+const HOME_TERMS = { diskGiB: 10, retentionDays: 7, slots: 2 };
+
+/** A fake host that hands out a new lease id at each open, and records which host each call was built for. */
+function multiHost(over: Partial<HostApi> = {}, tickFailure?: Error | ((n: number) => Error | undefined)) {
+  let n = 0;
+  const ids: string[] = [];
+  const host = fakeHost(
+    {
+      open: async () => {
+        const leaseId = (++n).toString(16).padStart(32, '0');
+        ids.push(leaseId);
+        return { leaseId, state: 'awaiting_first_tick' };
+      },
+      ...over,
+    },
+    tickFailure,
+  );
+  const built: Offer[] = [];
+  return { host, ids, built, api: (o: Offer) => (built.push(o), host.api) };
+}
+
+test('a home re-open goes to the host that holds the home; home_host_gone when that host is hidden', async () => {
+  const m = multiHost();
+  const registry = listedRegistry(mkdtempSync(join(tmpdir(), 'reg-')), [OFFER.hostId, H2]);
+  let prices = { h1: 9000n, h2: 5000n };
+  const offers = async () => [
+    { ...OFFER, images: ['charter-home'], home: HOME_TERMS, tickPrice: prices.h1 },
+    { ...OFFER, hostId: H2, url: 'https://h2.example', images: ['charter-home'], home: HOME_TERMS, tickPrice: prices.h2 },
+  ];
+  const d = await start(m.host, { offers, api: m.api, registry });
+  try {
+    const first = await d.post('/v1/rent', { home: { sshKeys: [KEY_A] } });
+    assert.equal(first.status, 200);
+    assert.equal(m.built.at(-1)!.hostId, H2, 'the cheaper host gets a new home');
+    assert.equal(registry.homeHost(homeIdOf(normalizeSshKeys([KEY_A])!)), H2);
+
+    // The other host is now far cheaper: the same keys still go where the disk is.
+    prices = { h1: 1000n, h2: 5000n };
+    d.clock.t += 61_000;
+    const again = await d.post('/v1/rent', { home: { sshKeys: [KEY_A] } });
+    assert.equal(again.status, 200);
+    assert.equal(m.built.at(-1)!.hostId, H2);
+    const named = await d.post('/v1/leases', { offerId: OFFER_ID, home: { sshKeys: [KEY_A] } });
+    assert.equal(named.status, 200);
+    assert.equal(m.built.at(-1)!.hostId, H2, 'naming an offer on another host does not move a home off its disk');
+
+    registry.probeResult(H2, false, d.clock.t);
+    d.clock.t += 61_000;
+    const gone = await d.post('/v1/rent', { home: { sshKeys: [KEY_A] } });
+    assert.equal(gone.status, 409);
+    assert.deepEqual(await gone.json(), { error: 'home_host_gone' });
+    const goneNamed = await d.post('/v1/leases', { offerId: OFFER_ID, home: { sshKeys: [KEY_A] } });
+    assert.equal(goneNamed.status, 409);
+    assert.deepEqual(await goneNamed.json(), { error: 'home_host_gone' });
+    // Other keys are a new home, and open where the ranking says.
+    const other = await d.post('/v1/rent', { home: { sshKeys: [KEY_A.replace('IOMqq', 'IOMqr')] } });
+    assert.equal(other.status, 200);
+    assert.equal(m.built.at(-1)!.hostId, OFFER.hostId);
+  } finally {
+    d.close();
+  }
+});
+
+test('Review Focus 3: a host raising tickPrice after open: the running lease still pays and charges the snapshot price; a new lease sees the new price', async () => {
+  const m = multiHost();
+  let price = 5000n;
+  const d = await start(m.host, { offers: async () => [{ ...OFFER, tickPrice: price }], api: m.api });
+  try {
+    assert.equal((await d.post('/v1/rent', { urls: URLS })).status, 200);
+    const [first] = m.ids;
+    price = 9000n;
+    d.clock.t += 61_000;
+    assert.equal(((await (await d.get('/v1/offers')).json()) as Array<{ tickPrice: string }>)[0]!.tickPrice, '9000', 'the list shows the new price');
+    const before = m.built.length;
+    assert.equal((await d.post(`/v1/leases/${first}/ticks`, { index: 1 })).status, 200);
+    assert.ok(m.built.slice(before).every((o) => o.tickPrice === 5000n), 'the host is paid the snapshot price');
+    assert.deepEqual(d.settled.at(-1), { leaseId: first, price: 5000n }, 'the renter is charged the snapshot price');
+
+    assert.equal((await d.post('/v1/rent', { urls: URLS })).status, 200);
+    const second = m.ids[1]!;
+    assert.equal(m.built.at(-1)!.tickPrice, 9000n);
+    assert.deepEqual(d.settled.at(-1), { leaseId: second, price: 9000n });
+    assert.equal(d.ledger.get(first)!.offer.tickPrice, '5000');
+    assert.equal(d.ledger.get(second)!.offer.tickPrice, '9000');
+  } finally {
+    d.close();
+  }
+});
+
+test('fee: renter pays tick + fee, host is paid tick', async () => {
+  const m = multiHost();
+  const d = await start(m.host, { api: m.api, fee: 300n });
+  try {
+    const list = (await (await d.get('/v1/offers')).json()) as Array<{ tickPrice: string }>;
+    assert.equal(list[0]!.tickPrice, '5300', 'offers show what a renter pays');
+    const rent = await d.post('/v1/rent', { urls: URLS });
+    assert.equal(rent.status, 200);
+    assert.equal(((await rent.json()) as { offer: { tickPrice: string } }).offer.tickPrice, '5300');
+    const id = m.ids[0]!;
+    assert.deepEqual(d.settled, [{ leaseId: id, price: 5300n }], 'the renter side: tick plus fee');
+    assert.ok(m.built.every((o) => o.tickPrice === 5000n), 'the host side: the tick alone');
+    assert.equal((await d.post(`/v1/leases/${id}/ticks`, { index: 1 })).status, 200);
+    assert.deepEqual(d.settled.at(-1), { leaseId: id, price: 5300n });
+    const st = (await (await d.get(`/v1/leases/${id}`)).json()) as { offer: { tickPrice: string } };
+    assert.equal(st.offer.tickPrice, '5300');
+  } finally {
+    d.close();
+  }
+  // A fee change after open does not reach a running lease: the fee is the lease's, from its open.
+  const m2 = multiHost();
+  const d1 = await start(m2.host, { api: m2.api, fee: 300n });
+  assert.equal((await d1.post('/v1/rent', { urls: URLS })).status, 200);
+  d1.close();
+  const d2 = await start(m2.host, { api: m2.api, fee: 900n, ledger: new DoorLedger(join(d1.dir, 'ledger.json')), dataDir: d1.dir });
+  try {
+    assert.equal((await d2.post(`/v1/leases/${m2.ids[0]}/ticks`, { index: 1 })).status, 200);
+    assert.deepEqual(d2.settled, [{ leaseId: m2.ids[0], price: 5300n }]);
+    // A loss is what the door paid the host, not what the renter owed.
+    const shared = new DoorLedger(join(d1.dir, 'ledger.json'));
+    const d3 = await start(m2.host, {
+      api: m2.api, fee: 900n, ledger: shared, dataDir: d1.dir,
+      testHooks: { settle: () => { throw new Error(PAYER_FAULT); } },
+    });
+    try {
+      assert.equal((await d3.post(`/v1/leases/${m2.ids[0]}/ticks`, { index: 2 })).status, 402);
+      assert.equal(shared.get(m2.ids[0]!)!.losses, 5000n);
+    } finally {
+      d3.close();
+    }
+  } finally {
+    d2.close();
+  }
+});
+
+test('a proven host over the capital cap shows funding waiting and is never picked', async () => {
+  const m = multiHost();
+  const registry = listedRegistry(mkdtempSync(join(tmpdir(), 'reg-')), [OFFER.hostId, H2]);
+  const offers = async () => [{ ...OFFER, tickPrice: 1000n }, { ...OFFER, hostId: H2, url: 'https://h2.example', tickPrice: 9000n }];
+  const d = await start(m.host, { offers, api: m.api, registry, fundingWaiting: (id) => id === OFFER.hostId });
+  try {
+    const list = (await (await d.get('/v1/offers')).json()) as Array<{ offerId: string; record: { funding?: string } }>;
+    assert.deepEqual(list.map((o) => [o.offerId.slice(0, 4), o.record.funding]), [['abab', 'waiting'], ['cdcd', undefined]]);
+    assert.equal((await d.post('/v1/rent', { urls: URLS })).status, 200);
+    assert.equal(m.built.at(-1)!.hostId, H2, 'the cheaper host waits for funding');
+  } finally {
+    d.close();
+  }
+});
+
+test('lease outcomes reach the host record: opened, finished once, host failures, and a tested home', async () => {
+  const states = new Map<string, Partial<Lease>>();
+  const m = multiHost(
+    { status: async (id) => lease({ id, ...states.get(id) }) },
+    (n) => (n === 3 ? new HostError(500, 'boom') : undefined),
+  );
+  const registry = listedRegistry(mkdtempSync(join(tmpdir(), 'reg-')));
+  const d = await start(m.host, { offers: async () => [{ ...OFFER, images: ['charter-job-fetch', 'charter-home'], home: HOME_TERMS }], api: m.api, registry });
+  const rec = () => registry.get(OFFER.hostId)!;
+  try {
+    assert.equal((await d.post('/v1/rent', { urls: URLS })).status, 200);
+    const [job] = m.ids;
+    assert.equal(rec().leases.opened, 1);
+    states.set(job!, { state: 'done', outputParts: 1 });
+    d.clock.t += 5_000;
+    await d.get(`/v1/leases/${job}`);
+    d.clock.t += 5_000;
+    await d.get(`/v1/leases/${job}`);
+    assert.deepEqual(rec().leases, { opened: 1, finished: 1, hostFailed: 0, consecutiveHostFailed: 0 }, 'counted once');
+    assert.equal(rec().intervalsPaid, 1);
+
+    // A home that runs with access published after a paid tick: the host's homes work.
+    assert.equal((await d.post('/v1/rent', { home: { sshKeys: [KEY_A] } })).status, 200);
+    const home = m.ids[1]!;
+    assert.equal(rec().homeTested, false);
+    states.set(home, { state: 'running', job: { image: 'charter-home', args: {} }, access: { ssh: { host: 'h.example', port: 2222, user: 'tenant' } } });
+    d.clock.t += 5_000;
+    await d.get(`/v1/leases/${home}`);
+    assert.equal(rec().homeTested, true);
+
+    // The host takes the door's money and fails the tick: a host failure.
+    assert.equal((await d.post(`/v1/leases/${home}/ticks`, { index: 1 })).status, 502);
+    assert.equal(rec().leases.hostFailed, 1);
+    assert.equal(rec().state, 'listed', 'one failure does not hide a host');
+  } finally {
+    d.close();
+  }
+});
+
+test('a tick the door cannot fund answers 503 capacity and is no host failure', async () => {
+  const m = multiHost({}, (n) => (n === 2 ? new CapitalCapError(OFFER.hostId) : undefined));
+  const registry = listedRegistry(mkdtempSync(join(tmpdir(), 'reg-')));
+  const d = await start(m.host, { api: m.api, registry });
+  try {
+    assert.equal((await d.post('/v1/rent', { urls: URLS })).status, 200);
+    const r = await d.post(`/v1/leases/${m.ids[0]}/ticks`, { index: 1 });
+    assert.equal(r.status, 503);
+    assert.deepEqual(await r.json(), { error: 'capacity' });
+    assert.equal(registry.get(OFFER.hostId)!.leases.hostFailed, 0);
+    assert.equal(d.ledger.get(m.ids[0]!)!.stopped, false, 'the renter may tick again');
+  } finally {
+    d.close();
   }
 });

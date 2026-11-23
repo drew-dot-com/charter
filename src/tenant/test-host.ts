@@ -1,10 +1,13 @@
 // Test support only: a host app (hostHttpApp) on a loopback port, and the door's HostApi (httpHostApi) to it.
 // The tick gate asks no payment; a stand-in door payer counts a tick's price as charged when the host
 // answers it 2xx, as a settling x402 server would.
+import { mkdirSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
+import { join } from 'node:path';
 import { privateKeyToAccount } from 'viem/accounts';
 import { httpHostApi, type DoorPayer } from '../door/host-http.js';
 import { HostQueue } from '../door/host-queue.js';
+import { HOSTS_FILE, HostRegistry, type HostRecord } from '../door/hosts.js';
 import { stubGate } from '../door/x402.js';
 import { onJobExit } from '../lease.js';
 import { hostHttpApp } from '../host/http.js';
@@ -24,6 +27,23 @@ export const HOURLY: Offer = { ...OFFER, id: 'o-hourly', intervalSeconds: 3600, 
 
 /** The test door's key. */
 export const DOOR_KEY = ('0x' + '11'.repeat(32)) as `0x${string}`;
+
+/**
+ * A door registry in `dir` holding these host ids as listed hosts that passed one probe (OFFER's by default).
+ * Written as a file, since `register` derives the id from a URL and these ids are fixed.
+ */
+export function listedRegistry(dir: string, hostIds: string[] = [OFFER.hostId]): HostRegistry {
+  const file = join(dir, HOSTS_FILE);
+  const hosts: HostRecord[] = hostIds.map((hostId, i) => ({
+    hostId, url: `https://host${i}.example`, state: 'listed', registeredAt: 0,
+    probes: { passed: 1, failed: 0, consecutiveFailed: 0, lastAt: 0 },
+    leases: { opened: 0, finished: 0, hostFailed: 0, consecutiveHostFailed: 0 },
+    intervalsPaid: 0, homeTested: false,
+  }));
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(file, JSON.stringify({ hosts, homes: {}, firstProbes: { day: '', count: 0 } }));
+  return new HostRegistry(file);
+}
 
 export type CallKind = 'open' | 'tick' | 'status';
 
@@ -113,6 +133,8 @@ export async function testHost(opts: TestHostOpts = {}): Promise<TestHost> {
     charged: async () => charged,
     clearPendingDeposit: () => undefined,
     resyncAll: async () => undefined,
+    channels: async () => [],
+    resync: async () => undefined,
   };
   // The door signs with the host's clock, so a skewed host still takes its signature.
   host.api = httpHostApi({ ...offer, url: origin }, { payer, queue: new HostQueue(), fetch: counted, now: hostNow });
