@@ -352,41 +352,63 @@ test('with the proven tier full, a hidden proven host with funds locked is still
   }
 });
 
-test('a busy host records nothing and counts no first probe; the next round probes it again', async () => {
+/** One probe round at `now`; `busyHosts` answer the open closed busy. */
+async function busyRound(reg: HostRegistry, o: { now: number; perDay: number; busyHosts: Set<string>; opens: string[]; logs?: number }): Promise<void> {
+  const logs: string[] = [];
+  const stop = startProbes({
+    registry: reg, perDay: o.perDay, now: () => o.now, log: (m) => logs.push(m), sleep: async () => undefined,
+    depositFor: () => 100_000n, locked: () => 0n, probeMaxTick: DEFAULT_PROBE_MAX_TICK,
+    fetchOffer: async (url) => ({ ...OFFER, id: url }),
+    apiOf: (of) => {
+      const id = hostIdOf(of.id);
+      const h = honestHost(new Map(), id, o.opens);
+      return o.busyHosts.has(id) ? { ...h, open: async (job) => (await h.open(job), { leaseId: 'l1', state: 'closed', closedReason: 'busy' }) } : h;
+    },
+  });
+  try {
+    await until(() => logs.length >= (o.logs ?? 1));
+  } finally {
+    stop();
+  }
+}
+
+test('a listed host answering busy records nothing; the next round probes it again', async () => {
   const reg = newRegistry();
-  const id = (reg.register('https://full.example', 1) as { hostId: string }).hostId;
   // A listed host, due again: three busy rounds in a row must not drop it.
   const listed = (reg.register('https://listed.example', 2) as { hostId: string }).hostId;
   reg.probeResult(listed, true, NOW - 2 * 86_400_000);
-  let busy = true;
+  const busyHosts = new Set([listed]);
   const opens: string[] = [];
-  const round = async (): Promise<void> => {
-    const logs: string[] = [];
-    const stop = startProbes({
-      registry: reg, perDay: 10, now: () => NOW, log: (m) => logs.push(m), sleep: async () => undefined,
-      depositFor: () => 100_000n, locked: () => 0n, probeMaxTick: DEFAULT_PROBE_MAX_TICK,
-      fetchOffer: async (url) => ({ ...OFFER, id: url }),
-      apiOf: (o) => {
-        const h = honestHost(new Map(), hostIdOf(o.id), opens);
-        return busy ? { ...h, open: async (job) => (await h.open(job), { leaseId: 'l1', state: 'closed', closedReason: 'busy' }) } : h;
-      },
-    });
-    try {
-      await until(() => logs.length >= 2);
-    } finally {
-      stop();
-    }
-  };
-  for (let i = 0; i < 3; i++) await round();
-  assert.equal(opens.length, 6, 'both hosts were asked every round');
-  assert.equal(reg.firstProbesToday(NOW), 0, 'a busy first probe is not counted');
-  assert.equal(reg.get(id)!.state, 'probing');
-  assert.equal(reg.get(id)!.probes.lastAt, undefined, 'nothing recorded, so it is due again');
+  for (let i = 0; i < 3; i++) await busyRound(reg, { now: NOW, perDay: 10, busyHosts, opens });
+  assert.equal(opens.length, 3, 'asked every round');
   assert.equal(reg.get(listed)!.state, 'listed');
   assert.equal(reg.get(listed)!.probes.consecutiveFailed, 0);
+  assert.equal(reg.get(listed)!.probes.failed, 0);
   assert.equal(reg.get(listed)!.probes.lastAt, NOW - 2 * 86_400_000);
-  busy = false;
-  await round();
-  assert.equal(reg.get(id)!.state, 'listed');
-  assert.equal(reg.firstProbesToday(NOW), 1);
+  busyHosts.clear();
+  await busyRound(reg, { now: NOW, perDay: 10, busyHosts, opens });
+  assert.equal(reg.get(listed)!.probes.lastAt, NOW);
+  assert.equal(reg.get(listed)!.probes.passed, 2);
+});
+
+test('a probing host answering busy is a failed probe that uses a first-probe slot, so it cannot hold the line', async () => {
+  const reg = newRegistry();
+  // perDay 1: the older host takes the only slot. Were busy no result for it, it would take that slot every day.
+  const old = (reg.register('https://old-busy.example', 1) as { hostId: string }).hostId;
+  const late = (reg.register('https://late.example', 2) as { hostId: string }).hostId;
+  const busyHosts = new Set([old]);
+  const opens: string[] = [];
+  await busyRound(reg, { now: NOW, perDay: 1, busyHosts, opens });
+  assert.deepEqual(opens, [old]);
+  assert.equal(reg.firstProbesToday(NOW), 1, 'the busy first probe is counted');
+  assert.equal(reg.get(old)!.state, 'hidden');
+  assert.equal(reg.get(old)!.probes.failed, 1);
+  assert.equal(reg.get(old)!.probes.lastAt, NOW);
+  // The next day the late host gets its first probe; the old one is re-probed as a hidden host.
+  const next = NOW + 86_400_000;
+  await busyRound(reg, { now: next, perDay: 1, busyHosts, opens, logs: 2 });
+  assert.deepEqual(opens, [old, old, late]);
+  assert.equal(reg.get(late)!.state, 'listed');
+  assert.equal(reg.get(old)!.state, 'hidden', 'a hidden host answering busy records nothing');
+  assert.equal(reg.get(old)!.probes.failed, 1);
 });

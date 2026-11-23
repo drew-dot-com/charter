@@ -25,7 +25,8 @@ export interface ProbeResult {
   passed: boolean;
   /**
    * price_too_high, wrong_output, timeout, host_error (a non-2xx answer), unreachable, or the lease's close reason.
-   * `busy` (the open answered closed busy: the host is full) is no result: startProbes records nothing for it.
+   * `busy` (the open answered closed busy: the host is full) is no result for a listed or hidden host: startProbes
+   * records nothing for it. A host still `probing` has no renters' leases to be full with, so there it is a failure.
    */
   reason?: string;
 }
@@ -75,9 +76,10 @@ export async function probeHost(
  * 'over_cap' for, before anything else: no first probe counted, no lease opened, nothing recorded. A host whose
  * channel already holds funds needs no deposit and is never skipped for capital. Otherwise it fetches the host's offer afresh
  * (a bad one fails the probe), then runs probeHost and records the result. A probe the door's capital still
- * refuses mid-way is logged and records nothing. A host that answers the open `busy` (full with renters' leases)
- * records nothing and counts no first probe: it is due again next round. A round still running when the next is
- * due is not doubled.
+ * refuses mid-way is logged and records nothing. A listed or hidden host that answers the open `busy` (full with
+ * renters' leases) records nothing: it is due again next round. A host still `probing` serves only the door and
+ * cannot be full, so its `busy` is a failed probe that counts its first probe: it cannot hold the first-probe
+ * line. A round still running when the next is due is not doubled.
  * Returns a stop function.
  */
 export function startProbes(d: {
@@ -105,7 +107,7 @@ export function startProbes(d: {
       d.log(`probe ${r.url}: waits for door capital`);
       return;
     }
-    // Counted once the probe has a result or reached the host's money, never for a busy host.
+    // Counted once the probe has a result or reached the host's money.
     const countFirst = (): void => {
       if (r.state === 'probing') d.registry.countFirstProbe(d.now());
     };
@@ -124,7 +126,7 @@ export function startProbes(d: {
     d.registry.setOffer(hostId, offer, d.now());
     try {
       const res = await probeHost(d.apiOf(offer), offer, { nonce: randomBytes(16).toString('hex'), probeMaxTick: d.probeMaxTick, now: d.now, sleep });
-      if (!res.passed && res.reason === 'busy') {
+      if (!res.passed && res.reason === 'busy' && r.state !== 'probing') {
         d.log(`probe ${r.url}: host busy, tried again next round`);
         return;
       }
