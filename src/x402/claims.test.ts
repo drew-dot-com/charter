@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { InMemoryChannelStorage, type Channel } from '@x402/evm/batch-settlement/server';
-import { REFUND_IDLE_MS, idleMsFor, selectClaimable, selectRefundable, startClaims, x402Command, type ClaimManager } from './claims.js';
+import { REFUND_IDLE_HOST_MS, REFUND_IDLE_MS, idleMsFor, selectClaimable, selectRefundable, startClaims, x402Command, type ClaimManager } from './claims.js';
 
 const NOW = 1_000_000_000;
 const addr = (c: string) => `0x${c.repeat(40)}` as `0x${string}`;
@@ -124,7 +124,7 @@ test('startClaims: a refund claims as it goes, so a settle follows every refund 
   const m: ClaimManager = { ...silent, start: (c) => { config = c; }, settle: async () => { settles++; if (settles === 2) throw new Error('nothing to settle'); return { transaction: '0xs' }; } };
   const timers: Array<() => void> = [];
   const log: string[] = [];
-  startClaims(m, (msg) => log.push(msg), (fn) => { timers.push(fn); return 0 as unknown as ReturnType<typeof setTimeout>; });
+  startClaims(m, { log: (msg) => log.push(msg), idleMs: () => REFUND_IDLE_MS, schedule: (fn) => { timers.push(fn); return 0; } });
   assert.ok(config);
   config.onRefund!({ channel: '0xc1', transaction: '0xr1' });
   config.onRefund!({ channel: '0xc2', transaction: '0xr2' });
@@ -150,7 +150,7 @@ test('startClaims refunds and claims by the idle window it is given, read on eac
   let config: Parameters<ClaimManager['start']>[0] | undefined;
   const m: ClaimManager = { ...silent, start: (c) => { config = c; } };
   let idle = REFUND_IDLE_MS;
-  startClaims(m, () => undefined, () => 0 as unknown as ReturnType<typeof setTimeout>, () => idle);
+  startClaims(m, { log: () => undefined, idleMs: () => idle, schedule: () => 0 });
   assert.ok(config);
   // Idle 11 minutes, unspent balance and unclaimed vouchers: refundable and claimable at the default window.
   const quiet = channel({ lastRequestTimestamp: NOW - 11 * 60_000 });
@@ -175,4 +175,12 @@ test('x402Command refund uses the idle window it is given', async () => {
   assert.deepEqual(out, ['nothing to refund']);
   assert.equal(await x402Command(['refund'], m, storage, () => NOW, () => undefined), 0);
   assert.deepEqual(refunded, [[quiet.channelId]]);
+});
+
+test('selectRefundable keeps a channel idle under REFUND_IDLE_HOST_MS', () => {
+  const day = 86_400_000;
+  const sixDays = channel({ lastRequestTimestamp: NOW - 6 * day });
+  const eightDays = channel({ lastRequestTimestamp: NOW - 8 * day });
+  assert.equal(REFUND_IDLE_HOST_MS, 7 * day);
+  assert.deepEqual(selectRefundable([sixDays, eightDays], NOW, REFUND_IDLE_HOST_MS), [eightDays]);
 });

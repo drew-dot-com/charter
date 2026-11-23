@@ -13,7 +13,7 @@ import { DoorLedger, offerOfSnapshot, snapshotOffer } from './ledger.js';
 import { doorApp, readBudget, type DoorDeps } from './server.js';
 import type { RequestEntry } from './reqlog.js';
 import * as payerMod from '../payer.js';
-import { facilitatorOffersBatch, isPayerFault, MIN_WINDOW_SECONDS, paymentIdOf } from './x402.js';
+import { facilitatorOffersBatch, isPayerFault, MIN_WINDOW_SECONDS, paymentIdOf } from '../x402/seller.js';
 import { privateKeyToAccount } from 'viem/accounts';
 
 

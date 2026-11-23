@@ -7,6 +7,8 @@ import type { BatchSettlementChannelManager, Channel, ChannelStorage } from '@x4
 
 /** A channel that paid nothing for this long, with money left in it, is refunded: the renter is done. */
 export const REFUND_IDLE_MS = 600_000;
+/** A host's idle window: 7 days, so a renter's home outlives a quiet week before its channel is refunded. */
+export const REFUND_IDLE_HOST_MS = 604_800_000;
 /** Claims, settles and refunds go out this often; a channel still ticking within REFUND_IDLE_MS waits for the next round unless withdrawing. */
 export const CLAIM_INTERVAL_SECONDS = 600;
 export const REFUND_INTERVAL_SECONDS = 600;
@@ -54,10 +56,14 @@ const SETTLE_AFTER_REFUND_MS = 5_000;
  */
 export function startClaims(
   m: ClaimManager,
-  log: (m: string) => void,
-  schedule: (fn: () => void, ms: number) => unknown = setTimeout,
-  idleMs: () => number = () => REFUND_IDLE_MS,
+  opts: {
+    /** The idle window, read on each round: the door's follows its leases, a host's is REFUND_IDLE_HOST_MS. */
+    idleMs: () => number;
+    log: (m: string) => void;
+    schedule?: (fn: () => void, ms: number) => unknown;
+  },
 ): void {
+  const { idleMs, log, schedule = setTimeout } = opts;
   let settleDue = false;
   m.start({
     claimIntervalSecs: CLAIM_INTERVAL_SECONDS,

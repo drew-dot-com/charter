@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { claimSigner, parseCdpKey, parseClaimKey, parseDoorHosts, parseTrustProxy } from './config.js';
+import { parseCdpKey, parseDoorHosts, parseTrustProxy } from './config.js';
+import { claimSigner, parseClaimKey } from '../x402/seller.js';
 
 const A = 'ab'.repeat(32);
 const B = 'cd'.repeat(32);

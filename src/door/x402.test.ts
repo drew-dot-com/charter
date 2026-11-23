@@ -24,24 +24,26 @@ import type { Lease, Micro } from '../types.js';
 import { DoorLedger } from './ledger.js';
 import { doorApp, type DoorDeps } from './server.js';
 import {
-  BASE_USDC,
   BAZAAR_TAGS,
   CATALOG_KEPT_TAGS,
   DESCRIPTION_MAX,
-  MAX_TIMEOUT_SECONDS,
-  MIN_WINDOW_SECONDS,
   RENT_DESCRIPTION,
   TICK_DESCRIPTION,
+  realGate,
+} from './x402.js';
+import {
+  BASE_USDC,
+  MAX_TIMEOUT_SECONDS,
+  MIN_WINDOW_SECONDS,
   WITHDRAW_DELAY_SECONDS,
   buildSchemes,
   facilitatorOffersBatch,
   isPayerFault,
   microToUsdc,
   paymentIdOf,
-  realGate,
   settleReasonOf,
   type X402Config,
-} from './x402.js';
+} from '../x402/seller.js';
 
 const NETWORK = 'eip155:8453';
 const PAY_TO = '0x' + '2'.repeat(40);

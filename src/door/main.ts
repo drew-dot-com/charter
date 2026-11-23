@@ -7,15 +7,15 @@ import { hostApi } from '../tenant/host-api.js';
 import { fetchOffers } from '../tenant/offers.js';
 import { BatchSettlementChannelManager } from '@x402/evm/batch-settlement/server';
 import { channelCommand } from './channel.js';
-import { idleMsFor, startClaims, x402Command } from './claims.js';
+import { idleMsFor, startClaims, x402Command } from '../x402/claims.js';
 import { createFacilitatorConfig } from '@coinbase/x402';
 import { HTTPFacilitatorClient } from '@x402/core/server';
-import { parseCdpKey, parseClaimKey, parseDoorHosts, parseTrustProxy } from './config.js';
+import { parseCdpKey, parseDoorHosts, parseTrustProxy } from './config.js';
 import { DoorLedger, LEDGER_FILE } from './ledger.js';
 import { fileRequestSink } from './reqlog.js';
 import { doorApp } from './server.js';
 import { GrantStore, readFundPublic } from './grants.js';
-import { BASE_USDC, buildSchemes, facilitatorOffersBatch, type Schemes, type X402Config } from './x402.js';
+import { BASE_USDC, buildSchemes, facilitatorOffersBatch, parseClaimKey, type Schemes, type X402Config } from '../x402/seller.js';
 import { unblockCommand } from './unblock.js';
 
 /** The door's own TOON wallet, which pays hosts. */
@@ -123,7 +123,7 @@ async function main(): Promise<void> {
   const server = app.listen(port, host);
   console.log(`charter-door listening on ${host}:${port}`);
   // The refund idle window follows the longest interval of any lease this door has opened (two hours on an hourly offer).
-  startClaims(claims, (m) => console.log(m), setTimeout, () => idleMsFor(ledger.all().map((l) => l.offer.intervalSeconds)));
+  startClaims(claims, { log: (m) => console.log(m), idleMs: () => idleMsFor(ledger.all().map((l) => l.offer.intervalSeconds)) });
   await new Promise<void>((resolve) => {
     const stop = () => {
       void claims.stop();

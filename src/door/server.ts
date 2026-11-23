@@ -11,7 +11,8 @@ import type { JobSpec, Lease, Micro, Offer } from '../types.js';
 import { DeadlinePassedError, SendTimeoutError } from '../payer.js';
 import { offerOfSnapshot, snapshotOffer, type DoorLedger, type LossKind } from './ledger.js';
 import { logRequests, type RequestSink } from './reqlog.js';
-import { MAX_TIMEOUT_SECONDS, MIN_WINDOW_SECONDS, SETTLE_MARGIN_SECONDS, isPayerFault, microToUsdc, paymentIdOf, realGate, settleReasonOf, stubGate, type Gate, type PaymentId, type Schemes, type TestHooks, type X402Config } from './x402.js';
+import { MAX_TIMEOUT_SECONDS, MIN_WINDOW_SECONDS, SETTLE_MARGIN_SECONDS, isPayerFault, microToUsdc, paymentIdOf, settleReasonOf, type Gate, type PaymentId, type Schemes, type TestHooks, type X402Config } from '../x402/seller.js';
+import { realGate, stubGate } from './x402.js';
 import { openApiDoc } from './openapi.js';
 
 export interface DoorDeps {

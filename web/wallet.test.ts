@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { verifyTypedData } from 'viem';
 import { decodePaymentSignatureHeader, encodePaymentResponseHeader, encodePaymentSignatureHeader } from '@x402/core/http';
 import type { Request } from 'express';
-import { MIN_WINDOW_SECONDS, paymentIdOf } from '../src/door/x402.js';
+import { MIN_WINDOW_SECONDS, paymentIdOf } from '../src/x402/seller.js';
 import { account, fakeWallet } from './test-wallet.js';
 import { isUnexpectedPayment } from './format.js';
 import { channelStorage, sessionSigner } from './channel.js';
