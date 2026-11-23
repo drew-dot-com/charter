@@ -22,7 +22,7 @@ import { HostError } from '../tenant/host-api.js';
 import type { JobSpec } from '../types.js';
 import { BASE_USDC, type Gate } from '../x402/seller.js';
 import { stubGate } from './x402.js';
-import { CapitalCapError, doorPayer, httpHostApi, paysOnly, UnexpectedPaymentError, type DepositFor, type HostOffer } from './host-http.js';
+import { CapitalCapError, DepositPendingError, doorPayer, httpHostApi, paysOnly, UnexpectedPaymentError, type DepositFor, type DoorPayer, type HostOffer } from './host-http.js';
 import { HostQueue } from './host-queue.js';
 
 const T0 = 1_700_000_000_000;
@@ -59,10 +59,13 @@ function fakeRunner(output: Buffer = Buffer.alloc(0)): Runner {
 /**
  * A tick gate that asks for `asks` in a 402, as an x402 server does, and lets a request carrying a payment
  * through to the tick handler. `paid` holds each payment payload it received; `seen` counts every request.
+ * `settle`: answer a success PAYMENT-RESPONSE charging PRICE (cumulative from `charged`), on a 2xx only as
+ * the real middleware does, or on any status. `answer`: the gate answers a paid request with this status itself.
  */
-function challengeGate(asks: PaymentRequirements[], settle?: (payload: { payload: Record<string, unknown> }) => Record<string, unknown> | undefined) {
+function challengeGate(asks: PaymentRequirements[], o: { settle?: 'on2xx' | 'always'; charged?: bigint; answer?: number } = {}) {
   const seen: Array<{ paid: boolean }> = [];
   const paid: Array<{ payload: Record<string, unknown> }> = [];
+  let charged = o.charged ?? 0n;
   const gate: Gate = async (req, res, next) => {
     const header = req.get('payment-signature') ?? req.get('x-payment');
     seen.push({ paid: header !== undefined });
@@ -70,15 +73,32 @@ function challengeGate(asks: PaymentRequirements[], settle?: (payload: { payload
       res.setHeader('PAYMENT-REQUIRED', encodePaymentRequiredHeader({ x402Version: 2, resource: { url: req.originalUrl }, accepts: asks }));
       return void res.status(402).json({});
     }
-    const payload = decodePaymentSignatureHeader(header) as unknown as { payload: Record<string, unknown> };
-    paid.push(payload);
-    const extra = settle?.(payload);
-    if (extra) {
+    paid.push(decodePaymentSignatureHeader(header) as unknown as { payload: Record<string, unknown> });
+    const settleNow = () => {
+      charged += PRICE;
+      const extra = { chargedAmount: String(PRICE), channelState: { chargedCumulativeAmount: String(charged) } };
       res.setHeader('PAYMENT-RESPONSE', encodePaymentResponseHeader({ success: true, transaction: '', network: 'eip155:8453', extra }));
+    };
+    if (o.answer !== undefined) {
+      if (o.settle === 'always') settleNow();
+      return void res.status(o.answer).json({ error: 'boom' });
+    }
+    if (o.settle) {
+      const end = res.end.bind(res);
+      res.end = ((...a: unknown[]) => {
+        if (o.settle === 'always' || (res.statusCode >= 200 && res.statusCode < 300)) settleNow();
+        return (end as (...x: unknown[]) => typeof res)(...a);
+      }) as typeof res.end;
     }
     next();
   };
   return { gate, seen, paid };
+}
+
+/** The channel id the door's client derives from ASK. */
+function askChannelId(): string {
+  const config = new BatchSettlementEvmScheme({ address: DOOR.address, signTypedData: async () => '0x' }).buildChannelConfig(ASK);
+  return computeChannelId(config, ASK.network).toLowerCase();
 }
 
 async function setup(tickGate: Gate = stubGate(() => PRICE), output?: Buffer) {
@@ -93,20 +113,22 @@ async function setup(tickGate: Gate = stubGate(() => PRICE), output?: Buffer) {
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const channelDir = mkdtempSync(join(tmpdir(), 'door-host-http-'));
   const offer = offerAt(base);
-  const apiFor = (o: { depositFor?: DepositFor; timeoutMs?: number; fetch?: typeof fetch } = {}) =>
+  const payerFor = (o: { depositFor?: DepositFor; onDeposit?: (hostId: string, channelId: string, amount: bigint) => void } = {}) =>
+    doorPayer({ key: KEY, channelDir, depositFor: o.depositFor ?? (() => 500_000n), ...(o.onDeposit ? { onDeposit: o.onDeposit } : {}) });
+  const apiFor = (o: { depositFor?: DepositFor; timeoutMs?: number; payer?: DoorPayer } = {}) =>
     httpHostApi(offer, {
-      payer: doorPayer({ key: KEY, channelDir, depositFor: o.depositFor ?? (() => 500_000n), ...(o.fetch ? { fetch: o.fetch } : {}) }),
+      payer: o.payer ?? payerFor(o.depositFor ? { depositFor: o.depositFor } : {}),
       queue: new HostQueue(), now: () => T0, ...(o.timeoutMs === undefined ? {} : { timeoutMs: o.timeoutMs }),
     });
   const done = () => {
     server.closeAllConnections();
     server.close();
   };
-  return { store, offer, channelDir, apiFor, done };
+  return { store, offer, channelDir, apiFor, payerFor, done };
 }
 
 test('open, tick, status, output round-trip through httpHostApi', async () => {
-  const t = await setup(undefined, Buffer.from('hello world'));
+  const t = await setup(challengeGate([ASK], { settle: 'on2xx' }).gate, Buffer.from('hello world'));
   try {
     const api = t.apiFor();
     const open = await api.open(JOB);
@@ -132,7 +154,8 @@ test('open, tick, status, output round-trip through httpHostApi', async () => {
 });
 
 test('spent counts the tick price once per answered tick', async () => {
-  const t = await setup();
+  const g = challengeGate([ASK], { settle: 'on2xx' });
+  const t = await setup(g.gate);
   try {
     const api = t.apiFor();
     const { leaseId } = await api.open(JOB);
@@ -142,11 +165,31 @@ test('spent counts the tick price once per answered tick', async () => {
     assert.equal(api.spent(), 2n * PRICE);
     // Already counted as spent: never sent again, and nothing more is spent.
     await assert.rejects(api.tick(leaseId, 1), (e: unknown) => e instanceof HostError && e.error === 'duplicate');
+    assert.equal(g.paid.length, 2, 'the repeat signed nothing');
     assert.equal(api.spent(), 2n * PRICE);
-    // A non-2xx answer is not settled by an x402 server: it costs the door nothing.
+    // A non-2xx answer the host did not settle costs the door nothing.
     await assert.rejects(api.tick(leaseId, 5), (e: unknown) => e instanceof HostError && e.status === 409);
     await assert.rejects(api.tick('e'.repeat(32), 0), (e: unknown) => e instanceof HostError && e.status === 404);
     assert.equal(api.spent(), 2n * PRICE);
+    // Nor did it count the index: index 5 may be sent again.
+    await assert.rejects(api.tick(leaseId, 5), (e: unknown) => e instanceof HostError && e.status === 409);
+  } finally {
+    t.done();
+  }
+});
+
+test('a host that settles and answers non-2xx: spent is what the channel moved, and the index is never re-sent', async () => {
+  const g = challengeGate([ASK], { settle: 'always', answer: 500 });
+  const t = await setup(g.gate);
+  try {
+    const api = t.apiFor();
+    const { leaseId } = await api.open(JOB);
+    await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof HostError && e.status === 500 && e.error === 'boom');
+    assert.equal(api.spent(), PRICE, 'the host charged the channel, so the door spent it');
+    assert.equal(g.paid.length, 1);
+    await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof HostError && e.status === 409 && e.error === 'duplicate');
+    assert.equal(g.paid.length, 1, 'the retry signed nothing');
+    assert.equal(api.spent(), PRICE);
   } finally {
     t.done();
   }
@@ -223,13 +266,8 @@ test('a 402 asking more than the snapshot, another payTo, network, asset or exac
 
 test('channel state reloads from disk', async () => {
   // The channel this host's 402 names, as the door's client derives it.
-  const config = new BatchSettlementEvmScheme({ address: DOOR.address, signTypedData: async () => '0x' }).buildChannelConfig(ASK);
-  const channelId = computeChannelId(config, ASK.network).toLowerCase();
-  let charged = 35_000n;
-  const g = challengeGate([ASK], () => {
-    charged += PRICE;
-    return { chargedAmount: String(PRICE), channelState: { chargedCumulativeAmount: String(charged) } };
-  });
+  const channelId = askChannelId();
+  const g = challengeGate([ASK], { settle: 'on2xx', charged: 35_000n });
   const t = await setup(g.gate);
   try {
     // The library's own storage, where the door keeps this host's channel: 35000 charged of 500000 deposited.
@@ -264,9 +302,8 @@ test('depositFor over_cap throws CapitalCapError before any request', async () =
     assert.equal(api.spent(), 0n);
 
     // A channel too low for this tick needs a top-up: refused before anything is signed.
-    const config = new BatchSettlementEvmScheme({ address: DOOR.address, signTypedData: async () => '0x' }).buildChannelConfig(ASK);
     const storage = new FileClientChannelStorage({ directory: join(t.channelDir, HOST_ID) });
-    await storage.set(computeChannelId(config, ASK.network).toLowerCase(), { chargedCumulativeAmount: '100000', balance: '100000' });
+    await storage.set(askChannelId(), { chargedCumulativeAmount: '100000', balance: '100000' });
     await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof CapitalCapError);
     assert.deepEqual(g.seen, [{ paid: false }], 'only the unpaid request that drew the 402');
     assert.equal(api.spent(), 0n);
@@ -275,17 +312,71 @@ test('depositFor over_cap throws CapitalCapError before any request', async () =
   }
 });
 
-test('a first tick deposits exactly what depositFor allows', async () => {
+test('depositFor below what the channel needs throws CapitalCapError: never raised to the minimum', async () => {
   const g = challengeGate([ASK]);
   const t = await setup(g.gate);
   try {
-    const api = t.apiFor({ depositFor: () => 300_000n });
+    const api = t.apiFor({ depositFor: () => PRICE - 1n });
+    const { leaseId } = await api.open(JOB);
+    await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof CapitalCapError);
+    assert.deepEqual(g.seen, [{ paid: false }], 'nothing was signed');
+    assert.equal(api.spent(), 0n);
+  } finally {
+    t.done();
+  }
+});
+
+test('a first tick deposits exactly what depositFor allows', async () => {
+  const g = challengeGate([ASK], { settle: 'on2xx' });
+  const t = await setup(g.gate);
+  try {
+    const deposits: Array<[string, string, bigint]> = [];
+    const payer = t.payerFor({ depositFor: () => 300_000n, onDeposit: (...a) => void deposits.push(a) });
+    const api = t.apiFor({ payer });
     const { leaseId } = await api.open(JOB);
     await api.tick(leaseId, 0);
     assert.equal(g.paid.length, 1);
     assert.equal(g.paid[0]!.payload.type, 'deposit');
     assert.equal((g.paid[0]!.payload.deposit as { amount: string }).amount, '300000');
+    assert.deepEqual(deposits, [[HOST_ID, askChannelId(), 300_000n]]);
     assert.equal(api.spent(), PRICE);
+    // The settle put the deposit in the record, so it is not pending: the next tick is a plain voucher.
+    await api.tick(leaseId, 1);
+    assert.equal(g.paid[1]!.payload.type, 'voucher');
+  } finally {
+    t.done();
+  }
+});
+
+test('a deposit tick that fails leaves the deposit pending: no second deposit is signed', async () => {
+  const g = challengeGate([ASK], { answer: 500 });
+  const t = await setup(g.gate);
+  try {
+    const deposits: Array<[string, string, bigint]> = [];
+    const payer = t.payerFor({ onDeposit: (...a) => void deposits.push(a) });
+    const api = t.apiFor({ payer });
+    const { leaseId } = await api.open(JOB);
+    await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof HostError && e.status === 500);
+    assert.equal(api.spent(), 0n, 'nothing settled, so the record did not move');
+    assert.deepEqual(deposits, [[HOST_ID, askChannelId(), 500_000n]]);
+    assert.equal(g.seen.length, 2);
+
+    // The signed deposit may be on chain: another is refused before any request.
+    await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof DepositPendingError);
+    assert.equal(g.seen.length, 2, 'no request sent');
+    assert.equal(deposits.length, 1);
+
+    // The door clears it (after a chain resync): the next tick deposits again.
+    payer.clearPendingDeposit(HOST_ID);
+    await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof HostError && e.status === 500);
+    assert.equal(deposits.length, 2);
+
+    // A record that shows the deposit clears it too: the next payment is a voucher on that balance.
+    const storage = new FileClientChannelStorage({ directory: join(t.channelDir, HOST_ID) });
+    await storage.set(askChannelId(), { chargedCumulativeAmount: '0', balance: '500000' });
+    await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof HostError && e.status === 500);
+    assert.equal(g.paid.at(-1)!.payload.type, 'voucher');
+    assert.equal(deposits.length, 2);
   } finally {
     t.done();
   }

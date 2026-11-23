@@ -29,7 +29,7 @@ const HOST_ID = /^[0-9a-f]{64}$/;
 /** How much the door may deposit into this host's channel now, in micro-USDC, or `'over_cap'`: none. */
 export type DepositFor = (hostId: string) => bigint | 'over_cap';
 
-/** The door's capital cap leaves nothing to deposit into this host's channel. Nothing was signed. */
+/** The door's capital cap leaves nothing, or less than the channel needs, to deposit into this host's channel. Nothing was signed. */
 export class CapitalCapError extends Error {
   constructor(readonly hostId: string) {
     super(`no capital for host ${hostId}`);
@@ -45,12 +45,33 @@ export class UnexpectedPaymentError extends Error {
   }
 }
 
+/**
+ * A deposit the door signed for this host is not yet in its channel record (no settle confirmed it). Signing
+ * another would deposit twice; nothing was sent. Cleared when the record shows it, or by `clearPendingDeposit`.
+ */
+export class DepositPendingError extends Error {
+  constructor(readonly hostId: string) {
+    super(`a deposit for host ${hostId} is unconfirmed`);
+    this.name = 'DepositPendingError';
+  }
+}
+
 export interface DoorPayer {
   address: `0x${string}`;
   /** Signs door requests (`signDoorRequest`) and, as the channel's payer, deposits and vouchers. */
   account: LocalAccount;
   /** fetch that pays one host's 402 for one tick at `tickPrice`, from that host's channel, and nothing else. */
   paidFetch(offer: HostOffer, tickPrice: Micro): typeof fetch;
+  /** What the door's channel records say this host has charged so far, summed over its channels. */
+  charged(hostId: string): Promise<bigint>;
+  /** Forget an unconfirmed deposit for this host (after the door resyncs its channel from chain). */
+  clearPendingDeposit(hostId: string): void;
+}
+
+interface PendingDeposit {
+  channelId: string;
+  /** The record's balance when the deposit was signed, plus the deposit: what a record that reflects it shows. */
+  balanceAfter: bigint;
 }
 
 const sameAddress = (a: unknown, b: string): boolean => typeof a === 'string' && a.toLowerCase() === b.toLowerCase();
@@ -106,48 +127,84 @@ function hostChannelDir(channelDir: string, hostId: string): string {
   return join(channelDir, hostId);
 }
 
-/** Whether the door holds any channel record for this host (FileClientChannelStorage keeps `client/<channelId>.json`). */
-async function hasChannelRecord(dir: string): Promise<boolean> {
+/** The channel ids the door holds records for under this host's dir (FileClientChannelStorage keeps `client/<channelId>.json`). */
+async function channelKeys(dir: string): Promise<string[]> {
   try {
-    return (await readdir(join(dir, 'client'))).some((f) => f.endsWith('.json'));
+    return (await readdir(join(dir, 'client'))).filter((f) => f.endsWith('.json')).map((f) => f.slice(0, -'.json'.length));
   } catch {
-    return false;
+    return [];
   }
 }
+
+const amountOf = (v: string | undefined): bigint => (v !== undefined && /^\d+$/.test(v) ? BigInt(v) : 0n);
 
 /**
  * The door as an x402 payer of hosts: one Base key, one batch-settlement channel per host, its records on
  * disk under `channelDir/<hostId>` so a restarted door continues each channel's cumulative amount.
  */
-export function doorPayer(o: { key: `0x${string}`; channelDir: string; depositFor: DepositFor; fetch?: typeof fetch }): DoorPayer {
+export function doorPayer(o: {
+  key: `0x${string}`;
+  channelDir: string;
+  depositFor: DepositFor;
+  fetch?: typeof fetch;
+  /** Called once for each deposit the door signs, with its amount in micro-USDC. */
+  onDeposit?: (hostId: string, channelId: string, amount: bigint) => void;
+}): DoorPayer {
   const account = privateKeyToAccount(o.key);
   const signer: ClientEvmSigner = {
     address: account.address,
     signTypedData: (m) => account.signTypedData(m as unknown as Parameters<typeof account.signTypedData>[0]),
   };
   const base = o.fetch ?? fetch;
+  const storageOf = (hostId: string) => new FileClientChannelStorage({ directory: hostChannelDir(o.channelDir, hostId) });
+  const pending = new Map<string, PendingDeposit>();
+
+  /** Whether a deposit signed for this host is still unconfirmed. A record that shows it clears it. */
+  const depositPending = async (hostId: string): Promise<boolean> => {
+    const p = pending.get(hostId);
+    if (!p) return false;
+    if (amountOf((await storageOf(hostId).get(p.channelId))?.balance) >= p.balanceAfter) {
+      pending.delete(hostId);
+      return false;
+    }
+    return true;
+  };
+
   return {
     address: account.address,
     account,
+    clearPendingDeposit: (hostId) => void pending.delete(hostId),
+    async charged(hostId) {
+      const storage = storageOf(hostId);
+      let sum = 0n;
+      for (const key of await channelKeys(hostChannelDir(o.channelDir, hostId))) sum += amountOf((await storage.get(key))?.chargedCumulativeAmount);
+      return sum;
+    },
     paidFetch(offer, tickPrice) {
       const dir = hostChannelDir(o.channelDir, offer.hostId);
-      const storage = new FileClientChannelStorage({ directory: dir });
+      const storage = storageOf(offer.hostId);
       const keep = paysOnly(offer, tickPrice);
       return (async (input: RequestInfo | URL, init?: RequestInit) => {
+        // A deposit already signed and not yet in the record: the chain may hold it. Nothing more is sent.
+        if (await depositPending(offer.hostId)) throw new DepositPendingError(offer.hostId);
         // With no channel record a first payment is a deposit: refused here, before anything is sent.
-        if (!(await hasChannelRecord(dir)) && o.depositFor(offer.hostId) === 'over_cap') throw new CapitalCapError(offer.hostId);
+        if ((await channelKeys(dir)).length === 0 && o.depositFor(offer.hostId) === 'over_cap') throw new CapitalCapError(offer.hostId);
         // The x402 fetch wraps every error in a plain one, so the reason is noted here and rethrown typed.
-        const refused = { capped: false, unexpected: false };
+        const refused = { capped: false, unexpected: false, pending: false };
         const scheme = new BatchSettlementEvmScheme(signer, {
           storage,
-          depositStrategy: ({ minimumDepositAmount }) => {
+          depositStrategy: async ({ minimumDepositAmount }) => {
+            if (await depositPending(offer.hostId)) {
+              refused.pending = true;
+              throw new DepositPendingError(offer.hostId);
+            }
             const d = o.depositFor(offer.hostId);
-            if (d === 'over_cap') {
+            // Never raised to the minimum: the door deposits no more than depositFor allows.
+            if (d === 'over_cap' || d < BigInt(minimumDepositAmount)) {
               refused.capped = true;
               throw new CapitalCapError(offer.hostId);
             }
-            const least = BigInt(minimumDepositAmount);
-            return d > least ? d : least;
+            return d;
           },
         });
         // No spend controls: `isTheTick` fixes the amount, and `depositFor` alone sizes a deposit (the default
@@ -164,6 +221,16 @@ export function doorPayer(o: { key: `0x${string}`; channelDir: string; depositFo
             if (isTheTick(selectedRequirements, offer.payTo, tickPrice)) return undefined;
             refused.unexpected = true;
             return { abort: true, reason: 'unexpected_payment' };
+          })
+          // A signed deposit is pending until the channel record shows it (a successful settle adds it).
+          .onAfterPaymentCreation(async ({ paymentPayload }) => {
+            const p = paymentPayload.payload as { type?: unknown; deposit?: { amount?: unknown }; voucher?: { channelId?: unknown } };
+            if (p.type !== 'deposit' || typeof p.deposit?.amount !== 'string' || typeof p.voucher?.channelId !== 'string') return;
+            const channelId = p.voucher.channelId.toLowerCase();
+            const amount = amountOf(p.deposit.amount);
+            const before = amountOf((await storage.get(channelId))?.balance);
+            pending.set(offer.hostId, { channelId, balanceAfter: before + amount });
+            o.onDeposit?.(offer.hostId, channelId, amount);
           });
         // The 402 itself is read first: when it asks for nothing the door pays, the client never sees it.
         const asked: typeof fetch = async (req, reqInit) => {
@@ -177,6 +244,7 @@ export function doorPayer(o: { key: `0x${string}`; channelDir: string; depositFo
         try {
           return await wrapFetchWithPayment(asked, client)(input, init);
         } catch (e) {
+          if (refused.pending) throw new DepositPendingError(offer.hostId);
           if (refused.capped) throw new CapitalCapError(offer.hostId);
           if (refused.unexpected) throw new UnexpectedPaymentError();
           throw e;
@@ -220,9 +288,9 @@ const ok = (a: Answer): boolean => a.status >= 200 && a.status < 300;
  * path and body it sends. Opens, status and output reads are free and go straight out; a tick is paid
  * through `payer.paidFetch` at `tickPrice` (default the offer's), one per host at a time through `queue`.
  *
- * `spent()` follows x402: a host settles a payment only with a 2xx answer, so a tick costs its price when it
- * answers 2xx, or when it times out (it may have been paid). A non-2xx answer costs nothing. A tick index
- * already counted as spent is never sent again. Non-2xx throws HostError; a 402 the door will not pay throws
+ * `spent()` is measured from the door's channel record, not the status: a tick costs what the record's
+ * charged amount moved during it (a host may settle and answer non-2xx), or its full price when it times out
+ * (it may have been paid). A tick index that cost anything is never sent again. Non-2xx throws HostError; a 402 the door will not pay throws
  * HostError(402, 'unexpected_payment').
  */
 export function httpHostApi(
@@ -281,20 +349,31 @@ export function httpHostApi(
       const deadline = opts?.deadline;
       return d.queue.run(o.hostId, deadline, async (): Promise<TickResult> => {
         if (counted.has(key)) throw new HostError(409, 'duplicate');
+        // The cost is what the channel record moved, whatever the status: a host may settle and still answer 500.
+        const before = await d.payer.charged(o.hostId);
+        const settle = async (): Promise<void> => {
+          const moved = (await d.payer.charged(o.hostId)) - before;
+          if (moved > 0n) {
+            spent += moved;
+            counted.add(key);
+          }
+        };
         let a: Answer;
         try {
           a = await send('POST', `/v1/leases/${leaseId}/ticks`, { index }, paid, deadline);
         } catch (e) {
           if (e instanceof SendTimeoutError) {
+            // No answer, so no record of a charge: it may have been paid.
             spent += price;
             counted.add(key);
+          } else {
+            await settle();
           }
           if (e instanceof UnexpectedPaymentError) throw new HostError(402, 'unexpected_payment');
           throw e;
         }
+        await settle();
         if (!ok(a)) throw hostErrorOf(a);
-        spent += price;
-        counted.add(key);
         return a.body as TickResult;
       }, now);
     },
