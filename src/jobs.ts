@@ -5,11 +5,11 @@ import type { JobSpec } from './types.js';
 export { FETCH_IMAGE, HERMES_IMAGE, HOME_IMAGE, HOME_IMAGES, JOB_IMAGES, PYTHON_IMAGE };
 
 export const MAX_URLS = 5;
-/** Largest script the python job takes. Keeps the open packet well under ILP's 32 KiB data limit once sealed. */
+/** Largest script the python job takes. Keeps the open request small. */
 export const MAX_SCRIPT_BYTES = 8 * 1024;
 
 export const MAX_SSH_KEYS = 8;
-/** Longest single key line. Fits a 4096-bit RSA key and keeps the sealed packet small. */
+/** Longest single key line. Fits a 4096-bit RSA key and keeps the open request small. */
 export const MAX_SSH_KEY_BYTES = 1024;
 
 // The key types a home takes; ssh-dss is long dead and security-key types are not supported.

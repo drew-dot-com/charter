@@ -4,11 +4,10 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { HostError, type HostApi, type OpenResult } from '../tenant/host-api.js';
-import { findOfferExact } from '../tenant/offers.js';
 import { JOB_IMAGES, homeIdOf, jobFromBody } from '../jobs.js';
 import { ALLOWED_MOVES, BadMove, ownerView, publicView, readFundPublic, validatePitch, type Grant, type GrantState, type GrantStore } from './grants.js';
 import type { JobSpec, Lease, Micro, Offer } from '../types.js';
-import { DeadlinePassedError, SendTimeoutError } from '../payer.js';
+import { DeadlinePassedError, SendTimeoutError } from '../errors.js';
 import { offerOfSnapshot, snapshotOffer, type DoorLedger, type LossKind } from './ledger.js';
 import { logRequests, type RequestSink } from './reqlog.js';
 import { MAX_TIMEOUT_SECONDS, MIN_WINDOW_SECONDS, SETTLE_MARGIN_SECONDS, isPayerFault, microToUsdc, paymentIdOf, settleReasonOf, type Gate, type PaymentId, type Schemes, type TestHooks, type X402Config } from '../x402/seller.js';
@@ -18,24 +17,10 @@ import { openApiDoc } from './openapi.js';
 export interface DoorDeps {
   /** Live offers. The door caches the answer for 60 s. */
   offers: () => Promise<Offer[]>;
+  /** The host's lease API for an offer (one per host and price, so what a tick paid is remembered across calls). */
   api: (o: Offer) => HostApi;
-  /**
-   * CHARTER_DOOR_HOSTS: the hosts the door pays, host pubkey to its ILP address. An offer is listed and
-   * opened only when its signer and its ilpBase are both on this list.
-   */
-  hosts: ReadonlyMap<string, string>;
-  /**
-   * What the door's open x402 channel can still pay, in micro-USDC, as its TOON client records it;
-   * undefined when no channel is open. A tick is refused while it is under tickPrice + HEADROOM_MARGIN,
-   * so a tick never waits on a channel open inside its payment window, and an open while it is under
-   * openPrice + tickPrice + HEADROOM_MARGIN, so a new lease can pay its open and its first tick. Left out: no check.
-   */
-  headroom?: () => Promise<Micro | undefined>;
-  /**
-   * Opens the door's channel when `headroom` finds none (a boot-time open that failed). Started at most
-   * once a minute and never awaited by a request. Left out: only a restart opens one.
-   */
-  reopen?: () => Promise<void>;
+  /** The door's payer address, which pays hosts and is paid by renters. `GET /v1/door` answers it. */
+  payer?: `0x${string}`;
   ledger: DoorLedger;
   x402: X402Config | 'free-for-tests';
   /** The x402 schemes built from `x402`, when the caller also runs the claim timers on them. Default: built here. */
@@ -103,8 +88,6 @@ export const DAILY_UNPAID_CAP: Micro = 500_000n;
 export const MAX_OPEN_PRICE: Micro = 10_000n;
 export const MAX_STATUS_PRICE: Micro = 1_000n;
 export const MAX_TICK_PRICE: Micro = 50_000n;
-/** Channel headroom a tick needs beyond its own price. */
-export const HEADROOM_MARGIN: Micro = 10_000n;
 const LEASE_ID = /^[0-9a-f]{32}$/;
 const NON_NEG_INT = /^\d+$/;
 
@@ -127,10 +110,20 @@ function slidingLimit(now: () => number, max: number, windowMs: number): (key: s
   };
 }
 
+/** The id a renter names an offer by: `<hostId>:<id>`. */
+const offerIdOf = (o: Offer): string => `${o.hostId}:${o.id}`;
+
+/** The offer named exactly `<hostId>:<id>`, or undefined. A bare id never matches. */
+function findOfferExact(offers: Offer[], ref: string): Offer | undefined {
+  const m = /^([0-9a-f]{64}):(.+)$/.exec(ref);
+  if (!m) return undefined;
+  return offers.find((x) => x.hostId === m[1] && x.id === m[2]);
+}
+
 /** An offer as the door shows it: what `GET /v1/offers` lists, and what a lease's status carries. */
 function publicOffer(o: Offer) {
   return {
-    offerId: `${o.hostPubkey}:${o.id}`,
+    offerId: offerIdOf(o),
     cpu: o.cpu,
     memoryMiB: o.memoryMiB,
     intervalSeconds: o.intervalSeconds,
@@ -164,7 +157,7 @@ export function doorApp(deps: DoorDeps): express.Express {
   const now = deps.now ?? Date.now;
   const webDir = deps.webDir ?? fileURLToPath(new URL('../../web/dist', import.meta.url));
 
-  /** The offer a lease was opened on, from the ledger's snapshot: a price or a host call never depends on the relay still listing it. */
+  /** The offer a lease was opened on, from the ledger's snapshot: a price or a host call never depends on the host still listing it. */
   const leaseOffer = (leaseId: string): Offer => offerOfSnapshot(ledger.get(leaseId)!.offer);
   const priceOf = (leaseId: string): Micro | undefined => (ledger.get(leaseId) ? leaseOffer(leaseId).tickPrice : undefined);
   const withdrawing: (channelId: string) => Promise<boolean> =
@@ -193,9 +186,8 @@ export function doorApp(deps: DoorDeps): express.Express {
     return entry.p;
   };
 
-  /** An offer from a host on CHARTER_DOOR_HOSTS, at its ILP address there, within the door's price maxima. */
+  /** An offer within the door's price maxima. */
   const trusted = (o: Offer): boolean =>
-    deps.hosts.get(o.hostPubkey) === o.ilpBase &&
     o.openPrice <= MAX_OPEN_PRICE &&
     o.statusPrice <= MAX_STATUS_PRICE &&
     o.tickPrice <= MAX_TICK_PRICE;
@@ -222,7 +214,7 @@ export function doorApp(deps: DoorDeps): express.Express {
     }
     const fits = open
       .filter((o) => !job || o.images.includes(job.image))
-      .sort((x, y) => (x.tickPrice === y.tickPrice ? (`${x.hostPubkey}:${x.id}` < `${y.hostPubkey}:${y.id}` ? -1 : 1) : x.tickPrice < y.tickPrice ? -1 : 1));
+      .sort((x, y) => (x.tickPrice === y.tickPrice ? (offerIdOf(x) < offerIdOf(y) ? -1 : 1) : x.tickPrice < y.tickPrice ? -1 : 1));
     return fits[0] ? { offer: fits[0], job } : 'not_found';
   };
   /** Runs a host call and books whatever it cost the door as spend no renter paid for. */
@@ -249,33 +241,6 @@ export function doorApp(deps: DoorDeps): express.Express {
   const ticking = new Set<string>();
   /** Payment keys claimed by a request that has not finished verifying. */
   const claimed = new Set<string>();
-  /** When the operator was last told the channel is too low for ticks (epoch ms). */
-  let lowHeadroomWarnedAt = -Infinity;
-  let reopenTriedAt = -Infinity;
-  /**
-   * True when the door's channel cannot pay `need` (or its headroom is unknown). Logs at most once a minute,
-   * so the operator sees the channel needs replacing (docs/demo.md, channel rotation).
-   */
-  const headroomShort = async (need: Micro, what: string): Promise<boolean> => {
-    if (!deps.headroom) return false;
-    let left: Micro | undefined;
-    try {
-      left = await deps.headroom();
-    } catch {
-      left = undefined;
-    }
-    if (left !== undefined && left >= need) return false;
-    if (left === undefined && deps.reopen && now() - reopenTriedAt >= MINUTE_MS) {
-      reopenTriedAt = now();
-      deps.reopen().catch((e) => console.error(`charter-door: could not open its channel: ${String(e instanceof Error ? e.message : e).slice(0, 200)}`));
-    }
-    if (now() - lowHeadroomWarnedAt >= MINUTE_MS) {
-      lowHeadroomWarnedAt = now();
-      console.error(`charter-door: channel headroom ${left === undefined ? 'unknown (no open channel?)' : left.toString()} is under ${need}; ${what} wait until the channel is replaced`);
-    }
-    return true;
-  };
-
   const partFile = (id: string, part: number): string => join(deps.dataDir, 'output', id, `${part}.json`);
 
   /** Spends one of the lease's paid host reads, or throws BudgetError (or CapacityError past the daily cap). */
@@ -369,7 +334,8 @@ export function doorApp(deps: DoorDeps): express.Express {
   // Where payments go, so the page can refuse a payment request that names any other payee.
   if (deps.x402 !== 'free-for-tests') {
     const { payTo, network } = deps.x402;
-    app.get('/v1/door', (_req, res) => void res.json({ payTo, network }));
+    const payer = deps.payer;
+    app.get('/v1/door', (_req, res) => void res.json({ payTo, network, ...(payer ? { payer } : {}) }));
   }
 
   if (deps.grants) {
@@ -466,11 +432,11 @@ export function doorApp(deps: DoorDeps): express.Express {
   }
 
   /** What the door's ledger says about a host: leases with a renter-paid interval, and the newest one. */
-  const hostStats = (hostPubkey: string): { leases: number; lastLeaseAt?: number } => {
+  const hostStats = (hostId: string): { leases: number; lastLeaseAt?: number } => {
     let leases = 0;
     let lastLeaseAt: number | undefined;
     for (const l of ledger.all()) {
-      if (l.ticksPaidByRenter === 0 || !l.offerId.startsWith(`${hostPubkey}:`)) continue;
+      if (l.ticksPaidByRenter === 0 || !l.offerId.startsWith(`${hostId}:`)) continue;
       leases++;
       if (lastLeaseAt === undefined || l.createdAt > lastLeaseAt) lastLeaseAt = l.createdAt;
     }
@@ -487,7 +453,7 @@ export function doorApp(deps: DoorDeps): express.Express {
     res.json(
       list
         .filter((o) => trusted(o) && o.images.some((i) => JOB_IMAGES.includes(i)) && o.expiresAt > now())
-        .map((o) => ({ ...publicOffer(o), ...hostStats(o.hostPubkey) })),
+        .map((o) => ({ ...publicOffer(o), ...hostStats(o.hostId) })),
     );
   });
 
@@ -529,10 +495,6 @@ export function doorApp(deps: DoorDeps): express.Express {
     if (!offer.images.includes(job.image)) return void res.status(400).json({ error: 'image_not_offered' });
     // Door-wide: an open costs the door and no renter pays for it.
     if (overCap() || !allowDoorOpen('door')) return void res.status(503).json({ error: 'capacity' });
-    // A lease the channel cannot carry through its open and first tick is not started.
-    if (await headroomShort(offer.openPrice + offer.tickPrice + HEADROOM_MARGIN, 'opens')) {
-      return void res.status(503).json({ error: 'capacity' });
-    }
 
     try {
       const api = deps.api(offer);
@@ -663,9 +625,6 @@ export function doorApp(deps: DoorDeps): express.Express {
     const id = req.params.id as string;
     const offer = res.locals.offer as Offer;
     if (!verified(res)) return;
-    // A channel too low for this tick would be replaced inside the tick's send, past its payment window.
-    // Nothing is sent and the renter's payment does not settle: the renter signs again.
-    if (await headroomShort(offer.tickPrice + HEADROOM_MARGIN, 'ticks')) return void res.status(503).json({ error: 'retry_later' });
     const api = deps.api(offer);
     const deadline = res.locals.deadline as number | undefined;
     const sendOpts = deadline === undefined ? {} : { deadline };
@@ -761,7 +720,6 @@ export function doorApp(deps: DoorDeps): express.Express {
     if (typeof pick === 'string') return void res.status(400).json({ error: pick });
     const { offer, job } = pick;
     if (overCap()) return void res.status(503).json({ error: 'capacity' });
-    if (await headroomShort(offer.openPrice + offer.tickPrice + HEADROOM_MARGIN, 'opens')) return void res.status(503).json({ error: 'capacity' });
     if (challenge) {
       if (typeof body === 'object' && body !== null) rentPicks.set(body, offer);
       return void (await gate(req, res, () => void res.status(402).json({ error: 'payment_required' })));
@@ -819,7 +777,7 @@ export function doorApp(deps: DoorDeps): express.Express {
     }
     if (!LEASE_ID.test(r.leaseId) || ledger.get(r.leaseId)) return void res.status(502).json({ error: 'bad_host_answer' });
     const leaseId = r.leaseId;
-    ledger.open({ leaseId, offerId: `${offer.hostPubkey}:${offer.id}`, createdAt: now(), offer: snapshotOffer(offer) });
+    ledger.open({ leaseId, offerId: offerIdOf(offer), createdAt: now(), offer: snapshotOffer(offer) });
     res.locals.leaseId = leaseId;
     // The tick route waits for this one: the lease is the rent's until it answers.
     ticking.add(leaseId);

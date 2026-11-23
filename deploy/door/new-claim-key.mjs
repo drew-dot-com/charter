@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Makes the door's x402 claim key: a secp256k1 private key as 0x + 64 hex, written
-// mode 400 to the path given. It signs claim batches and refunds for CHARTER_PAY_TO
+// mode 400 to the path given. It signs claim batches and refunds for the payTo address
 // and never holds funds. Prints only the address. Refuses to overwrite.
 //   node deploy/door/new-claim-key.mjs /root/charter-door/secrets/claim-key
 import { existsSync, writeFileSync } from 'node:fs';

@@ -1,29 +1,40 @@
-// Test support only: a fake Payer that calls Task 6's hostApps over local HTTP.
+// Test support only: a host app (hostHttpApp) on a loopback port, and the door's HostApi (httpHostApi) to it.
+// The tick gate asks no payment; a stand-in door payer counts a tick's price as charged when the host
+// answers it 2xx, as a settling x402 server would.
 import type { AddressInfo } from 'node:net';
-import type { Express } from 'express';
+import { privateKeyToAccount } from 'viem/accounts';
+import { httpHostApi, type DoorPayer } from '../door/host-http.js';
+import { HostQueue } from '../door/host-queue.js';
+import { stubGate } from '../door/x402.js';
 import { onJobExit } from '../lease.js';
-import type { PacketAnswer, PacketRequest, Payer } from '../payer.js';
-import { decodeBody } from '../payer.js';
-import { hostApps, outputPartCount } from '../host/server.js';
+import { hostHttpApp } from '../host/http.js';
 import type { Runner } from '../host/runner.js';
+import { outputPartCount } from '../host/server.js';
 import { LeaseStore } from '../host/store.js';
-import type { Micro, Offer } from '../types.js';
+import type { Offer } from '../types.js';
+import type { HostApi } from './host-api.js';
 
 export const OFFER: Offer = {
-  id: 'o1', hostPubkey: 'ab'.repeat(32), ilpBase: 'g.test', sealKey: '0x04' + 'ab'.repeat(64),
-  sealUrl: 'http://x.anyone/ilp', cpu: 1, memoryMiB: 1024, intervalSeconds: 30, firstTickGraceSeconds: 90, tickPrice: 5000n, openPrice: 1000n, statusPrice: 100n, images: ['charter-job-fetch'],
+  id: 'o1', hostId: 'ab'.repeat(32), url: 'https://host.example', payTo: `0x${'3'.repeat(40)}`, cpu: 1, memoryMiB: 1024,
+  intervalSeconds: 30, firstTickGraceSeconds: 90, tickPrice: 5000n, openPrice: 0n, statusPrice: 0n, images: ['charter-job-fetch'],
   hiddenHost: true, hiddenEgress: false, expiresAt: 9_999_999_999_000,
 };
 /** The live host's schedule since 2026-11-04: one hour at 0.007 USDC. */
 export const HOURLY: Offer = { ...OFFER, id: 'o-hourly', intervalSeconds: 3600, tickPrice: 7000n };
 
+/** The test door's key. */
+export const DOOR_KEY = ('0x' + '11'.repeat(32)) as `0x${string}`;
+
+export type CallKind = 'open' | 'tick' | 'status';
+
 export interface TestHost {
   store: LeaseStore;
-  payer: Payer;
-  /** Packets sent, by app name (`charter-open` and so on). */
-  sent: Record<string, number>;
-  /** Every dest, sealKey and sealUrl the payer was handed. */
-  seen: Array<{ dest: string; sealKey: string; sealUrl: string; path: string }>;
+  /** The door's HostApi to this host, for the offer it serves. */
+  api: HostApi;
+  /** Calls sent, by kind. */
+  sent: Record<CallKind, number>;
+  /** Wraps every call: `send` makes it. Set by a test to act before or after one, or to change its answer. */
+  hook?: (kind: CallKind, send: () => Promise<Response>) => Promise<Response>;
   clock: { t: number };
   sleep: (ms: number) => Promise<void>;
   sleeps: number[];
@@ -40,6 +51,11 @@ export interface TestHostOpts {
   offer?: Offer;
 }
 
+function kindOf(method: string, path: string): CallKind {
+  if (method === 'POST') return path.endsWith('/ticks') ? 'tick' : 'open';
+  return 'status';
+}
+
 export async function testHost(opts: TestHostOpts = {}): Promise<TestHost> {
   const store = new LeaseStore();
   const clock = { t: 1_000_000 };
@@ -52,49 +68,54 @@ export async function testHost(opts: TestHostOpts = {}): Promise<TestHost> {
     alive: async () => true,
     ready: async () => true,
     ...opts.runner,
-  };
-  const apps = hostApps({ store, runner, offer: opts.offer ?? OFFER, now: () => clock.t + (opts.skewMs ?? 0) });
-  const servers: Array<import('node:http').Server> = [];
-  const listen = async (app: Express) => {
-    const s = app.listen(0, '127.0.0.1');
-    servers.push(s);
-    await new Promise((res) => s.once('listening', res));
-    return `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
-  };
-  const urls: Record<string, string> = {
-    'charter-open': await listen(apps.open),
-    'charter-tick': await listen(apps.tick),
-    'charter-status': await listen(apps.status),
-  };
-  const sent: Record<string, number> = { 'charter-open': 0, 'charter-tick': 0, 'charter-status': 0 };
-  const seen: TestHost['seen'] = [];
+  } as Runner;
+  const offer = opts.offer ?? OFFER;
+  const hostNow = () => clock.t + (opts.skewMs ?? 0);
+  const account = privateKeyToAccount(DOOR_KEY);
+  let origin = '';
+  const app = hostHttpApp({
+    store, runner, offer, now: hostNow,
+    door: () => account.address, origin: () => origin, tickGate: stubGate(() => offer.tickPrice), offerJson: () => ({}),
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((res) => server.once('listening', res));
+  origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+  const sent: Record<CallKind, number> = { open: 0, tick: 0, status: 0 };
   const sleeps: number[] = [];
+  let charged = 0n;
   const host: TestHost = {
-    store, sent, seen, clock, sleeps,
+    store, sent, clock, sleeps,
     sleep: async (ms) => void (sleeps.push(ms), (clock.t += ms)),
-    close: () => servers.forEach((s) => s.close()),
-    payer: undefined as unknown as Payer,
+    close: () => void server.close(),
+    api: undefined as unknown as HostApi,
   };
-  host.payer = {
-    async send(dest: string, req: PacketRequest, o: { sealKey: string; sealUrl: string; amount: Micro }): Promise<PacketAnswer> {
-      const app = dest.slice(dest.lastIndexOf('.') + 1);
-      if (dest !== `${OFFER.ilpBase}.${app}` || !urls[app]) throw new Error(`unknown dest ${dest}`);
-      sent[app]++;
-      seen.push({ dest, sealKey: o.sealKey, sealUrl: o.sealUrl, path: req.path });
-      const res = await fetch(urls[app] + req.path, {
-        method: req.method,
-        headers: { 'content-type': 'application/json' },
-        ...(req.body !== undefined ? { body: JSON.stringify(req.body) } : {}),
-      });
-      const body = decodeBody(await res.text());
-      // Every packet is paid, 4xx and 5xx included.
-      const answer = { status: res.status, body, paid: o.amount };
-      if (app === 'charter-tick' && res.status === 200) {
-        opts.afterTick?.(host, (body as { paidIntervals: number }).paidIntervals);
-      }
-      return answer;
-    },
+  const counted: typeof fetch = async (input, init) => {
+    const req = new Request(input as string | URL | Request, init);
+    const kind = kindOf(req.method, new URL(req.url).pathname);
+    sent[kind]++;
+    const send = () => fetch(req);
+    const res = await (host.hook ? host.hook(kind, send) : send());
+    if (kind === 'tick' && res.status === 200) {
+      const body = (await res.clone().json()) as { paidIntervals?: number };
+      if (typeof body.paidIntervals === 'number') opts.afterTick?.(host, body.paidIntervals);
+    }
+    return res;
   };
+  const payer: DoorPayer = {
+    address: account.address,
+    account,
+    paidFetch: (_o, price) => (async (input, init) => {
+      const res = await counted(input, init);
+      if (res.ok) charged += price;
+      return res;
+    }) as typeof fetch,
+    charged: async () => charged,
+    clearPendingDeposit: () => undefined,
+    resyncAll: async () => undefined,
+  };
+  // The door signs with the host's clock, so a skewed host still takes its signature.
+  host.api = httpHostApi({ ...offer, url: origin }, { payer, queue: new HostQueue(), fetch: counted, now: hostNow });
   return host;
 }
 

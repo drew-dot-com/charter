@@ -12,7 +12,7 @@ import type { Runner } from './runner.js';
 import { LeaseStore } from './store.js';
 
 const OFFER: Offer = {
-  id: 'o1', hostPubkey: '', ilpBase: 'g.test', sealKey: '0x04' + 'ab'.repeat(64), sealUrl: 'http://x.anyone/ilp', cpu: 1,
+  id: 'o1', hostId: 'ab'.repeat(32), url: 'https://host.example', payTo: `0x${'3'.repeat(40)}`, cpu: 1,
   memoryMiB: 1024, intervalSeconds: 30, firstTickGraceSeconds: 90, tickPrice: 5000n, openPrice: 0n, statusPrice: 0n, images: ['charter-job-fetch'],
   hiddenHost: false, hiddenEgress: false, expiresAt: 0,
 };

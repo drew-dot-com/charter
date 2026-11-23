@@ -6,7 +6,7 @@ export const GRACE_MS = 10_000;
 
 /**
  * How long before the paid time runs out a tenant reads the lease and pays the next tick: half the
- * interval, never under the grace. One packet to a hidden host can take 15 s, and the host gives
+ * interval, never under the grace. One call to a slow host can take 15 s, and the host gives
  * only GRACE_MS past the paid time, so a tick started 10 s before the end arrives too late. A tick
  * paid early extends the paid time from its current end, so being early costs nothing.
  */

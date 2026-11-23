@@ -1,18 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
-import type { Express } from 'express';
+import { privateKeyToAccount } from 'viem/accounts';
+import { signDoorRequest } from '../door-auth.js';
+import { stubGate } from '../door/x402.js';
 import { homeIdOf, homeJob, normalizeSshKeys } from '../jobs.js';
 import { onJobExit } from '../lease.js';
 import type { JobSpec, Offer } from '../types.js';
 import { RunnerError, type Runner } from './runner.js';
-import { hostApps, OUTPUT_PART_BYTES } from './server.js';
+import { hostHttpApp } from './http.js';
+import { OUTPUT_PART_BYTES } from './server.js';
 import { LeaseStore } from './store.js';
 import { HomeError, HomeStore } from './homes.js';
 
 const OFFER: Offer = {
-  id: 'o1', hostPubkey: '', ilpBase: 'g.test', sealKey: '0x04' + 'ab'.repeat(64), sealUrl: 'http://x.anyone/ilp', cpu: 1,
-  memoryMiB: 1024, intervalSeconds: 30, firstTickGraceSeconds: 90, tickPrice: 5000n, openPrice: 1000n, statusPrice: 100n, images: ['charter-job-fetch'],
+  id: 'o1', hostId: 'ab'.repeat(32), url: 'https://host.example', payTo: `0x${'3'.repeat(40)}`, cpu: 1,
+  memoryMiB: 1024, intervalSeconds: 30, firstTickGraceSeconds: 90, tickPrice: 5000n, openPrice: 0n, statusPrice: 0n, images: ['charter-job-fetch'],
   hiddenHost: true, hiddenEgress: false, expiresAt: 0,
 };
 const JOB: JobSpec = { image: 'charter-job-fetch', args: { URLS: 'https://example.com' } };
@@ -39,33 +42,44 @@ function fakeRunner(over: Partial<Runner> = {}) {
   return { r, calls };
 }
 
+const ORIGIN = 'https://host.example';
+const DOOR = privateKeyToAccount(('0x' + '11'.repeat(32)) as `0x${string}`);
+
+/**
+ * The lease handlers behind the host's HTTPS app (hostHttpApp, with a gate that asks no payment), called as
+ * the door calls them: signed. `post` and `get` take the handler's short names (`/open`, `/tick` with the lease
+ * id in the body, `/leases/...`) and send them to the app's routes.
+ */
 async function setup(over: Partial<Runner> = {}, maxLeases?: number, maxHomes?: number, homes?: HomeStore, log: (m: string) => void = () => undefined) {
   const store = new LeaseStore();
   const { r, calls } = fakeRunner(over);
-  const apps = hostApps({
+  const app = hostHttpApp({
     store, runner: r, offer: OFFER, now: () => T0, log,
     ...(homes ? { homes } : {}),
     ...(maxLeases === undefined ? {} : { maxLeases }),
     ...(maxHomes === undefined ? {} : { maxHomes }),
+    door: () => DOOR.address, origin: () => ORIGIN, tickGate: stubGate(() => OFFER.tickPrice), offerJson: () => ({}),
   });
-  const servers: Array<import('node:http').Server> = [];
-  const base = async (app: Express) => {
-    const s = app.listen(0, '127.0.0.1');
-    servers.push(s);
-    await new Promise((res) => s.once('listening', res));
-    return `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((res) => server.once('listening', res));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  /** A signed request with `text` as its body. */
+  const send = async (method: string, path: string, text?: string) => {
+    const auth = await signDoorRequest(DOOR, ORIGIN, method, path, text ?? '', T0);
+    return fetch(base + path, { method, headers: { ...auth, ...(text === undefined ? {} : { 'content-type': 'application/json' }) }, ...(text === undefined ? {} : { body: text }) });
   };
-  const urls = { open: await base(apps.open), tick: await base(apps.tick), status: await base(apps.status) };
-  const post = async (url: string, path: string, body: unknown) => {
-    const res = await fetch(url + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    return { status: res.status, body: (await res.json()) as any };
+  const answer = async (res: Response) => ({ status: res.status, body: (await res.json()) as any });
+  const post = async (_url: string, path: string, body: unknown) => {
+    if (path === '/tick') {
+      const { leaseId, ...rest } = (body ?? {}) as { leaseId?: unknown };
+      return answer(await send('POST', `/v1/leases/${String(leaseId)}/ticks`, JSON.stringify(rest)));
+    }
+    return answer(await send('POST', path === '/open' ? '/v1/leases' : path, JSON.stringify(body)));
   };
-  const get = async (url: string, path: string) => {
-    const res = await fetch(url + path);
-    return { status: res.status, body: (await res.json()) as any };
-  };
-  const done = () => servers.forEach((s) => s.close());
-  return { store, calls, urls, post, get, done };
+  const get = async (_url: string, path: string) => answer(await send('GET', `/v1${path}`));
+  const urls = { open: '', tick: '', status: '' };
+  const done = () => void server.close();
+  return { store, calls, urls, post, get, send, done };
 }
 
 async function opened(t: Awaited<ReturnType<typeof setup>>): Promise<string> {
@@ -164,7 +178,7 @@ test('POST /open rejects a malformed job with 400 before calling the runner', as
       assert.equal(r.status, 400, JSON.stringify(body));
       assert.equal(r.body.error, 'bad_request');
     }
-    const bad = await fetch(t.urls.open + '/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{nope' });
+    const bad = await t.send('POST', '/v1/leases', '{nope');
     assert.equal(bad.status, 400);
     assert.deepEqual(t.calls, []);
     assert.deepEqual(t.store.all(), []);
@@ -225,20 +239,19 @@ test('F-C3: a container that fails to start on tick 0 closes the lease boot_fail
   }
 });
 
-test('POST /tick: unknown lease 404, bad ids and indexes 400, done 409 lease_done, closed 409 not_running', async () => {
+test('POST /tick: unknown or malformed lease 404, bad indexes 400, done 409 lease_done, closed 409 not_running', async () => {
   const t = await setup();
   try {
     const leaseId = await opened(t);
-    assert.equal((await t.post(t.urls.tick, '/tick', { leaseId: 'a'.repeat(32), index: 0 })).status, 404);
+    for (const body of [{ leaseId: 'a'.repeat(32), index: 0 }, { leaseId: leaseId.toUpperCase(), index: 0 }, { leaseId: 'short', index: 0 }, { index: 0 }]) {
+      assert.equal((await t.post(t.urls.tick, '/tick', body)).status, 404, JSON.stringify(body));
+    }
     for (const body of [
       { leaseId, index: -1 },
       { leaseId, index: 1.5 },
       { leaseId, index: '0' },
       { leaseId, index: 2 ** 60 },
       { leaseId, index: null },
-      { leaseId: leaseId.toUpperCase(), index: 0 },
-      { leaseId: 'short', index: 0 },
-      { index: 0 },
     ]) {
       const r = await t.post(t.urls.tick, '/tick', body);
       assert.equal(r.status, 400, JSON.stringify(body));
@@ -275,18 +288,13 @@ test('POST /tick on a booting lease is 409 not_running', async () => {
   }
 });
 
-test('each app answers 404 to the other apps routes and to unknown paths', async () => {
+test('unknown paths and methods answer 404 and pay nothing', async () => {
   const t = await setup();
   try {
     const leaseId = await opened(t);
-    assert.equal((await t.post(t.urls.open, '/tick', { leaseId, index: 0 })).status, 404);
-    assert.equal((await t.post(t.urls.tick, '/open', { job: JOB })).status, 404);
-    assert.equal((await t.post(t.urls.status, '/open', { job: JOB })).status, 404);
-    assert.equal((await t.post(t.urls.status, '/tick', { leaseId, index: 0 })).status, 404);
-    assert.equal((await t.get(t.urls.open, '/open')).status, 404);
-    assert.equal((await t.get(t.urls.tick, '/tick')).status, 404);
-    assert.equal((await t.get(t.urls.open, `/leases/${leaseId}`)).status, 404);
+    assert.equal((await t.post(t.urls.open, '/open/x', { job: JOB })).status, 404);
     assert.equal((await t.get(t.urls.tick, '/anything')).status, 404);
+    assert.equal((await t.send('GET', `/v1/leases/${leaseId}/ticks`)).status, 404);
     assert.equal(t.store.get(leaseId)!.paidIntervals, 0);
   } finally {
     t.done();
@@ -370,22 +378,6 @@ test('F-C3: a done lease answers 409 lease_done to every tick, index 0 included,
     }
     assert.equal(t.store.get(leaseId)!.paidIntervals, 0);
     assert.deepEqual(t.calls, [`create ${leaseId}`]);
-  } finally {
-    t.done();
-  }
-});
-
-test('request bodies parse as JSON whatever the content-type says', async () => {
-  const t = await setup();
-  try {
-    const leaseId = await opened(t);
-    const res = await fetch(t.urls.tick + '/tick', {
-      method: 'POST',
-      headers: { 'content-type': 'text/plain' },
-      body: JSON.stringify({ leaseId, index: 0 }),
-    });
-    assert.equal(res.status, 200);
-    assert.equal(((await res.json()) as any).paidIntervals, 1);
   } finally {
     t.done();
   }

@@ -10,10 +10,9 @@ const intervalMs = 30_000;
 
 const offer: Offer = {
   id: 'offer-1',
-  hostPubkey: 'a'.repeat(64),
-  ilpBase: 'g.host',
-  sealKey: '0x04' + 'b'.repeat(128),
-  sealUrl: 'http://host.anyone/ilp',
+  hostId: 'a'.repeat(64),
+  url: 'https://host.example',
+  payTo: `0x${'3'.repeat(40)}`,
   cpu: 1,
   memoryMiB: 1024,
   intervalSeconds: 30,

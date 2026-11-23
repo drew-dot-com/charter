@@ -9,7 +9,7 @@ export class DeadlinePassedError extends Error {
   }
 }
 
-/** A send that got no answer in time. The packet may or may not have been paid. */
+/** A send that got no answer in time. It may or may not have been paid. */
 export class SendTimeoutError extends Error {
   constructor() {
     super('send timed out');

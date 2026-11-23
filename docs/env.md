@@ -5,31 +5,30 @@ Secrets never go in these variables: a variable names the file that holds one.
 
 ## charter-host
 
-`charter-host run | land | offer --print`, next to the host's `toon` node.
+`charter-host run | offer --print`. The host serves its offer and lease routes over HTTPS (a TLS proxy such as
+Caddy in front of the loopback port), answers only requests signed by its door, and is paid per tick by the
+door's x402 `batch-settlement` vouchers on Base, which it claims through the facilitator.
 
 | variable | required | default | what it is |
 | --- | --- | --- | --- |
 | `CHARTER_DATA_DIR` | yes | | Lease store (`leases.json`) and job output (`out/<lease>/`). Created mode 700. |
 | `CHARTER_ALLOW_IMAGES` | yes | | Comma list of the job images this host runs: `charter-job-fetch` (fetch pages through the proxy), `charter-job-python` (the renter's Python script, no network) and `charter-home` (a home: the renter's own box with a kept disk, reached over ssh at an onion address) and `charter-hermes` (a home with Hermes Agent and the charter CLI preinstalled; build `charter-home` first). Also the offer's `images`. `charter-home` and `charter-hermes` need `CHARTER_MAX_HOMES` of at least 1. |
-| `CHARTER_RELAY_URL` | yes | | `wss://` relay the offer is published to (a paid write). |
-| `TOON_PASSPHRASE_FILE` | yes | | File holding the node wallet passphrase. Passed to `toon` in its env only. |
-| `CHARTER_OFFER_ID` | yes | | The offer's `d` tag. |
-| `CHARTER_ILP_BASE` | yes | | The node's ILP address (`toon status --json` `.agent_node.toon_apps[0].connector.ilp_address`). The apps are `<base>.charter-open`, `.charter-tick`, `.charter-status`. |
-| `CHARTER_SEAL_KEY` | yes | | The node connector's public key, `0x04` and 128 hex digits (`toon describe --json` `.description.edgeIdentity.publicKey`). A payer seals to it with no fetch. |
-| `CHARTER_SEAL_URL` | yes | | The node connector's `/ilp` URL, usually onion (`toon describe --json` `.description.httpEndpoint`). The `toon` CLI seals to it. |
-| `CHARTER_PORTS` | no | `7401,7402,7403` | Loopback ports of the open, tick and status apps, in that order. |
+| `CHARTER_HOST_URL` | yes | | This host's public `https://` address (a name with a dot, or a public IP; no query). Its normalized form is the host's identity: its `hostId` is the sha256 of it, and the door's signatures name its origin. |
+| `CHARTER_HOST_PAY_TO` | yes | | The Base address ticks are paid to. |
+| `CHARTER_CLAIM_KEY_FILE` | yes | | File holding the host's x402 claim key: one `0x` + 64 hex secp256k1 private key (`deploy/door/new-claim-key.mjs`). It authorizes claims and refunds on the door's channel and holds no funds. Channel records live in `<CHARTER_DATA_DIR>/x402-channels/`; the door's channel is refunded after 7 idle days. |
+| `CHARTER_HOST_PORT` | no | `7401` | Loopback port the host app listens on, behind the TLS proxy. |
+| `CHARTER_DOOR_URL` | no | `https://charter.mainnet.toonprotocol.dev` | The door this host registers with (`POST /v1/hosts`, at boot, every minute until accepted, and when its free home slots change) and answers: the host reads the door's payer address from `GET /v1/door` at boot and every 10 minutes. |
+| `X402_FACILITATOR_URL` | no | `https://facilitator.payai.network` | x402 facilitator that verifies and settles the door's vouchers. |
+| `CHARTER_OFFER_ID` | yes | | The offer's id (`<hostId>:<id>` is its `offerId` at the door). |
 | `CHARTER_PROXY` | no | none | SOCKS proxy for job egress (for example `socks5://172.17.0.1:9150`). Set means the offer says `hiddenEgress`. A loopback host is rewritten to `host.docker.internal` for the container. |
 | `CHARTER_RUNTIME` | no | docker's own | OCI runtime for every job container. `runsc` runs jobs under gVisor: recommended on any host that runs `charter-job-python` for anyone but its owner, since that job runs the renter's own code. |
 | `CHARTER_HIDDEN_HOST` | no | false | `1`, `true` or `yes`: the offer carries the hidden-host badge. |
 | `CHARTER_MAX_LEASES` | no | `1` | Live leases at once (booting, awaiting the first tick, running). An open past it answers `closed`, `busy`, before any container is made. Size it to the VM: each live lease is one job container of 1 CPU and 1 GiB beside the toon node and the host (toon2, 4 CPUs and 3 GiB, runs 2). Changing it needs a restart of `charter-host`. A restart of the host program leaves running containers alone (jobs and homes); only a lease whose container is not running at host start is closed, and a home in that state is re-created when its paid time has not run out. A lease that is only created, not started, is closed `host_restart`: check none is waiting on its first tick before you restart (docs/ops.md). |
 | `CHARTER_INTERVAL_SECONDS` | no | `3600` | Length of one paid interval. One hour since 2026-11-04 (was 30 s). |
-| `CHARTER_TICK_PRICE` | no | `7000` | Price of one interval (the `charter-tick` app's price, and the edge's route price for it). 0.007 USDC an hour is about 5 USDC for 30 days. |
-| `CHARTER_OPEN_PRICE` | no | `1000` | Price of an open (the `charter-open` app's price). |
-| `CHARTER_STATUS_PRICE` | no | `100` | Price of a status or output read (the `charter-status` app's price). |
+| `CHARTER_TICK_PRICE` | no | `7000` | Price of one interval, the only paid call. 0.007 USDC an hour is about 5 USDC for 30 days. Opens and status reads are free. |
 | `CHARTER_CPU` | no | `1` | Advertised CPUs. The v1 container limit is fixed at 1 CPU. |
 | `CHARTER_MEMORY_MIB` | no | `1024` | Advertised memory. The v1 container limit is fixed at 1 GiB. |
 | `CHARTER_MAX_HOMES` | no | `0` | Homes live at once, counted inside `CHARTER_MAX_LEASES` (so at most that). `0` offers no homes; toon2 runs 1. The rows below are read only when it is above 0. |
-| `CHARTER_HOST_PUBKEY` | no | none | The host's Nostr pubkey (64 lowercase hex), so the offer handed to a home box resolves `<pubkey>:<id>`; `toon describe --json` or the published offer event shows it. Unset, a box still resolves `<pubkey>:<id>` by the id alone. |
 | `CHARTER_TENANT_CONNECTOR_URL` | with homes | | The `http(s)` connector a home is handed as `CHARTER_CONNECTOR_URL`, for paying from inside the box (on toon2 `https://connector.mainnet.toonprotocol.dev/ilp`). |
 | `CHARTER_HOME_PUBLIC_HOST` | no | | A public dotted IPv4 address (no scheme, no port) homes are reached on. A hostname is refused: docker binds this address, and `docker run -p` takes only an IP. Set, it turns the onion off unless `CHARTER_HOME_ONION` is on. Homes take ports 22000-22099. |
 | `CHARTER_HOME_ONION` | no | on without a public host, off with one | `1` publishes each home as an onion service even with a public host set. |
@@ -43,77 +42,47 @@ Secrets never go in these variables: a variable names the file that holds one.
 
 Fixed, not configurable: the first tick is due within 90 s of the container's creation (published
 as `firstTickGraceSeconds`), later ticks within 10 s of the paid time, a lease may stay booting 120 s,
-the offer lives 30 min and is republished every 10 min. A job container gets 1 CPU, 1 GiB, 256 pids,
+the offer `GET /v1/offer` answers is valid 45 min. A job container gets 1 CPU, 1 GiB, 256 pids,
 a read-only root, no capabilities and `no-new-privileges`.
 With homes, the host also runs `sudo -n losetup` to attach each home's disk image; `deploy/host/install-home.sh`
 installs the sudo rule (`/etc/sudoers.d/charter-home`, that one command only).
 
 ## charter-door
 
-`charter-door` serves the storefront and pays hosts for browser renters. `charter-door unblock <0x address>`
-reads only `CHARTER_DATA_DIR`.
-`charter-door x402 status | claim | settle | refund` lists renters' batch-settlement channels, claims and settles their vouchers to `CHARTER_PAY_TO`, settles what earlier claims (refunds included) left unsettled, or refunds idle channels, now. The door does the same on a 10 min timer: it claims channels idle 10 min or whose payer asked to withdraw (their vouchers are refused as `channel_withdrawing`), refunds idle channels' unspent balance, and settles after every refund round. Safe beside a running door.
-
-`charter-door channel status | rotate | settle` reads only the `CHARTER_TOON_*` variables; run it with the
-door stopped (docs/demo.md, channel rotation).
+`charter-door` serves the storefront and pays hosts for renters. Hosts register themselves; the door probes each
+one (a paid python job that hashes a nonce) before it lists it, and pays each host's ticks over x402
+`batch-settlement` from its payer key, one channel per host. `charter-door unblock <0x address>` reads only
+`CHARTER_DATA_DIR`.
+`charter-door x402 status | claim | settle | refund` lists renters' batch-settlement channels, claims and settles their vouchers to the door payer address, settles what earlier claims (refunds included) left unsettled, or refunds idle channels, now. The door does the same on a 10 min timer: it claims channels idle 10 min or whose payer asked to withdraw (their vouchers are refused as `channel_withdrawing`), refunds idle channels' unspent balance, and settles after every refund round. Safe beside a running door.
 
 | variable | required | default | what it is |
 | --- | --- | --- | --- |
 | `CHARTER_DOOR_PORT` | yes | | Port to listen on. |
-| `CHARTER_DOOR_HOST` | no | `127.0.0.1` | Address to bind. Not to be confused with `CHARTER_DOOR_HOSTS`. |
-| `CHARTER_DOOR_HOSTS` | yes | | The hosts this door pays: `<host pubkey>=<ilpBase>`, comma separated (64 lowercase hex, then the host's ILP address). An offer is listed and opened only when its signer and its `ilpBase` both match an entry, and its prices are at most open 10000, status 1000, tick 50000. |
+| `CHARTER_DOOR_HOST` | no | `127.0.0.1` | Address to bind. |
 | `CHARTER_DOOR_TRUST_PROXY` | no | none | `true`, or a hop count (`1` for one Caddy in front), so rate limits see the client's address. |
-| `CHARTER_DATA_DIR` | yes | | `door-ledger.json`, its sidecars (`.payments`, `.unblocks`, `.unpaid`) and cached output parts. |
-| `CHARTER_RELAY_URL` | yes | | `wss://` relay to read offers from. |
-| `CHARTER_PAY_TO` | yes | | The door's Base address that renters' x402 payments go to. |
-| `CHARTER_CLAIM_KEY_FILE` | yes | | File holding the door's x402 claim key: one `0x` + 64 hex secp256k1 private key (`deploy/door/new-claim-key.mjs`). It authorizes claims and refunds on renters' batch-settlement channels for `CHARTER_PAY_TO` and holds no funds. Channel records live in `<CHARTER_DATA_DIR>/x402-channels/`. |
+| `CHARTER_DATA_DIR` | yes | | `door-ledger.json`, its sidecars (`.payments`, `.unblocks`, `.unpaid`), cached output parts, `hosts.json` (the host registry) and `capital.json` (what the door has deposited into each host's channels). |
+| `CHARTER_DOOR_PAYER_KEY_FILE` | yes | | File (mode 0400) holding the door's Base key: one `0x` + 64 hex private key. Its address is where renters' x402 payments go (`payTo`, `payer` in `GET /v1/door`) and what pays hosts and signs every request to them. |
+| `CHARTER_HOST_CHANNEL_DIR` | no | `<CHARTER_DATA_DIR>/host-channels` | The door's channel records, one directory per host. Losing them makes the door rebuild each record from chain. |
+| `BASE_RPC_URL` | no | `https://mainnet.base.org` | Base RPC the door reads host channels from: at boot, and to resync a record or a pending deposit a lost answer left behind. |
+| `CHARTER_CLAIM_KEY_FILE` | yes | | File holding the door's x402 claim key: one `0x` + 64 hex secp256k1 private key (`deploy/door/new-claim-key.mjs`). It authorizes claims and refunds on renters' batch-settlement channels and holds no funds. Channel records live in `<CHARTER_DATA_DIR>/x402-channels/`. |
 | `X402_FACILITATOR_URL` | no | `https://facilitator.payai.network` | x402 facilitator for verify and settle. |
-| `CHARTER_TOON_CONNECTOR_URL` | yes | | The connector the door's TOON client pays through. |
-| `CHARTER_TOON_KEY_FILE` | yes | | File holding the door's TOON payer key: a hex private key (`evm`) or a JSON array of secret key bytes (`solana`). |
-| `CHARTER_TOON_CHANNEL_STORE` | yes | | The client's x402 channel store file. Losing it strands a live channel's deposit. |
-| `CHARTER_TOON_CHAIN` | yes | | `evm` or `solana`: the chain the door's channel is on. |
-| `CHARTER_TOON_RPC_URL_FILE` | no | the client's default | File holding the chain RPC URL (one `https://` line). A file because the URL may carry an API key. On the Hetzner box use the Helius URL: the public Solana RPC rate-limits it. |
+| `CHARTER_PROBES_PER_DAY` | no | `10` | First probes of new hosts the door starts in a UTC day; the rest wait. |
+| `CHARTER_PROBE_MAX_TICK` | no | `10000` | The most a probe pays for its one tick. A host priced above fails its probe. |
+| `CHARTER_PROBE_DEPOSIT` | no | `100000` | The deposit into an unproven host's channel. |
+| `CHARTER_PROBE_CAPITAL_CAP` | no | `1000000` | All unproven hosts' deposits together. |
+| `CHARTER_HOST_DEPOSIT` | no | `500000` | The deposit into a proven host's channel. |
+| `CHARTER_HOST_CAPITAL_CAP` | no | `10000000` | All proven hosts' deposits together. |
+| `CHARTER_DOOR_SELF_ADDRS` | no | none | Comma list of the box's own IPs or CIDRs. A registered host URL resolving to one is refused, as loopback and private addresses always are. |
 
 Fixed, not configurable: 10 opens an hour per IP and 30 across all IPs; 120 GETs a minute per IP on
 `/v1/leases/*`; 30 tick POSTs a minute per IP; at most 500000 micro-USDC a UTC day of door spend no
 renter paid for (opens, free reads, the status read before each tick, losses), past which opens,
-ticks and uncached reads answer 503 `capacity`; a tick is refused 503 `retry_later` while the
-channel's headroom is under the tick price plus 10000, and an open is refused 503 `capacity` while it
-is under the open price plus the tick price plus 10000.
+ticks and uncached reads answer 503 `capacity`. A host's offer is fetched again at most once a minute; one
+that cannot be fetched stays listed 10 minutes, then is hidden until it answers.
 
 ## charter (tenant CLI)
 
-`charter offers | rent | renew | status` take the relay, the offer and the rest as flags. `rent --home <keys file>`
-opens a home; `renew --lease <id>` keeps paying an open lease from the host's own count of paid ticks.
-
-| variable | required | default | what it is |
-| --- | --- | --- | --- |
-| `TOON_PASSPHRASE_FILE` | for paying commands with the `toon` payer | | File holding the tenant node's wallet passphrase. Passed to `toon` in its env only. |
-| `CHARTER_PAYER` | no | `toon` | `toon` pays through the `toon` binary; `toon-client` pays with `@toon-protocol/client` and the variables below; `url` pays through a `charter payer` service (below), which is how every process in a home shares the box's one channel. |
-| `CHARTER_PAYER_URL` | with `url` | `http://127.0.0.1:3510` | The `charter payer` service to send through. Loopback: its `/send` is unauthenticated and spends from the channel. |
-| `CHARTER_TOON_KEY_FILE`, `CHARTER_TOON_CHANNEL_STORE`, `CHARTER_TOON_CHAIN`, `CHARTER_TOON_RPC_URL_FILE` | with `toon-client` (the RPC file optional) | | As for the door, above: the payer's key file, its channel store, `evm` or `solana`, and an RPC URL file. |
-| `CHARTER_TOON_CONNECTOR_URL` | with `toon-client`, unless `CHARTER_CONNECTOR_URL` is set | | The connector the payer sends through. Inside a home `CHARTER_CONNECTOR_URL` is set by the host. |
-| `CHARTER_OFFER_JSON` | no | | The offer to use instead of a relay read, so `--relay` is not needed. Set by the host inside a home. |
-
-## charter payer
-
-`charter payer [--listen <host:port>]` is the one process in a box that owns the box's channel. It pays with the
-`toon-client` payer (the `CHARTER_TOON_*` variables above, the connector from `CHARTER_TOON_CONNECTOR_URL` or
-`CHARTER_CONNECTOR_URL`), one send at a time, and serves on loopback: `POST /send` (the charter CLI with
-`CHARTER_PAYER=url`), `GET /extract?url=` and `GET /fetch?url=` (a paid anonymous page fetch, the anonfetch payer
-sidecar's contract, for a Hermes `web-toon` plugin), `POST /relay/post` (a Nostr event signed with the service's
-own key, paid onto a relay route), `GET /relay/read?filter=` (a free relay read over a WebSocket, through the
-box's proxy) and `GET /health`. A channel voucher names a running total, so two processes signing on one channel
-store race it and get packets refused: run one `charter payer` per channel store and nothing else on that store.
-
-| variable | required | default | what it is |
-| --- | --- | --- | --- |
-| `CHARTER_PAYER_LISTEN` | no | `127.0.0.1:3510` | Where to listen; `--listen` overrides. Anything but loopback is warned about. |
-| `CHARTER_PAYER_DAILY_CAP` | no | `100000` | Micro-USDC a UTC day across `/extract`, `/fetch` and `/relay/post` together, kept in `payer-budget.json` beside the channel store. `/send` is not capped: the charter CLI bounds its own leases. |
-| `CHARTER_PAYER_EXTRACT_ROUTE` | no | `g.drew.anon` | The route `/extract` and `/fetch` pay (a kind 5301 job). Priced from the connector's `GET /ilp`. |
-| `CHARTER_PAYER_RELAY_ROUTE` | no | `g.drew.relay` | The route `/relay/post` pays. Priced from the connector's `GET /ilp`. |
-| `CHARTER_PAYER_RELAY_URL` | no | `wss://relay.mainnet.toonprotocol.dev` | The relay `/relay/read` reads when the query names none. |
-| `CHARTER_PAYER_NOSTR_KEY_FILE` | no | `nostr.key` beside the channel store | 32 hex bytes, the key `/relay/post` signs with; made (mode 600) when missing. An identity for notes, not a money key. |
+`charter offers | rent | renew | status` print that they move to the door in the next release and exit 2.
 
 ## Development only
 

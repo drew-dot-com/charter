@@ -1,12 +1,23 @@
 import { join } from 'node:path';
 import { FIRST_TICK_GRACE_MS } from '../lease.js';
 import { HOME_IMAGES } from '../jobs.js';
-import { isSealKey, isSealUrl } from '../offer.js';
+import { hostIdOf, normalizeHostUrl } from '../door/hosts.js';
 import type { Micro, Offer } from '../types.js';
 import { HOME_DISK_GIB, HOME_DISK_GIB_MAX, HOME_RETENTION_MS } from './homes.js';
 
 export interface HostConfig {
-  ports: { open: number; tick: number; status: number };
+  /** CHARTER_HOST_URL, normalized: the public HTTPS address the door reaches this host at, and its identity. */
+  hostUrl: string;
+  /** CHARTER_HOST_PAY_TO: the Base address ticks are paid to. */
+  payTo: `0x${string}`;
+  /** CHARTER_HOST_PORT: the loopback port the host app listens on, behind the TLS proxy. Default 7401. */
+  port: number;
+  /** CHARTER_DOOR_URL: the door this host registers with and answers. */
+  doorUrl: string;
+  /** CHARTER_CLAIM_KEY_FILE: the host's x402 claim authorizer key. */
+  claimKeyFile: string;
+  /** X402_FACILITATOR_URL: who settles the door's vouchers. Default PayAI. */
+  facilitatorUrl: string;
   dataDir: string;
   allowImages: string[];
   proxy?: string;
@@ -14,8 +25,6 @@ export interface HostConfig {
   jobDns?: string;
   /** OCI runtime for every job container (`runsc` for gVisor). Default: docker's own. */
   runtime?: string;
-  relayUrl: string;
-  passphraseFile: string;
   /** Leases this host runs at once (booting, awaiting the first tick, or running). An open past it answers closed `busy`. */
   maxLeases: number;
   /** Home leases this host runs at once, inside maxLeases. 0: no homes. */
@@ -41,9 +50,12 @@ export interface HostConfig {
     /** The connector a box pays through, as the box sees it. */
     tenantConnectorUrl: string;
   };
-  /** The base offer. `expiresAt` is 0 here; the offer loop sets it on each publish. */
+  /** The base offer. `expiresAt` is 0 here; `GET /v1/offer` sets it on each answer. */
   offer: Offer;
 }
+
+/** The door a host registers with unless CHARTER_DOOR_URL names another. */
+export const DEFAULT_DOOR_URL = 'https://charter.mainnet.toonprotocol.dev';
 
 function need(env: Record<string, string | undefined>, name: string): string {
   const v = env[name];
@@ -87,11 +99,14 @@ function publicIPv4(v: string): boolean {
 }
 
 export function loadConfig(env: Record<string, string | undefined>): HostConfig {
-  const rawPorts = (env.CHARTER_PORTS?.trim() || '7401,7402,7403').split(',').map((s) => s.trim());
-  const nums = rawPorts.map((p) => (/^\d+$/.test(p) ? Number(p) : NaN));
-  if (nums.length !== 3 || nums.some((n) => !Number.isInteger(n) || n < 1 || n > 65535) || new Set(nums).size !== 3) {
-    throw new Error('CHARTER_PORTS must be three distinct ports: open,tick,status');
-  }
+  const hostUrl = normalizeHostUrl(need(env, 'CHARTER_HOST_URL'));
+  if (hostUrl === null) throw new Error('CHARTER_HOST_URL must be the public https:// address of this host (a name with a dot, or a public IP), with no query');
+  const payTo = need(env, 'CHARTER_HOST_PAY_TO');
+  if (!/^0x[0-9a-fA-F]{40}$/.test(payTo)) throw new Error('CHARTER_HOST_PAY_TO must be a 0x address (40 hex characters)');
+  const port = num(env, 'CHARTER_HOST_PORT', 7401);
+  if (port > 65535) throw new Error('CHARTER_HOST_PORT must be a port number');
+  const doorUrl = (env.CHARTER_DOOR_URL?.trim() || DEFAULT_DOOR_URL).replace(/\/+$/, '');
+  if (!/^https:\/\/[^\s/]+/.test(doorUrl)) throw new Error('CHARTER_DOOR_URL must be an https:// URL');
   const allowImages = need(env, 'CHARTER_ALLOW_IMAGES')
     .split(',')
     .map((s) => s.trim())
@@ -110,16 +125,6 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
   if (runtime !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(runtime)) {
     throw new Error('CHARTER_RUNTIME must be a docker runtime name, such as runsc');
   }
-  const sealKey = need(env, 'CHARTER_SEAL_KEY');
-  if (!isSealKey(sealKey)) throw new Error('CHARTER_SEAL_KEY must be the connector public key: 0x04 and 128 hex digits (toon describe --json .description.edgeIdentity.publicKey)');
-  const sealUrl = need(env, 'CHARTER_SEAL_URL');
-  if (!isSealUrl(sealUrl)) throw new Error('CHARTER_SEAL_URL must be the connector /ilp URL (toon describe --json .description.httpEndpoint)');
-
-  const hostPubkey = env.CHARTER_HOST_PUBKEY?.trim() ?? '';
-  if (hostPubkey !== '' && !/^[0-9a-f]{64}$/.test(hostPubkey)) {
-    throw new Error('CHARTER_HOST_PUBKEY must be the host Nostr pubkey: 64 lowercase hex digits');
-  }
-
   const maxLeases = num(env, 'CHARTER_MAX_LEASES', 1);
   const maxHomes = count(env, 'CHARTER_MAX_HOMES', 0);
   if (allowImages.some((i) => HOME_IMAGES.includes(i)) && maxHomes === 0) {
@@ -166,33 +171,34 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
   }
 
   return {
-    ports: { open: nums[0]!, tick: nums[1]!, status: nums[2]! },
+    hostUrl,
+    payTo: payTo as `0x${string}`,
+    port,
+    doorUrl,
+    claimKeyFile: need(env, 'CHARTER_CLAIM_KEY_FILE'),
+    facilitatorUrl: env.X402_FACILITATOR_URL?.trim() || 'https://facilitator.payai.network',
     dataDir,
     allowImages,
     proxy,
     ...(jobDns !== undefined ? { jobDns } : {}),
     runtime,
-    relayUrl: need(env, 'CHARTER_RELAY_URL'),
-    passphraseFile: need(env, 'TOON_PASSPHRASE_FILE'),
     maxLeases,
     maxHomes,
     home,
     offer: {
       id: need(env, 'CHARTER_OFFER_ID'),
-      // The signer's pubkey is stamped on the event when toon signs it. Set here only so the offer
-      // handed to a home box (CHARTER_OFFER_JSON) names its host and resolves `<pubkey>:<id>`.
-      hostPubkey,
-      ilpBase: need(env, 'CHARTER_ILP_BASE'),
-      sealKey,
-      sealUrl,
+      hostId: hostIdOf(hostUrl),
+      url: hostUrl,
+      payTo: payTo as `0x${string}`,
       cpu: num(env, 'CHARTER_CPU', 1),
       memoryMiB: num(env, 'CHARTER_MEMORY_MIB', 1024),
       // One hour at 0.007 USDC: about 5 USDC for 30 days, the price a model weighs against a 5 EUR VPS.
       intervalSeconds: num(env, 'CHARTER_INTERVAL_SECONDS', 3600),
       firstTickGraceSeconds: FIRST_TICK_GRACE_MS / 1000,
       tickPrice: price(env, 'CHARTER_TICK_PRICE', 7000n),
-      openPrice: price(env, 'CHARTER_OPEN_PRICE', 1000n),
-      statusPrice: price(env, 'CHARTER_STATUS_PRICE', 100n),
+      // The door pays ticks only: opens and status reads are free.
+      openPrice: 0n,
+      statusPrice: 0n,
       images: allowImages,
       hiddenHost: flag(env, 'CHARTER_HIDDEN_HOST'),
       hiddenEgress: proxy !== undefined,

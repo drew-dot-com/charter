@@ -3,12 +3,12 @@ export type Micro = bigint;
 
 export interface Offer {
   id: string;
-  hostPubkey: string;
-  ilpBase: string;
-  /** The terminating connector's public key, `0x04` and 128 hex digits (`toon describe --json` .description.edgeIdentity.publicKey). A payer that seals by key needs no fetch. */
-  sealKey: string;
-  /** The terminating connector's `/ilp` URL, usually an onion address. The `toon` CLI seals to a URL only. */
-  sealUrl: string;
+  /** sha256 hex of the host's normalized URL (hostIdOf): the 64 hex of every `offerId` the door lists for it. */
+  hostId: string;
+  /** The host's HTTPS base URL, normalized (normalizeHostUrl). */
+  url: string;
+  /** Where the host is paid: its Base address. */
+  payTo: `0x${string}`;
   cpu: number;
   memoryMiB: number;
   intervalSeconds: number;

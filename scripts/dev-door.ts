@@ -24,9 +24,9 @@ const OUTPUT_PARTS = 2;
 const FAKE_LANDING = { chain: 'solana', tx: '1'.repeat(88), shared: true };
 
 const offer = (id: string, key: string, cpu: number, memoryMiB: number, hiddenHost: boolean, images: string[]): Offer => ({
-  id, hostPubkey: key.repeat(32), ilpBase: 'g.dev', sealKey: '0x04' + key.repeat(64), sealUrl: 'http://dev.invalid/ilp',
+  id, hostId: key.repeat(32), url: `https://${id}.dev.invalid`, payTo: `0x${'3'.repeat(40)}`,
   cpu, memoryMiB, intervalSeconds, firstTickGraceSeconds: 90,
-  tickPrice: 5000n, openPrice: 1000n, statusPrice: 100n, images, hiddenHost, hiddenEgress: false,
+  tickPrice: 5000n, openPrice: 0n, statusPrice: 0n, images, hiddenHost, hiddenEgress: false,
   expiresAt: Date.now() + 365 * 24 * 3600 * 1000,
 });
 const OFFERS = [
@@ -127,7 +127,6 @@ const dir = mkdtempSync(join(tmpdir(), 'charter-dev-door-'));
 const app = doorApp({
   offers: async () => OFFERS,
   api: apiFor,
-  hosts: new Map(OFFERS.map((o) => [o.hostPubkey, o.ilpBase])),
   ledger: new DoorLedger(join(dir, 'ledger.json')),
   dataDir: dir,
   x402: 'free-for-tests',

@@ -50,7 +50,7 @@ const PAY_TO = '0x' + '2'.repeat(40);
 const CLAIM_KEY = ('0x' + 'ab'.repeat(32)) as `0x${string}`;
 const CLAIM_ADDRESS = privateKeyToAccount(CLAIM_KEY).address;
 const LEASE = 'a'.repeat(32);
-const OFFER_ID = `${OFFER.hostPubkey}:${OFFER.id}`;
+const OFFER_ID = `${OFFER.hostId}:${OFFER.id}`;
 const URLS = ['https://example.com/a'];
 const TX = '0x' + '1'.repeat(64);
 
@@ -173,7 +173,6 @@ async function realDoor(fac: Facilitator, over: Partial<DoorDeps> = {}) {
   const app = doorApp({
     offers: async () => [OFFER],
     api: () => host.api,
-    hosts: new Map([[OFFER.hostPubkey, OFFER.ilpBase]]),
     ledger,
     x402: cfg,
     webDir: join(dir, 'no-web'),

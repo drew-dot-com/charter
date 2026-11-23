@@ -1,26 +1,23 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Offer } from './types.js';
-import { OFFER_KIND, offerFromEvent, offerToEvent, offerToJson, offerFromJson, latestOffers } from './offer.js';
+import { offerFromJson, offerToJson } from './offer.js';
 
 const NOW = 1_800_000_000_000;
-const PUB = 'ab'.repeat(32);
-const SEAL_KEY = '0x04' + 'cd'.repeat(64);
 
 function offer(over: Partial<Offer> = {}): Offer {
   return {
     id: 'offer-1',
-    hostPubkey: PUB,
-    ilpBase: 'g.drew.charter',
-    sealKey: SEAL_KEY,
-    sealUrl: 'http://ev2ocvzg.anyone/ilp',
+    hostId: 'ab'.repeat(32),
+    url: 'https://host.example',
+    payTo: `0x${'3'.repeat(40)}`,
     cpu: 1,
     memoryMiB: 1024,
     intervalSeconds: 30,
     firstTickGraceSeconds: 90,
     tickPrice: 5000n,
-    openPrice: 1000n,
-    statusPrice: 100n,
+    openPrice: 0n,
+    statusPrice: 0n,
     images: ['alpine:3.20'],
     hiddenHost: true,
     hiddenEgress: false,
@@ -29,180 +26,63 @@ function offer(over: Partial<Offer> = {}): Offer {
   };
 }
 
-function signed(o: Offer, created_at: number) {
-  return { pubkey: o.hostPubkey, created_at, ...offerToEvent(o) };
+/** The offer's JSON with fields replaced (or removed, as undefined). */
+function json(over: Record<string, unknown>): string {
+  return JSON.stringify({ ...JSON.parse(offerToJson(offer())), ...over });
 }
 
-test('offer kind is 31390', () => {
-  assert.equal(OFFER_KIND, 31390);
-});
-
-test('offerToEvent writes the expected tags and bigint-free content', () => {
-  const ev = offerToEvent(offer());
-  assert.equal(ev.kind, 31390);
-  assert.deepEqual(ev.tags, [
-    ['d', 'offer-1'],
-    ['L', 'charter'],
-    ['expiration', String(Math.floor((NOW + 30 * 60 * 1000) / 1000))],
-    ['t', 'hidden-host'],
-  ]);
-  const content = JSON.parse(ev.content);
-  assert.equal(content.tickPrice, '5000');
-  assert.equal('id' in content, false);
-  assert.equal('hostPubkey' in content, false);
-  assert.equal('expiresAt' in content, false);
-});
-
-test('no hidden-host tag when hiddenHost is false', () => {
-  const ev = offerToEvent(offer({ hiddenHost: false }));
-  assert.equal(ev.tags.some((t) => t[0] === 't'), false);
-});
-
-test('round trip deep-equals and tickPrice stays a bigint', () => {
+test('round trip deep-equals and the prices stay bigints', () => {
   const o = offer();
-  const back = offerFromEvent({ pubkey: PUB, ...offerToEvent(o) }, NOW);
+  const text = offerToJson(o);
+  assert.equal(JSON.parse(text).tickPrice, '5000');
+  const back = offerFromJson(text)!;
   assert.deepEqual(back, o);
-  assert.equal(typeof back?.tickPrice, 'bigint');
+  assert.equal(typeof back.tickPrice, 'bigint');
+  assert.deepEqual(offerFromJson(offerToJson({ ...o, expiresAt: 0 })), { ...o, expiresAt: 0 }, 'a host offer may carry expiresAt 0');
 });
 
-test('expired event returns null', () => {
-  const o = offer({ expiresAt: NOW - 1000 });
-  assert.equal(offerFromEvent({ pubkey: PUB, ...offerToEvent(o) }, NOW), null);
+test('the tick price must be above 0; an open or status price may be 0', () => {
+  assert.equal(offerFromJson(json({ tickPrice: '0' })), null);
+  assert.equal(offerFromJson(offerToJson(offer({ openPrice: 1000n, statusPrice: 100n })))!.openPrice, 1000n);
+  for (const bad of ['-1', '1.5', 5, 'x']) {
+    for (const field of ['tickPrice', 'openPrice', 'statusPrice']) assert.equal(offerFromJson(json({ [field]: bad })), null, `${field} ${bad}`);
+  }
 });
 
-test('event missing the L tag returns null', () => {
-  const ev = offerToEvent(offer());
-  const tags = ev.tags.filter((t) => t[0] !== 'L');
-  assert.equal(offerFromEvent({ pubkey: PUB, tags, content: ev.content }, NOW), null);
+test('hostId is 64 lowercase hex, url an http(s) URL, payTo an address', () => {
+  for (const bad of ['AB'.repeat(32), 'ab'.repeat(31), undefined, 5]) assert.equal(offerFromJson(json({ hostId: bad })), null, String(bad));
+  for (const bad of ['ftp://x', 'not a url', `https://${'a'.repeat(2048)}.example`, undefined]) assert.equal(offerFromJson(json({ url: bad })), null, String(bad));
+  for (const bad of ['0x123', '3'.repeat(40), undefined]) assert.equal(offerFromJson(json({ payTo: bad })), null, String(bad));
 });
 
-test('non-positive price returns null', () => {
-  const ev = offerToEvent(offer());
-  const content = JSON.stringify({ ...JSON.parse(ev.content), tickPrice: '0' });
-  assert.equal(offerFromEvent({ pubkey: PUB, tags: ev.tags, content }, NOW), null);
-});
-
-test('missing field, junk price, bad JSON and missing d all return null', () => {
-  const ev = offerToEvent(offer());
-  const parsed = JSON.parse(ev.content);
-  const { sealKey: _s, ...noSeal } = parsed;
-  const cases = [
-    { tags: ev.tags, content: JSON.stringify(noSeal) },
-    { tags: ev.tags, content: JSON.stringify({ ...parsed, openPrice: 'abc' }) },
-    { tags: ev.tags, content: JSON.stringify({ ...parsed, statusPrice: '-5' }) },
-    { tags: ev.tags, content: '{not json' },
-    { tags: ev.tags.filter((t) => t[0] !== 'd'), content: ev.content },
-    { tags: ev.tags.filter((t) => t[0] !== 'expiration'), content: ev.content },
-  ];
-  for (const c of cases) assert.equal(offerFromEvent({ pubkey: PUB, ...c }, NOW), null);
-});
-
-test('latestOffers keeps only the newer event per (pubkey, d)', () => {
-  const older = signed(offer({ cpu: 1 }), 100);
-  const newer = signed(offer({ cpu: 2 }), 200);
-  const out = latestOffers([newer, older], NOW);
-  assert.equal(out.length, 1);
-  assert.equal(out[0]?.cpu, 2);
-  assert.equal(latestOffers([older, newer], NOW)[0]?.cpu, 2);
-});
-
-test('latestOffers keeps different ids and different pubkeys apart', () => {
-  const other = 'ef'.repeat(32);
-  const out = latestOffers(
-    [
-      signed(offer({ id: 'a' }), 1),
-      signed(offer({ id: 'b' }), 1),
-      signed(offer({ id: 'a', hostPubkey: other }), 1),
-    ],
-    NOW,
-  );
-  assert.equal(out.length, 3);
-});
-
-test('latestOffers drops an offer whose newest event is expired', () => {
-  const live = signed(offer(), 100);
-  const dead = signed(offer({ expiresAt: NOW - 1 }), 200);
-  assert.deepEqual(latestOffers([live, dead], NOW), []);
-});
-
-function content(over: Record<string, unknown>) {
-  const ev = offerToEvent(offer());
-  return { pubkey: PUB, tags: ev.tags, content: JSON.stringify({ ...JSON.parse(ev.content), ...over }) };
-}
-
-test('F-C1: cpu, memoryMiB, intervalSeconds and firstTickGraceSeconds must be positive safe integers', () => {
+test('cpu, memoryMiB, intervalSeconds and firstTickGraceSeconds must be positive safe integers', () => {
   for (const field of ['cpu', 'memoryMiB', 'intervalSeconds', 'firstTickGraceSeconds']) {
     for (const bad of [0, -1, 1.5, 2 ** 60, '1', null]) {
-      assert.equal(offerFromEvent(content({ [field]: bad }), NOW), null, `${field} = ${String(bad)}`);
+      assert.equal(offerFromJson(json({ [field]: bad })), null, `${field} = ${String(bad)}`);
     }
   }
-  assert.notEqual(offerFromEvent(content({ cpu: 2, memoryMiB: 2048, intervalSeconds: 60 }), NOW), null);
 });
 
-test('F-C1: an expiration tag beyond a safe integer is refused, not read as never expiring', () => {
-  const ev = offerToEvent(offer());
-  for (const exp of ['9'.repeat(30), String(Number.MAX_SAFE_INTEGER)]) {
-    const tags = ev.tags.map((t) => (t[0] === 'expiration' ? ['expiration', exp] : t));
-    assert.equal(offerFromEvent({ pubkey: PUB, tags, content: ev.content }, NOW), null, exp);
-  }
+test('missing fields, a bad expiresAt and junk all return null', () => {
+  for (const field of ['id', 'images', 'hiddenHost', 'hiddenEgress', 'expiresAt']) assert.equal(offerFromJson(json({ [field]: undefined })), null, field);
+  for (const bad of [-1, 1.5, 2 ** 60, '0']) assert.equal(offerFromJson(json({ expiresAt: bad })), null, String(bad));
+  for (const text of ['not json', '[]', 'null', '5']) assert.equal(offerFromJson(text), null, text);
 });
 
-test('F-C2: sealKey must be the 65-byte uncompressed hex key and sealUrl an http(s) URL', () => {
-  for (const bad of ['http://x.anyone/ilp', '0x04' + 'cd'.repeat(63), '0x02' + 'cd'.repeat(64), 'cd'.repeat(65), '0x04' + 'zz'.repeat(64)]) {
-    assert.equal(offerFromEvent(content({ sealKey: bad }), NOW), null, bad);
-  }
-  for (const bad of ['', 'ftp://x/ilp', 'not a url', 5]) {
-    assert.equal(offerFromEvent(content({ sealUrl: bad }), NOW), null, String(bad));
-  }
-  const { sealUrl: _u, ...noUrl } = JSON.parse(offerToEvent(offer()).content);
-  assert.equal(offerFromEvent({ pubkey: PUB, tags: offerToEvent(offer()).tags, content: JSON.stringify(noUrl) }, NOW), null);
-  const back = offerFromEvent(content({}), NOW)!;
-  assert.equal(back.sealKey, SEAL_KEY);
-  assert.equal(back.sealUrl, 'http://ev2ocvzg.anyone/ilp');
-  assert.equal(back.firstTickGraceSeconds, 90);
-});
-
-test('an offer carries its home terms through the event and through JSON', () => {
-  const BASE = offer();
-  const o: Offer = { ...BASE, home: { diskGiB: 2, retentionDays: 7, slots: 1 } };
-  const ev = offerToEvent(o);
-  assert.deepEqual(JSON.parse(ev.content).home, { diskGiB: 2, retentionDays: 7, slots: 1 });
-  assert.deepEqual(offerFromEvent({ ...ev, pubkey: 'f'.repeat(64) }, 0)!.home, o.home);
-  assert.equal(offerFromEvent({ ...offerToEvent({ ...o, home: { diskGiB: 0, retentionDays: 7, slots: 1 } }), pubkey: 'f'.repeat(64) }, 0), null);
-  assert.equal(offerFromEvent({ ...offerToEvent(BASE), pubkey: 'f'.repeat(64) }, 0)!.home, undefined);
-  const back = offerFromJson(offerToJson({ ...o, expiresAt: 0 }));
-  assert.deepEqual(back, { ...o, expiresAt: 0 });
-});
-
-test('an offer carries home.root only as true; anything else there is not an offer', () => {
-  const BASE = offer();
-  const o: Offer = { ...BASE, home: { diskGiB: 10, retentionDays: 7, slots: 4, root: true } };
-  const ev = offerToEvent(o);
-  assert.equal(offerFromEvent({ ...ev, pubkey: 'f'.repeat(64) }, 0)!.home?.root, true);
-  const plain = offerFromEvent({ ...offerToEvent({ ...BASE, home: { diskGiB: 10, retentionDays: 7, slots: 4 } }), pubkey: 'f'.repeat(64) }, 0)!;
-  assert.equal('root' in plain.home!, false);
-  for (const bad of [false, 'yes', 1]) {
-    const e = offerToEvent({ ...BASE, home: { diskGiB: 10, retentionDays: 7, slots: 4, root: bad as unknown as true } });
-    assert.equal(offerFromEvent({ ...e, pubkey: 'f'.repeat(64) }, 0), null, String(bad));
-  }
-});
-
-test('parses home.free when 0 <= free <= slots', () => {
-  for (const free of [0, 1, 2]) {
-    const o = offer({ home: { diskGiB: 2, retentionDays: 7, slots: 2, free } });
-    assert.equal(offerFromEvent({ ...offerToEvent(o), pubkey: PUB }, 0)!.home!.free, free);
-  }
-});
-
-test('drops an offer whose home.free is negative, fractional or above slots', () => {
-  for (const free of [-1, 0.5, 3]) {
-    const o = offer({ home: { diskGiB: 2, retentionDays: 7, slots: 2, free } });
-    assert.equal(offerFromEvent({ ...offerToEvent(o), pubkey: PUB }, 0), null);
-  }
-});
-
-test('an offer without home.free still parses', () => {
-  const o = offer({ home: { diskGiB: 2, retentionDays: 7, slots: 2 } });
-  const home = offerFromEvent({ ...offerToEvent(o), pubkey: PUB }, 0)!.home!;
+test('an offer carries its home terms; home.root only as true; home.free within 0..slots', () => {
+  const o = offer({ home: { diskGiB: 2, retentionDays: 7, slots: 2, free: 1, root: true } });
+  assert.deepEqual(offerFromJson(offerToJson(o)), o);
+  assert.equal(offerFromJson(offerToJson(offer()))!.home, undefined);
+  const home = offerFromJson(offerToJson(offer({ home: { diskGiB: 2, retentionDays: 7, slots: 2 } })))!.home!;
   assert.equal('free' in home, false);
+  assert.equal('root' in home, false);
+  for (const bad of [
+    { diskGiB: 0, retentionDays: 7, slots: 1 },
+    { diskGiB: 2, retentionDays: 7, slots: 2, root: false },
+    { diskGiB: 2, retentionDays: 7, slots: 2, root: 'yes' },
+    { diskGiB: 2, retentionDays: 7, slots: 2, free: -1 },
+    { diskGiB: 2, retentionDays: 7, slots: 2, free: 0.5 },
+    { diskGiB: 2, retentionDays: 7, slots: 2, free: 3 },
+    [],
+  ]) assert.equal(offerFromJson(json({ home: bad })), null, JSON.stringify(bad));
 });

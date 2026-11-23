@@ -1,9 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { Lease, Offer } from '../types.js';
-import { OFFER_KIND } from '../offer.js';
+import type { Lease } from '../types.js';
 import { RunnerError, type Runner } from './runner.js';
-import { BOOT_TIMEOUT_MS, DOCKER_WAIT_MS, homeSweep, homesFree, landAll, offerTick, reconcile, windowTick, type LoopDeps } from './loop.js';
+import { BOOT_TIMEOUT_MS, DOCKER_WAIT_MS, homeSweep, homesFree, reconcile, windowTick, type LoopDeps } from './loop.js';
 import { GRACE_MS, onTick } from '../lease.js';
 import { LeaseStore } from './store.js';
 import { HOME_RETENTION_MS, HomeStore, type HomeRecord } from './homes.js';
@@ -11,12 +10,6 @@ import { homeIdOf, homeJob, normalizeSshKeys } from '../jobs.js';
 
 const T0 = 1_000_000;
 const JOB = { image: 'charter-job-fetch', args: {} };
-const OFFER: Offer = {
-  id: 'o1', hostPubkey: '', ilpBase: 'g.test', sealKey: '0x04' + 'ab'.repeat(64), sealUrl: 'http://x.anyone/ilp', cpu: 1,
-  memoryMiB: 1024, intervalSeconds: 30, firstTickGraceSeconds: 90, tickPrice: 5000n, openPrice: 1000n, statusPrice: 100n, images: ['charter-job-fetch'],
-  hiddenHost: true, hiddenEgress: false, expiresAt: 0,
-};
-
 function lease(over: Partial<Lease> & { id: string }): Lease {
   return { offerId: 'o1', job: JOB, state: 'running', createdAt: T0, paidIntervals: 1, startedAt: T0, ...over };
 }
@@ -195,71 +188,6 @@ test('reconcile closes a stored running lease whose container is gone as host_re
   assert.equal(store.get('alive')!.state, 'running');
   assert.equal(store.get('fin')!.state, 'done');
   assert.ok(!asked.includes('fin'));
-});
-
-test('offerTick publishes kind 31390 expiring 45 minutes ahead', async () => {
-  const published: Array<{ ev: { kind: number; tags: string[][]; content: string }; relay: string }> = [];
-  const cli = { publishEvent: async (ev: any, relay: string) => { published.push({ ev, relay }); return 'evid'; } };
-  const now = 5_000_000_000;
-  const id = await offerTick({ cli, offer: OFFER, relayUrl: 'wss://relay.example', now: () => now });
-  assert.equal(id, 'evid');
-  assert.equal(published.length, 1);
-  assert.equal(published[0]!.relay, 'wss://relay.example');
-  const { ev } = published[0]!;
-  assert.equal(ev.kind, OFFER_KIND);
-  assert.equal(ev.kind, 31390);
-  assert.deepEqual(ev.tags.find((t) => t[0] === 'expiration'), ['expiration', String(Math.floor((now + 45 * 60_000) / 1000))]);
-  assert.deepEqual(ev.tags.find((t) => t[0] === 'L'), ['L', 'charter']);
-});
-
-test('landAll lands inbound channels only and records the first tx on each paid, unlanded lease', async () => {
-  const store = new LeaseStore();
-  store.put(lease({ id: 'paid' }));
-  store.put(lease({ id: 'unpaid', paidIntervals: 0, state: 'closed', closedReason: 'missed_tick' }));
-  store.put(lease({ id: 'already', landing: { chain: 'solana', tx: 'old', shared: true } }));
-  const landed: string[] = [];
-  const cli = {
-    channels: async () => [
-      { id: 'in1', direction: 'inbound' as const, chain: 'solana' },
-      { id: 'out1', direction: 'outbound' as const, chain: 'solana' },
-    ],
-    land: async (id: string) => { landed.push(id); return [{ chain: 'solana', tx: 'tx1' }, { chain: 'solana', tx: 'tx2' }]; },
-  };
-  const r = await landAll({ cli, store });
-  assert.deepEqual(landed, ['in1']);
-  assert.deepEqual(r.recorded, ['paid']);
-  assert.deepEqual(store.get('paid')!.landing, { chain: 'solana', tx: 'tx1', shared: true });
-  assert.equal(store.get('unpaid')!.landing, undefined);
-  assert.equal(store.get('already')!.landing!.tx, 'old');
-});
-
-test('landAll with no inbound channel or no txs records nothing and does not throw', async () => {
-  const store = new LeaseStore();
-  store.put(lease({ id: 'paid' }));
-  const none = await landAll({ cli: { channels: async () => [], land: async () => [] }, store });
-  assert.deepEqual(none.txs, []);
-  const empty = await landAll({
-    cli: { channels: async () => [{ id: 'i', direction: 'inbound' as const, chain: 'solana' }], land: async () => [] },
-    store,
-  });
-  assert.deepEqual(empty.recorded, []);
-  assert.equal(store.get('paid')!.landing, undefined);
-});
-
-test('landAll keeps going when one channel fails to land and reports the error', async () => {
-  const store = new LeaseStore();
-  store.put(lease({ id: 'paid' }));
-  const cli = {
-    channels: async () => [
-      { id: 'bad', direction: 'inbound' as const, chain: 'solana' },
-      { id: 'good', direction: 'inbound' as const, chain: 'solana' },
-    ],
-    land: async (id: string) => { if (id === 'bad') throw new Error('boom'); return [{ chain: 'solana', tx: 'tx9' }]; },
-  };
-  const r = await landAll({ cli, store });
-  assert.equal(r.errors.length, 1);
-  assert.match(r.errors[0]!, /bad/);
-  assert.equal(store.get('paid')!.landing!.tx, 'tx9');
 });
 
 test('windowTick decides each lease from a fresh read: a tick paid during an earlier stop is kept', async () => {

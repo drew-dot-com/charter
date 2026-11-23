@@ -11,7 +11,7 @@ const DAY = 86_400_000;
 const T0 = 1_800_000_000_000;
 
 const OFFER: Offer = {
-  id: 'o1', hostPubkey: '', ilpBase: '', sealKey: '', sealUrl: '', cpu: 1, memoryMiB: 1024, intervalSeconds: 3600,
+  id: 'o1', hostId: 'ab'.repeat(32), url: 'https://host.example', payTo: `0x${'3'.repeat(40)}`, cpu: 1, memoryMiB: 1024, intervalSeconds: 3600,
   firstTickGraceSeconds: 90, tickPrice: 7000n, openPrice: 0n, statusPrice: 0n, images: ['charter-job-python'],
   hiddenHost: false, hiddenEgress: false, expiresAt: T0 + DAY,
 };

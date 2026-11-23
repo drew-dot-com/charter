@@ -1,42 +1,43 @@
 import type { Micro, Offer } from './types.js';
 
-export const OFFER_KIND = 31390;
-
-export interface UnsignedEvent {
-  kind: number;
-  tags: string[][];
-  content: string;
-}
-
-export interface OfferEvent {
-  pubkey: string;
-  tags: string[][];
-  content: string;
-}
-
-export interface SignedOfferEvent extends OfferEvent {
-  /** Seconds. */
-  created_at: number;
-}
-
-export function offerToEvent(o: Offer): UnsignedEvent {
-  const { id, hostPubkey: _hostPubkey, expiresAt, ...rest } = o;
-  const tags: string[][] = [
-    ['d', id],
-    ['L', 'charter'],
-    ['expiration', String(Math.floor(expiresAt / 1000))],
-  ];
-  if (o.hiddenHost) tags.push(['t', 'hidden-host']);
-  const content = JSON.stringify(rest, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
-  return { kind: OFFER_KIND, tags, content };
-}
-
-/** The host's own offer as JSON: the content fields plus the id and key the event carries in tags and `pubkey`. */
+/** A host's offer as JSON (what `GET /v1/offer` answers): bigint prices as decimal strings. */
 export function offerToJson(o: Offer): string {
   return JSON.stringify(o, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
 }
 
-/** Unlike an event this may carry `expiresAt: 0`: it is the host's own offer, not a relay's. */
+/** The longest host URL an offer may carry. */
+const MAX_URL_CHARS = 2048;
+
+/** An http(s) URL of sane length. The door checks a host's URL further against its registry. */
+function isHttpUrl(v: unknown): v is string {
+  if (typeof v !== 'string' || v.length > MAX_URL_CHARS) return false;
+  try {
+    const u = new URL(v);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/** Decimal micro-USDC: at least 1, or at least 0 when `zeroOk`. */
+function parsePrice(v: unknown, zeroOk = false): Micro | null {
+  if (typeof v !== 'string' || !/^\d+$/.test(v)) return null;
+  const n = BigInt(v);
+  return n > 0n || (zeroOk && n === 0n) ? n : null;
+}
+
+function isPositiveInt(v: unknown): v is number {
+  return typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
+}
+
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === 'string');
+}
+
+/**
+ * An offer from its JSON, or null for anything that is not a well-formed Charter offer. `expiresAt` may be 0:
+ * a host's own offer, as it hands it to a box, has none.
+ */
 export function offerFromJson(text: string): Offer | null {
   let c: Record<string, unknown>;
   try {
@@ -46,53 +47,18 @@ export function offerFromJson(text: string): Offer | null {
   } catch {
     return null;
   }
-  if (typeof c.id !== 'string' || !c.id || typeof c.hostPubkey !== 'string') return null;
+  if (typeof c.id !== 'string' || !c.id) return null;
+  if (typeof c.hostId !== 'string' || !/^[0-9a-f]{64}$/.test(c.hostId)) return null;
+  if (!isHttpUrl(c.url)) return null;
+  if (typeof c.payTo !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(c.payTo)) return null;
   if (typeof c.expiresAt !== 'number' || !Number.isSafeInteger(c.expiresAt) || c.expiresAt < 0) return null;
-  return parseOfferContent(c, c.id, c.hostPubkey, c.expiresAt);
-}
 
-function tagValue(tags: string[][], name: string): string | undefined {
-  return tags.find((t) => t[0] === name)?.[1];
-}
-
-function parsePrice(v: unknown): Micro | null {
-  if (typeof v !== 'string' || !/^\d+$/.test(v)) return null;
-  const n = BigInt(v);
-  return n > 0n ? n : null;
-}
-
-function isPositiveInt(v: unknown): v is number {
-  return typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
-}
-
-/** The 65-byte uncompressed secp256k1 point a connector seals to, as `0x04` and 128 hex digits. */
-export function isSealKey(v: unknown): v is string {
-  return typeof v === 'string' && /^0x04[0-9a-fA-F]{128}$/.test(v);
-}
-
-/** An http(s) URL, as `toon send --seal-to` takes. */
-export function isSealUrl(v: unknown): v is string {
-  if (typeof v !== 'string' || v.length > 512) return false;
-  try {
-    const u = new URL(v);
-    return u.protocol === 'http:' || u.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-function isStringArray(v: unknown): v is string[] {
-  return Array.isArray(v) && v.every((x) => typeof x === 'string');
-}
-
-/** The content fields of an offer, shared by the relay event and the JSON a host hands its own box. */
-function parseOfferContent(c: Record<string, unknown>, id: string, hostPubkey: string, expiresAt: number): Offer | null {
+  // Only ticks are paid: an open or a status read may be priced at 0.
   const tickPrice = parsePrice(c.tickPrice);
-  const openPrice = parsePrice(c.openPrice);
-  const statusPrice = parsePrice(c.statusPrice);
+  const openPrice = parsePrice(c.openPrice, true);
+  const statusPrice = parsePrice(c.statusPrice, true);
   if (tickPrice === null || openPrice === null || statusPrice === null) return null;
 
-  if (typeof c.ilpBase !== 'string' || !isSealKey(c.sealKey) || !isSealUrl(c.sealUrl)) return null;
   if (!isPositiveInt(c.cpu) || !isPositiveInt(c.memoryMiB) || !isPositiveInt(c.intervalSeconds) || !isPositiveInt(c.firstTickGraceSeconds)) {
     return null;
   }
@@ -116,11 +82,10 @@ function parseOfferContent(c: Record<string, unknown>, id: string, hostPubkey: s
   }
 
   return {
-    id,
-    hostPubkey,
-    ilpBase: c.ilpBase,
-    sealKey: c.sealKey,
-    sealUrl: c.sealUrl,
+    id: c.id,
+    hostId: c.hostId,
+    url: c.url,
+    payTo: c.payTo as `0x${string}`,
     cpu: c.cpu,
     memoryMiB: c.memoryMiB,
     intervalSeconds: c.intervalSeconds,
@@ -131,47 +96,7 @@ function parseOfferContent(c: Record<string, unknown>, id: string, hostPubkey: s
     images: c.images,
     hiddenHost: c.hiddenHost,
     hiddenEgress: c.hiddenEgress,
-    expiresAt,
+    expiresAt: c.expiresAt,
     ...(home ? { home } : {}),
   };
-}
-
-/** `now` is epoch ms. Returns null for anything that is not a live, well-formed Charter offer. */
-export function offerFromEvent(ev: OfferEvent, now: number): Offer | null {
-  if (!ev.tags.some((t) => t[0] === 'L' && t[1] === 'charter')) return null;
-  const id = tagValue(ev.tags, 'd');
-  if (!id) return null;
-  const expSeconds = tagValue(ev.tags, 'expiration');
-  if (expSeconds === undefined || !/^\d+$/.test(expSeconds)) return null;
-  const expiresAt = Number(expSeconds) * 1000;
-  // A number of digits past a safe integer would read as an offer that never expires.
-  if (!Number.isSafeInteger(expiresAt) || expiresAt <= now) return null;
-
-  let c: Record<string, unknown>;
-  try {
-    const parsed: unknown = JSON.parse(ev.content);
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
-    c = parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-  return parseOfferContent(c, id, ev.pubkey, expiresAt);
-}
-
-/** Keeps the newest event per (pubkey, d), then drops any that are expired or malformed. `now` is epoch ms. */
-export function latestOffers(events: SignedOfferEvent[], now: number): Offer[] {
-  const newest = new Map<string, SignedOfferEvent>();
-  for (const ev of events) {
-    const d = tagValue(ev.tags, 'd');
-    if (d === undefined) continue;
-    const key = `${ev.pubkey}\u0000${d}`;
-    const prev = newest.get(key);
-    if (!prev || ev.created_at > prev.created_at) newest.set(key, ev);
-  }
-  const out: Offer[] = [];
-  for (const ev of newest.values()) {
-    const o = offerFromEvent(ev, now);
-    if (o) out.push(o);
-  }
-  return out;
 }

@@ -1,19 +1,25 @@
 #!/usr/bin/env node
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { BatchSettlementChannelManager } from '@x402/evm/batch-settlement/server';
 import { execFileExec } from '../exec.js';
-import { offerToEvent, offerToJson } from '../offer.js';
-import { ToonCli } from '../toon-cli.js';
+import { offerToJson } from '../offer.js';
+import type { Offer } from '../types.js';
+import { REFUND_IDLE_HOST_MS, startClaims } from '../x402/claims.js';
+import { BASE_USDC, buildSchemes, facilitatorOffersBatch, parseClaimKey, type X402Config } from '../x402/seller.js';
 import { loadConfig } from './config.js';
-import { HOME_SWEEP_MS, homesFree, OFFER_LIFETIME_MS, OFFER_REPUBLISH_MS, homeSweep, landAll, offerTick, reconcile, windowTick } from './loop.js';
+import { doorWatch, hostRegistrar } from './door-link.js';
+import { HOME_SWEEP_MS, homesFree, OFFER_LIFETIME_MS, homeSweep, reconcile, windowTick } from './loop.js';
 import { HomeStore } from './homes.js';
+import { hostHttpApp } from './http.js';
 import { dockerRunner } from './runner.js';
-import { hostApps } from './server.js';
 import { LeaseStore } from './store.js';
+import { hostTickGate } from './x402.js';
 
+/** How often the host checks whether its free home slots changed, to register again. */
 const OFFER_FREE_CHECK_MS = 60_000;
 
-const USAGE = 'usage: charter-host run | land | offer --print';
+const USAGE = 'usage: charter-host run | offer --print';
 
 function every(ms: number, fn: () => Promise<unknown>, what: string): NodeJS.Timeout {
   let busy = false;
@@ -30,7 +36,7 @@ function every(ms: number, fn: () => Promise<unknown>, what: string): NodeJS.Tim
 
 async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
-  if (cmd !== 'run' && cmd !== 'land' && cmd !== 'offer') {
+  if (cmd !== 'run' && cmd !== 'offer') {
     console.error(USAGE);
     return 2;
   }
@@ -42,25 +48,12 @@ async function main(argv: string[]): Promise<number> {
       console.error(USAGE);
       return 2;
     }
-    console.log(JSON.stringify(offerToEvent({ ...cfg.offer, expiresAt: now() + OFFER_LIFETIME_MS }), null, 2));
+    console.log(JSON.stringify(JSON.parse(offerToJson({ ...cfg.offer, expiresAt: now() + OFFER_LIFETIME_MS })), null, 2));
     return 0;
   }
 
   mkdirSync(cfg.dataDir, { recursive: true, mode: 0o700 });
   const store = new LeaseStore(join(cfg.dataDir, 'leases.json'));
-  const cli = new ToonCli({ passphraseFile: cfg.passphraseFile });
-
-  if (cmd === 'land') {
-    const r = await landAll({ cli, store });
-    for (const e of r.errors) console.error(e);
-    if (r.txs.length === 0) {
-      console.log(r.errors.length ? 'nothing landed' : 'no inbound channel or nothing to land');
-      return r.errors.length ? 1 : 0;
-    }
-    for (const t of r.txs) console.log(`${t.chain} ${t.tx}`);
-    console.log(`recorded on ${r.recorded.length} lease(s)`);
-    return r.errors.length ? 1 : 0;
-  }
 
   const log = (m: string) => console.error(m);
   const homes = cfg.home ? new HomeStore(join(cfg.dataDir, 'homes.json')) : undefined;
@@ -102,39 +95,62 @@ async function main(argv: string[]): Promise<number> {
   const deps = { store, runner, now, homes, log, published: new Set<string>(), onionBeside: !!(h?.publicHost && h.onion) };
   await reconcile(deps);
 
-  const apps = hostApps({
-    store, runner, offer: cfg.offer, now, maxLeases: cfg.maxLeases, maxHomes: cfg.maxHomes, log, homes, published: deps.published,
-  });
-  const servers = [
-    apps.open.listen(cfg.ports.open, '127.0.0.1'),
-    apps.tick.listen(cfg.ports.tick, '127.0.0.1'),
-    apps.status.listen(cfg.ports.status, '127.0.0.1'),
-  ];
-  let lastFree: number | undefined;
-  const publish = async () => {
+  // Ticks are paid to CHARTER_HOST_PAY_TO by the door's batch-settlement vouchers, claimed here through the facilitator.
+  const x402: X402Config = {
+    payTo: cfg.payTo,
+    network: 'eip155:8453',
+    facilitatorUrl: cfg.facilitatorUrl,
+    claimKey: parseClaimKey(readFileSync(cfg.claimKeyFile, 'utf8')),
+    channelDir: join(cfg.dataDir, 'x402-channels'),
+  };
+  const schemes = buildSchemes(x402);
+  if (!(await facilitatorOffersBatch(x402.facilitatorUrl, x402.network))) {
+    console.error(`charter-host: ${x402.facilitatorUrl} does not list batch-settlement on ${x402.network}; ticks cannot settle`);
+  }
+  const watch = doorWatch({ doorUrl: cfg.doorUrl, log });
+  await watch.refresh();
+  watch.start();
+
+  const offerNow = (): Offer => {
     const free = cfg.offer.home ? homesFree(store, cfg.maxHomes) : undefined;
-    const offer = cfg.offer.home && free !== undefined ? { ...cfg.offer, home: { ...cfg.offer.home, free } } : cfg.offer;
-    const id = await offerTick({ cli, offer, relayUrl: cfg.relayUrl, now });
+    const base = { ...cfg.offer, expiresAt: now() + OFFER_LIFETIME_MS };
+    return cfg.offer.home && free !== undefined ? { ...base, home: { ...cfg.offer.home, free } } : base;
+  };
+  const origin = new URL(cfg.hostUrl).origin;
+  const app = hostHttpApp({
+    store, runner, offer: cfg.offer, now, maxLeases: cfg.maxLeases, maxHomes: cfg.maxHomes, log, homes, published: deps.published,
+    door: watch.door,
+    origin: () => origin,
+    tickGate: hostTickGate(x402, () => cfg.offer.tickPrice, schemes, watch.door),
+    offerJson: () => JSON.parse(offerToJson(offerNow())) as unknown,
+  });
+  const server = app.listen(cfg.port, '127.0.0.1');
+  const claims = new BatchSettlementChannelManager({ scheme: schemes.batch, facilitator: schemes.facilitator, receiver: cfg.payTo, token: BASE_USDC, network: x402.network });
+  // The door's channel is refunded only after a quiet week: a renter's home outlives a quiet few days.
+  startClaims(claims, { log: (m) => console.log(m), idleMs: () => REFUND_IDLE_HOST_MS });
+
+  const registrar = hostRegistrar({ doorUrl: cfg.doorUrl, hostUrl: cfg.hostUrl, log });
+  let lastFree = cfg.offer.home ? homesFree(store, cfg.maxHomes) : undefined;
+  // Free home slots change when a home opens or closes: the door is told at once, not at its next refresh.
+  const registerIfFreeChanged = async () => {
+    if (!cfg.offer.home) return;
+    const free = homesFree(store, cfg.maxHomes);
+    if (free === lastFree) return;
     lastFree = free;
-    console.log(`offer published ${id}`);
+    await registrar.register();
   };
-  // Free home slots change when a home opens or closes: say so at once, not at the next 20-minute republish.
-  const publishIfFreeChanged = async () => {
-    if (cfg.offer.home && homesFree(store, cfg.maxHomes) !== lastFree) await publish();
-  };
-  const timers = [
-    every(1000, () => windowTick(deps), 'window tick'),
-    every(OFFER_REPUBLISH_MS, publish, 'offer publish'),
-    every(OFFER_FREE_CHECK_MS, publishIfFreeChanged, 'offer free check'),
-  ];
+  const timers = [every(1000, () => windowTick(deps), 'window tick'), every(OFFER_FREE_CHECK_MS, registerIfFreeChanged, 'offer free check')];
   if (homes) timers.push(every(HOME_SWEEP_MS, () => homeSweep(deps), 'home sweep'));
-  publish().catch((e) => console.error(`offer publish failed: ${String(e)}`));
-  console.log(`charter-host listening on 127.0.0.1 ${cfg.ports.open},${cfg.ports.tick},${cfg.ports.status}`);
+  void registrar.register();
+  console.log(`charter-host listening on 127.0.0.1:${cfg.port} as ${cfg.hostUrl}, paid to ${cfg.payTo}, door ${cfg.doorUrl}`);
 
   await new Promise<void>((resolve) => {
     const stopAll = () => {
       timers.forEach(clearInterval);
-      servers.forEach((s) => s.close());
+      watch.stop();
+      registrar.stop();
+      void claims.stop();
+      server.close();
       resolve();
     };
     process.once('SIGINT', stopAll);

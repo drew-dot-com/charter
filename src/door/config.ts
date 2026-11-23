@@ -13,25 +13,46 @@ export function parseTrustProxy(v: string | undefined): boolean | number | undef
   throw new Error('CHARTER_DOOR_TRUST_PROXY must be true or a hop count (1 for one proxy in front)');
 }
 
-const PUBKEY = /^[0-9a-f]{64}$/;
-const ILP_ADDRESS = /^g(\.[A-Za-z0-9_~-]+)+$/;
+/** CHARTER_DOOR_PAYER_KEY_FILE: one 0x-prefixed 64-hex Base private key, the door's payer. Errors never quote the file. */
+export function parsePayerKey(fileText: string): `0x${string}` {
+  const s = fileText.trim();
+  if (!/^0x[0-9a-fA-F]{64}$/.test(s)) throw new Error('CHARTER_DOOR_PAYER_KEY_FILE must hold one 0x-prefixed 64-hex private key');
+  return s as `0x${string}`;
+}
 
-/**
- * CHARTER_DOOR_HOSTS: the hosts this door pays, as `<host pubkey>=<ilpBase>` pairs separated by commas.
- * An offer is listed and opened only when it is signed by one of these keys and names that key's ilpBase.
- */
-export function parseDoorHosts(v: string | undefined): Map<string, string> {
-  const hosts = new Map<string, string>();
-  for (const entry of (v ?? '').split(',').map((e) => e.trim()).filter(Boolean)) {
-    const [pubkey, ilpBase, ...rest] = entry.split('=').map((x) => x.trim());
-    if (rest.length > 0 || !pubkey || !PUBKEY.test(pubkey) || !ilpBase || !ILP_ADDRESS.test(ilpBase)) {
-      throw new Error('CHARTER_DOOR_HOSTS entries must be <64 lowercase hex pubkey>=<ilp address>, comma separated');
-    }
-    if (hosts.has(pubkey)) throw new Error('CHARTER_DOOR_HOSTS names a host twice');
-    hosts.set(pubkey, ilpBase);
-  }
-  if (hosts.size === 0) throw new Error('CHARTER_DOOR_HOSTS is required: the hosts this door pays, <pubkey>=<ilpBase>');
-  return hosts;
+/** How the door funds host channels and probes. Amounts in micro-USDC. */
+export interface DoorFunding {
+  /** CHARTER_PROBES_PER_DAY: first probes the door starts in a UTC day. */
+  probesPerDay: number;
+  /** CHARTER_PROBE_MAX_TICK: the most a probe pays for its one tick. */
+  probeMaxTick: bigint;
+  /** CHARTER_PROBE_DEPOSIT and CHARTER_PROBE_CAPITAL_CAP: an unproven host's deposit, and all of them together. */
+  probeDeposit: bigint;
+  probeCap: bigint;
+  /** CHARTER_HOST_DEPOSIT and CHARTER_HOST_CAPITAL_CAP: a proven host's deposit, and all of them together. */
+  hostDeposit: bigint;
+  hostCap: bigint;
+  /** CHARTER_DOOR_SELF_ADDRS: the box's own addresses (IPs or CIDRs), never fetched as a host. */
+  selfAddrs: string[];
+}
+
+function wholeEnv(env: Record<string, string | undefined>, name: string, dflt: bigint, min: bigint): bigint {
+  const v = env[name]?.trim();
+  if (v === undefined || v === '') return dflt;
+  if (!/^\d{1,18}$/.test(v) || BigInt(v) < min) throw new Error(`${name} must be a whole number${min > 0n ? ' above 0' : ''}`);
+  return BigInt(v);
+}
+
+export function doorFunding(env: Record<string, string | undefined>): DoorFunding {
+  return {
+    probesPerDay: Number(wholeEnv(env, 'CHARTER_PROBES_PER_DAY', 10n, 0n)),
+    probeMaxTick: wholeEnv(env, 'CHARTER_PROBE_MAX_TICK', 10_000n, 1n),
+    probeDeposit: wholeEnv(env, 'CHARTER_PROBE_DEPOSIT', 100_000n, 1n),
+    probeCap: wholeEnv(env, 'CHARTER_PROBE_CAPITAL_CAP', 1_000_000n, 0n),
+    hostDeposit: wholeEnv(env, 'CHARTER_HOST_DEPOSIT', 500_000n, 1n),
+    hostCap: wholeEnv(env, 'CHARTER_HOST_CAPITAL_CAP', 10_000_000n, 0n),
+    selfAddrs: (env.CHARTER_DOOR_SELF_ADDRS ?? '').split(',').map((a) => a.trim()).filter(Boolean),
+  };
 }
 
 /**

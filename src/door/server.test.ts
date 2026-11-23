@@ -6,13 +6,19 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
-import { HostError, hostApi, type HostApi, type OpenResult, type OutputPart, type TickResult } from '../tenant/host-api.js';
+import { HostError, type HostApi, type OpenResult, type OutputPart, type TickResult } from '../tenant/host-api.js';
 import { OFFER } from '../tenant/test-host.js';
 import type { Lease, Micro, Offer } from '../types.js';
 import { DoorLedger, offerOfSnapshot, snapshotOffer } from './ledger.js';
 import { doorApp, readBudget, type DoorDeps } from './server.js';
 import type { RequestEntry } from './reqlog.js';
-import * as payerMod from '../payer.js';
+import { SendTimeoutError } from '../errors.js';
+import { hostHttpApp } from '../host/http.js';
+import type { Runner } from '../host/runner.js';
+import { LeaseStore } from '../host/store.js';
+import { doorPayer, httpHostApi, type DoorPayer } from './host-http.js';
+import { HostQueue } from './host-queue.js';
+import { stubGate } from './x402.js';
 import { facilitatorOffersBatch, isPayerFault, MIN_WINDOW_SECONDS, paymentIdOf } from '../x402/seller.js';
 import { privateKeyToAccount } from 'viem/accounts';
 
@@ -47,7 +53,7 @@ function voucher(payer: string, maxClaimable: string, type: 'voucher' | 'deposit
 const PAYER_FAULT = 'invalid_exact_evm_insufficient_balance';
 const keyOf = (from: string, nonce: string) => createHash('sha256').update(`${pad(from, 40)}:${pad(nonce, 64)}`).digest('hex');
 
-const OFFER_ID = `${OFFER.hostPubkey}:${OFFER.id}`;
+const OFFER_ID = `${OFFER.hostId}:${OFFER.id}`;
 const LEASE = 'a'.repeat(32);
 const URLS = ['https://example.com/a', 'http://example.com/b'];
 
@@ -78,7 +84,7 @@ function fakeHost(
     tick: async (_id, index): Promise<TickResult> => {
       calls.push(`tick:${index}`);
       const tickFail = typeof tickFailure === 'function' ? tickFailure(++tickCount) : tickFailure;
-      // As hostApi: a packet the host answered is paid even when the answer is an error.
+      // A tick the host answered with an error is counted as paid here: the worst case, a host that settled and failed.
       if (tickFail instanceof HostError) spent += 5000n;
       if (tickFail) throw tickFail;
       spent += 5000n;
@@ -107,7 +113,6 @@ async function start(host: ReturnType<typeof fakeHost>, over: Partial<DoorDeps> 
   const deps: DoorDeps = {
     offers: async () => (offerCalls++, [OFFER]),
     api: () => host.api,
-    hosts: new Map([[OFFER.hostPubkey, OFFER.ilpBase]]),
     ledger,
     x402: 'free-for-tests',
     now: () => clock.t,
@@ -268,7 +273,7 @@ test('a home body naming charter-hermes reaches the host as that image; an offer
     const a = await d.post('/v1/leases', { offerId: OFFER_ID, home: { sshKeys: [key], image: 'charter-hermes' } });
     assert.equal(a.status, 200);
     assert.equal(host.opened.at(-1)!.image, 'charter-hermes');
-    const b = await d.post('/v1/leases', { offerId: `${OFFER.hostPubkey}:bare`, home: { sshKeys: [key], image: 'charter-hermes' } });
+    const b = await d.post('/v1/leases', { offerId: `${OFFER.hostId}:bare`, home: { sshKeys: [key], image: 'charter-hermes' } });
     assert.equal(b.status, 400);
     assert.deepEqual(await b.json(), { error: 'image_not_offered' });
   } finally {
@@ -311,7 +316,7 @@ test('a boot failure is passed on with its reason', async () => {
 });
 
 test('a host tick that throws answers 502 and nothing settles', async () => {
-  const host = fakeHost({}, new Error('packet refused'));
+  const host = fakeHost({}, new Error('host refused'));
   const d = await start(host);
   try {
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
@@ -461,7 +466,7 @@ test('GET /v1/offers is free, CORS-open, trimmed to what a renter needs, and cac
       offerId: OFFER_ID, cpu: 1, memoryMiB: 1024, intervalSeconds: 30, tickPrice: '5000', images: ['charter-job-fetch'],
       hiddenHost: true, hiddenEgress: false, expiresAt: OFFER.expiresAt, leases: 0,
     });
-    assert.ok(!JSON.stringify(body).includes('sealKey') && !JSON.stringify(body).includes('ilpBase'));
+    assert.ok(!JSON.stringify(body).includes('payTo') && !JSON.stringify(body).includes(OFFER.url), 'where a host answers and is paid stays with the door');
   } finally {
     d.close();
   }
@@ -652,7 +657,7 @@ test('the landing refresh never serves an error: a host that fails, or a spent b
   }
 });
 
-test('the status answer carries the offer the door resolved at open time, which the ledger keeps and the relay need not still list', async () => {
+test('the status answer carries the offer the door resolved at open time, which the ledger keeps and the offer list need not still hold', async () => {
   let listed = true;
   const host = fakeHost();
   const d = await start(host, { offers: async () => (listed ? [OFFER] : []) });
@@ -673,17 +678,17 @@ test('the status answer carries the offer the door resolved at open time, which 
   }
 });
 
-test('an existing lease works after its offer leaves the relay and the door restarts: status, output and a tick, with zero relay lookups', async () => {
+test('an existing lease works after its offer leaves the list and the door restarts: status, output and a tick, with zero offer lookups', async () => {
   const host = fakeHost({ status: async () => lease({ state: 'running', outputParts: 2 }) });
   const d1 = await start(host);
   await d1.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
   assert.equal((await d1.post(`/v1/leases/${LEASE}/ticks`, { index: 0 })).status, 200);
   d1.close();
 
-  let relay = 0;
+  let lookups = 0;
   const seen: Offer[] = [];
   const d2 = await start(host, {
-    offers: async () => (relay++, []),
+    offers: async () => (lookups++, []),
     ledger: new DoorLedger(join(d1.dir, 'ledger.json')),
     dataDir: d1.dir,
     api: (o) => (seen.push(o), host.api),
@@ -695,11 +700,11 @@ test('an existing lease works after its offer leaves the relay and the door rest
     assert.equal((await d2.get(`/v1/leases/${LEASE}/output/1`)).status, 200);
     assert.equal((await d2.post(`/v1/leases/${LEASE}/ticks`, { index: 1 })).status, 200);
     assert.deepEqual(d2.settled, [{ leaseId: LEASE, price: 5000n }], 'the price came from the snapshot');
-    assert.equal(relay, 0, 'no relay lookups for an existing lease');
+    assert.equal(lookups, 0, 'no offer lookups for an existing lease');
     assert.ok(seen.length >= 3);
     for (const o of seen) assert.deepEqual(o, OFFER, 'the host api is built from the full snapshot');
-    assert.equal((await d2.get('/v1/offers').then((r) => r.json())).length, 0, 'the list still reads the relay');
-    assert.equal(relay, 1);
+    assert.equal((await d2.get('/v1/offers').then((r) => r.json())).length, 0, 'the list still reads the offers');
+    assert.equal(lookups, 1);
   } finally {
     d2.close();
   }
@@ -1027,13 +1032,13 @@ test('GET /v1/dev answers 200 only in free-for-tests mode, so the page can skip 
 
 
 /** A facilitator that only answers /supported, enough for the real gate to build a 402 challenge. */
-async function withRealDoor(run: (d: Awaited<ReturnType<typeof start>>) => Promise<void>): Promise<void> {
+async function withRealDoor(run: (d: Awaited<ReturnType<typeof start>>) => Promise<void>, over: Partial<DoorDeps> = {}): Promise<void> {
   const fac = createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(req.url?.startsWith('/supported') ? { kinds: [{ x402Version: 2, scheme: 'exact', network: 'eip155:8453' }, { x402Version: 2, scheme: 'batch-settlement', network: 'eip155:8453', extra: { experimental: true, batchPolicy: { minInitialDeposit: '100000' } } }], extensions: [], signers: {} } : {}));
   }).listen(0, '127.0.0.1');
   await new Promise((r) => fac.once('listening', r));
-  const d = await start(fakeHost(), { x402: { payTo: PAY_TO, network: 'eip155:8453', facilitatorUrl: `http://127.0.0.1:${(fac.address() as AddressInfo).port}`, claimKey: CLAIM_KEY, channelDir: mkdtempSync(join(tmpdir(), 'ch-')) } });
+  const d = await start(fakeHost(), { x402: { payTo: PAY_TO, network: 'eip155:8453', facilitatorUrl: `http://127.0.0.1:${(fac.address() as AddressInfo).port}`, claimKey: CLAIM_KEY, channelDir: mkdtempSync(join(tmpdir(), 'ch-')) }, ...over });
   try {
     await run(d);
   } finally {
@@ -1044,13 +1049,17 @@ async function withRealDoor(run: (d: Awaited<ReturnType<typeof start>>) => Promi
 const PAY_TO = '0x' + '2'.repeat(40);
 const CLAIM_KEY = ('0x' + 'ab'.repeat(32)) as `0x${string}`;
 
-test('GET /v1/door tells the page where payments go: payTo and network, free and with CORS; absent in test mode', async () => {
+test('GET /v1/door tells the page where payments go: payTo, network and the door payer, free and with CORS; absent in test mode', async () => {
   await withRealDoor(async (d) => {
     const r = await d.get('/v1/door');
     assert.equal(r.status, 200);
     assert.deepEqual(await r.json(), { payTo: PAY_TO, network: 'eip155:8453' });
     assert.equal(r.headers.get('access-control-allow-origin'), '*');
   });
+  // The door's payer, which pays hosts: a host answers only it.
+  await withRealDoor(async (d) => {
+    assert.deepEqual(await (await d.get('/v1/door')).json(), { payTo: PAY_TO, network: 'eip155:8453', payer: PAY_TO });
+  }, { payer: PAY_TO as `0x${string}` });
   const t = await start(fakeHost());
   try {
     assert.equal((await t.get('/v1/door')).status, 404);
@@ -1360,7 +1369,7 @@ test('N2: a block lapses 24 h after the loss, and unblock (even from another pro
 });
 
 test('N3: a tick whose send timed out answers 502 host_timeout, books host_refused (it may have been paid) and stops the lease', async () => {
-  const host = fakeHost({ tick: async () => { throw new payerMod.SendTimeoutError(); } });
+  const host = fakeHost({ tick: async () => { throw new SendTimeoutError(); } });
   const d = await start(host);
   try {
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
@@ -1378,38 +1387,52 @@ test('N3: a tick whose send timed out answers 502 host_timeout, books host_refus
   }
 });
 
-/** A door whose host calls go through the real hostApi and serialized queue, onto a scripted payer. */
+/** A door whose host calls go through the real httpHostApi and HostQueue, onto a scripted host behind fetch. */
 async function queuedDoor() {
   const clock = { t: 1_000_000 };
-  const sends: Array<{ dest: string; body: unknown; opts: { deadline?: number } }> = [];
+  const paidTicks: string[] = [];
+  const deadlines: Array<number | undefined> = [];
   const held = new Map<string, () => void>();
   let opens = 0;
   let queuedTicks = 0;
-  const inner: payerMod.Payer = {
-    async send(dest, req, opts) {
-      sends.push({ dest, body: req.body, opts });
-      if (dest.endsWith('.charter-open')) {
-        return { status: 200, body: { leaseId: (++opens).toString(16).padStart(32, '0'), state: 'awaiting_first_tick' }, paid: 1000n };
-      }
-      if (dest.endsWith('.charter-status')) {
-        const id = req.path.split('/')[2]!;
-        return { status: 200, body: { lease: { ...lease(), id } }, paid: 100n };
-      }
-      const { leaseId, index } = req.body as { leaseId: string; index: number };
-      if (leaseId === LEASE_1 && index === 0) await new Promise<void>((r) => held.set(leaseId, r));
-      return { status: 200, body: { paidIntervals: index + 1, paidThrough: 31_000, duplicate: false }, paid: 5000n };
-    },
+  const host: typeof fetch = async (input, init) => {
+    const req = new Request(input as string | URL | Request, init);
+    const path = new URL(req.url).pathname;
+    if (req.method === 'POST' && path === '/v1/leases') {
+      return Response.json({ leaseId: (++opens).toString(16).padStart(32, '0'), state: 'awaiting_first_tick' });
+    }
+    const id = path.split('/')[3]!;
+    if (req.method === 'GET') return Response.json({ lease: { ...lease(), id } });
+    const { index } = (await req.json()) as { index: number };
+    paidTicks.push(id);
+    if (id === LEASE_1 && index === 0) await new Promise<void>((r) => held.set(id, r));
+    return Response.json({ paidIntervals: index + 1, paidThrough: 31_000, duplicate: false });
   };
-  const queue = payerMod.serialized(inner, { now: () => clock.t, setTimer: () => ({}), clearTimer: () => undefined });
+  const account = privateKeyToAccount(('0x' + '11'.repeat(32)) as `0x${string}`);
+  let charged = 0n;
+  const payer: DoorPayer = {
+    address: account.address, account, clearPendingDeposit: () => undefined, resyncAll: async () => undefined,
+    charged: async () => charged,
+    paidFetch: (_o, price) => (async (input, init) => {
+      const res = await host(input, init);
+      if (res.ok) charged += price;
+      return res;
+    }) as typeof fetch,
+  };
+  const queue = new HostQueue();
   const d = await start(fakeHost(), {
     now: () => clock.t,
     api: (o) => {
-      const a = hostApi(queue, o);
-      // Each tick is a status read for the tick, then the tick: both are counted as they reach the queue.
-      return { ...a, status: (...args) => (args[1]?.priority === 'high' && queuedTicks++, a.status(...args)), tick: (...args) => (queuedTicks++, a.tick(...args)) };
+      const a = httpHostApi({ ...o, url: 'https://host.example' }, { payer, queue, fetch: host, now: () => clock.t });
+      // Each tick is a status read for the tick, then the tick: both are counted as they are called.
+      return {
+        ...a,
+        status: (...args) => (args[1]?.priority === 'high' && queuedTicks++, a.status(...args)),
+        tick: (...args) => (queuedTicks++, deadlines.push(args[2]?.deadline), a.tick(...args)),
+      };
     },
   });
-  return { d, clock, sends, held, queuedTicks: () => queuedTicks };
+  return { d, clock, paidTicks, deadlines, held, queuedTicks: () => queuedTicks };
 }
 
 test('R4: a tick whose deadline passes while queued behind another send is skipped: 503 retry_later, no host call, no loss, nothing settled', async () => {
@@ -1423,7 +1446,8 @@ test('R4: a tick whose deadline passes while queued behind another send is skipp
     while (!q.held.has(LEASE_1)) await new Promise((r) => setTimeout(r, 2));
     // Lease 2's authorization is good for 110 s: its sends must start by 95 s from now.
     const second = d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'payment-signature': pay('0xd2', '0xd2', 0, { validBefore: String(t + 110) }) });
-    while (q.queuedTicks() < 3) await new Promise((r) => setTimeout(r, 2));
+    // Lease 1's read and tick, then lease 2's read and its tick, which waits in the host's queue.
+    while (q.queuedTicks() < 4) await new Promise((r) => setTimeout(r, 2));
     clock.t += 95_000;
     q.held.get(LEASE_1)!();
     assert.equal((await first).status, 200);
@@ -1431,9 +1455,8 @@ test('R4: a tick whose deadline passes while queued behind another send is skipp
     assert.equal(r.status, 503);
     assert.deepEqual(await r.json(), { error: 'retry_later' });
 
-    const ticks = q.sends.filter((s) => s.dest.endsWith('.charter-tick'));
-    assert.equal(ticks.length, 1, 'the skipped tick never reached the payer');
-    assert.equal(ticks[0]!.opts.deadline, (t + 600) * 1000 - 15_000, 'a tick send carries validBefore minus 15 s');
+    assert.deepEqual(q.paidTicks, [LEASE_1], 'the skipped tick never reached the host');
+    assert.equal(q.deadlines[0], (t + 600) * 1000 - 15_000, 'a tick send carries validBefore minus 15 s');
     assert.deepEqual(d.settled.map((s) => s.leaseId), [LEASE_1], 'nothing settled for the skipped tick');
     const rec = d.ledger.get(LEASE_2)!;
     assert.equal(rec.losses, 0n);
@@ -1474,24 +1497,6 @@ test('R4: the 31st tick POST in a minute from one IP answers 429 before the gate
 
 // ---------------------------------------------------------------------------
 // Final review fixes
-
-test('F-C1: only offers from CHARTER_DOOR_HOSTS (pubkey and ilpBase both) are listed or opened', async () => {
-  const otherHost: Offer = { ...OFFER, hostPubkey: 'cd'.repeat(32) };
-  const otherBase: Offer = { ...OFFER, id: 'o2', ilpBase: 'g.elsewhere' };
-  const host = fakeHost();
-  const d = await start(host, { offers: async () => [OFFER, otherHost, otherBase] });
-  try {
-    const list = (await (await d.get('/v1/offers')).json()) as Array<{ offerId: string }>;
-    assert.deepEqual(list.map((o) => o.offerId), [OFFER_ID]);
-    for (const offerId of [`${otherHost.hostPubkey}:${otherHost.id}`, `${OFFER.hostPubkey}:o2`]) {
-      const r = await d.post('/v1/leases', { offerId, urls: URLS });
-      assert.equal(r.status, 404, offerId);
-    }
-    assert.deepEqual(host.calls, [], 'an offer the door does not trust is never paid');
-  } finally {
-    d.close();
-  }
-});
 
 test('F-C1: an offer priced over the door maxima (open 10000, status 1000, tick 50000) is neither listed nor opened', async () => {
   for (const over of [{ openPrice: 10_001n }, { statusPrice: 1_001n }, { tickPrice: 50_001n }]) {
@@ -1672,83 +1677,6 @@ test('minor: a host tick answer with duplicate: true is 409 duplicate, nothing s
     assert.equal(rec.ticksPaidByRenter, 0);
     assert.equal(rec.stopped, true);
     assert.equal(rec.lossKind, 'host_refused');
-  } finally {
-    d.close();
-  }
-});
-
-test('F-I4: a tick is refused 503 retry_later after verify, with no host call, when the channel headroom is under tickPrice + 10000', async () => {
-  for (const [headroom, status] of [[14_999n, 503], [undefined, 503], ['throws', 503], [15_000n, 200]] as const) {
-    const host = fakeHost();
-    // Enough for the open; the case's headroom from the tick on.
-    let opened = false;
-    const d = await start(host, {
-      headroom: async () => {
-        if (!opened) return 1_000_000n;
-        if (headroom === 'throws') throw new Error('describe failed');
-        return headroom;
-      },
-    });
-    try {
-      await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
-      opened = true;
-      host.calls.length = 0;
-      const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 });
-      assert.equal(r.status, status, String(headroom));
-      if (status === 503) {
-        assert.deepEqual(await r.json(), { error: 'retry_later' });
-        assert.deepEqual(host.calls, []);
-        assert.deepEqual(d.settled, []);
-        assert.equal(d.ledger.get(LEASE)!.losses, 0n);
-        assert.equal(d.ledger.get(LEASE)!.stopped, false);
-      }
-    } finally {
-      d.close();
-    }
-  }
-});
-
-test('Task 11: an open is refused 503 capacity, with no host call, when the channel headroom is under openPrice + tickPrice + 10000', async () => {
-  for (const [headroom, status] of [[15_999n, 503], [undefined, 503], ['throws', 503], [16_000n, 200]] as const) {
-    const host = fakeHost();
-    const d = await start(host, {
-      headroom: async () => {
-        if (headroom === 'throws') throw new Error('describe failed');
-        return headroom;
-      },
-    });
-    try {
-      const r = await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
-      assert.equal(r.status, status, String(headroom));
-      if (status === 503) {
-        assert.deepEqual(await r.json(), { error: 'capacity' });
-        assert.deepEqual(host.calls, []);
-        assert.equal(d.ledger.get(LEASE), undefined);
-      }
-    } finally {
-      d.close();
-    }
-  }
-});
-
-test('Task 11: with no open channel, a refused open starts reopen at most once a minute, unawaited; low but known headroom never does', async () => {
-  const clock = { t: 1_000_000 };
-  let reopens = 0;
-  let headroom: bigint | undefined;
-  const host = fakeHost();
-  const d = await start(host, { now: () => clock.t, headroom: async () => headroom, reopen: () => (reopens++, new Promise<void>(() => undefined)) });
-  try {
-    assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS })).status, 503);
-    assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS })).status, 503);
-    assert.equal(reopens, 1, 'one reopen a minute, and the hung one did not hold the request');
-    clock.t += 60_000;
-    headroom = 100n;
-    assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS })).status, 503);
-    assert.equal(reopens, 1, 'a channel that is open but low is rotated by hand, not reopened');
-    headroom = undefined;
-    assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS })).status, 503);
-    assert.equal(reopens, 2);
-    assert.deepEqual(host.calls, []);
   } finally {
     d.close();
   }
@@ -2046,19 +1974,7 @@ test('rent: one exact authorization cannot rent twice, and a bad or short-lived 
   }
 });
 
-test('rent: capacity, a low channel and the open rate limits refuse before the gate with no host call', async () => {
-  const host = fakeHost();
-  const low = await start(host, { headroom: async () => 15_000n });
-  try {
-    // open 1000 + tick 5000 + margin 10000 = 16000 needed.
-    const r = await low.post('/v1/rent', { offerId: OFFER_ID, urls: URLS });
-    assert.equal(r.status, 503);
-    assert.deepEqual(await r.json(), { error: 'capacity' });
-    assert.deepEqual(low.gate, []);
-    assert.deepEqual(host.calls, []);
-  } finally {
-    low.close();
-  }
+test('rent: the open rate limits refuse before the gate with no host call', async () => {
   const d = await start(fakeHost({ open: counterOpen() }));
   try {
     for (let i = 0; i < 10; i++) await d.post('/v1/rent', { offerId: OFFER_ID, urls: URLS }, { 'payment-signature': pay('0xd1', `0x${(i + 1).toString(16)}`) });
@@ -2157,5 +2073,63 @@ test('a door given a request sink reports each request', async () => {
     assert.equal(got[0]?.paid, false);
   } finally {
     d.close();
+  }
+});
+
+test('the door opens and ticks a host over httpHostApi', async () => {
+  // The host: its real HTTPS app (here plain HTTP on loopback) with a tick gate that asks no payment.
+  const store = new LeaseStore();
+  const started: string[] = [];
+  const runner = {
+    create: async () => undefined, start: async (id: string) => void started.push(id), exited: async () => 0, stop: async () => undefined,
+    output: async () => Buffer.alloc(0), alive: async () => true, ready: async () => true,
+  } as unknown as Runner;
+  const hostGate: string[] = [];
+  const key = ('0x' + '11'.repeat(32)) as `0x${string}`;
+  const payer = doorPayer({ key, channelDir: mkdtempSync(join(tmpdir(), 'door-channels-')), depositFor: () => 100_000n });
+  let origin = '';
+  const hostServer = hostHttpApp({
+    store, runner, offer: OFFER, now: () => 1_000_000, door: () => payer.address, origin: () => origin,
+    tickGate: stubGate(() => OFFER.tickPrice, { onGate: (id) => void hostGate.push(id) }), offerJson: () => ({}),
+  }).listen(0, '127.0.0.1');
+  await new Promise((r) => hostServer.once('listening', r));
+  origin = `http://127.0.0.1:${(hostServer.address() as AddressInfo).port}`;
+  const offer: Offer = { ...OFFER, url: origin };
+  // The door: one httpHostApi for the host, built once and kept, as door main does.
+  const built: Offer[] = [];
+  let api: HostApi | undefined;
+  const d = await start(fakeHost(), {
+    offers: async () => [offer],
+    api: (o) => (built.push(o), (api ??= httpHostApi(o, { payer, queue: new HostQueue(), fetch, now: () => 1_000_000 }))),
+  });
+  try {
+    const opened = await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal(opened.status, 200);
+    const { leaseId, state } = (await opened.json()) as { leaseId: string; state: string };
+    assert.equal(state, 'awaiting_first_tick');
+    assert.equal(store.get(leaseId)!.state, 'awaiting_first_tick', 'the host holds the lease the door opened');
+
+    const t = await d.post(`/v1/leases/${leaseId}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' });
+    assert.equal(t.status, 200);
+    assert.deepEqual(await t.json(), { paidIntervals: 1, paidThrough: 1_000_000 + 30_000, duplicate: false });
+    assert.deepEqual(hostGate, [leaseId], 'the host gated the tick the door sent');
+    assert.deepEqual(d.gate, [leaseId], 'the door gated the renter');
+    assert.deepEqual(started, [leaseId], 'tick 0 started the job');
+    assert.equal(store.get(leaseId)!.state, 'running');
+    const rec = d.ledger.get(leaseId)!;
+    assert.equal(rec.ticksPaidToHost, 1);
+    assert.equal(rec.ticksPaidByRenter, 1);
+    assert.equal(rec.offer.url, origin, 'the lease snapshots where its host answers');
+    assert.deepEqual(d.settled, [{ leaseId, price: OFFER.tickPrice }]);
+
+    // Past the door's 5 s status cache, a read reaches the host.
+    d.clock.t += 5_000;
+    const s = await d.get(`/v1/leases/${leaseId}`);
+    assert.equal(s.status, 200);
+    assert.equal(((await s.json()) as { lease: { state: string; paidIntervals: number } }).lease.paidIntervals, 1);
+    assert.ok(built.every((o) => o.url === origin && o.hostId === OFFER.hostId));
+  } finally {
+    d.close();
+    hostServer.close();
   }
 });

@@ -5,10 +5,9 @@ import type { Micro, Offer } from '../types.js';
 /** The whole offer as it was when a lease opened, kept in the ledger: bigint prices as decimal strings. */
 export interface OfferSnapshot {
   id: string;
-  hostPubkey: string;
-  ilpBase: string;
-  sealKey: string;
-  sealUrl: string;
+  hostId: string;
+  url: string;
+  payTo: `0x${string}`;
   cpu: number;
   memoryMiB: number;
   intervalSeconds: number;
@@ -20,6 +19,7 @@ export interface OfferSnapshot {
   hiddenHost: boolean;
   hiddenEgress: boolean;
   expiresAt: number;
+  home?: Offer['home'];
 }
 
 export function snapshotOffer(o: Offer): OfferSnapshot {
@@ -33,7 +33,7 @@ export function offerOfSnapshot(s: OfferSnapshot): Offer {
 /** One lease the door opened for a renter. */
 export interface DoorLease {
   leaseId: string;
-  /** `<pubkey>:<id>`, as the renter named it. */
+  /** `<hostId>:<id>`, as the renter named it. */
   offerId: string;
   /** The x402 payer address, when the payment carried one. */
   payer?: string;
@@ -55,7 +55,7 @@ export interface DoorLease {
   nextIndex: number;
   /** Paid host status and output calls made for this lease's free reads. */
   hostReads: number;
-  /** The offer as resolved when the lease was opened. Every host call and price for this lease comes from here, never the relay. */
+  /** The offer as resolved when the lease was opened. Every host call and price for this lease comes from here, never the host's current offer. */
   offer: OfferSnapshot;
 }
 

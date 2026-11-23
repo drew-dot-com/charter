@@ -1,34 +1,51 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { ToonClientPayer, serialized } from '../payer.js';
-import { need, toonClientConfigFromEnv } from '../payer-env.js';
-import { hostApi } from '../tenant/host-api.js';
-import { fetchOffers } from '../tenant/offers.js';
 import { BatchSettlementChannelManager } from '@x402/evm/batch-settlement/server';
-import { channelCommand } from './channel.js';
+import { createPublicClient, http } from 'viem';
+import { base } from 'viem/chains';
 import { idleMsFor, startClaims, x402Command } from '../x402/claims.js';
 import { createFacilitatorConfig } from '@coinbase/x402';
 import { HTTPFacilitatorClient } from '@x402/core/server';
-import { parseCdpKey, parseDoorHosts, parseTrustProxy } from './config.js';
+import { privateKeyToAccount } from 'viem/accounts';
+import type { HostApi } from '../tenant/host-api.js';
+import type { Offer } from '../types.js';
+import { CAPITAL_FILE, CapitalBook } from './capital.js';
+import { doorFunding, parseCdpKey, parsePayerKey, parseTrustProxy } from './config.js';
+import { fetchHostOffer, listedOffers } from './host-offers.js';
+import { HOST_TIMEOUT_MS, doorPayer, httpHostApi, type DoorPayer, type ReadContract } from './host-http.js';
+import { HostQueue } from './host-queue.js';
+import { capitalAllocator, HOSTS_FILE, HostRegistry } from './hosts.js';
 import { DoorLedger, LEDGER_FILE } from './ledger.js';
+import { startProbes } from './probe.js';
 import { fileRequestSink } from './reqlog.js';
+import { blockAddresses, safeFetch } from './safe-fetch.js';
 import { doorApp } from './server.js';
 import { GrantStore, readFundPublic } from './grants.js';
 import { BASE_USDC, buildSchemes, facilitatorOffersBatch, parseClaimKey, type Schemes, type X402Config } from '../x402/seller.js';
 import { unblockCommand } from './unblock.js';
 
-/** The door's own TOON wallet, which pays hosts. */
 const REQUEST_LOG_FILE = 'requests.jsonl';
+/** The body a host may answer the door with: an output part (48 KiB as base64) and its JSON wrapper fit. */
+const HOST_MAX_BYTES = 128 * 1024;
 
-async function doorPayer(env: NodeJS.ProcessEnv): Promise<ToonClientPayer> {
-  return ToonClientPayer.create(toonClientConfigFromEnv(env));
+function need(env: NodeJS.ProcessEnv, name: string): string {
+  const v = env[name]?.trim();
+  if (!v) throw new Error(`${name} is required`);
+  return v;
+}
+
+/** The door's Base key (CHARTER_DOOR_PAYER_KEY_FILE), which pays hosts and is the renters' payTo. Readable by its owner only. */
+function payerKey(env: NodeJS.ProcessEnv): `0x${string}` {
+  const file = need(env, 'CHARTER_DOOR_PAYER_KEY_FILE');
+  if ((statSync(file).mode & 0o077) !== 0) throw new Error(`CHARTER_DOOR_PAYER_KEY_FILE ${file} must be readable by its owner only (chmod 0400)`);
+  return parsePayerKey(readFileSync(file, 'utf8'));
 }
 
 /** The renter-facing x402 config: where payments go, which facilitator, the claim key, the channel records. */
-function x402Config(env: NodeJS.ProcessEnv): X402Config {
+function x402Config(env: NodeJS.ProcessEnv, payTo: `0x${string}`): X402Config {
   return {
-    payTo: need(env, 'CHARTER_PAY_TO'),
+    payTo,
     network: 'eip155:8453',
     facilitatorUrl: env.X402_FACILITATOR_URL?.trim() || 'https://facilitator.payai.network',
     claimKey: parseClaimKey(readFileSync(need(env, 'CHARTER_CLAIM_KEY_FILE'), 'utf8')),
@@ -49,15 +66,42 @@ function claimManager(cfg: X402Config, schemes: Schemes): BatchSettlementChannel
   return new BatchSettlementChannelManager({ scheme: schemes.batch, facilitator: schemes.facilitator, receiver: cfg.payTo as `0x${string}`, token: BASE_USDC, network: cfg.network });
 }
 
+/** Base reads for the door's host channels (BASE_RPC_URL, default the public Base endpoint). */
+function baseReader(env: NodeJS.ProcessEnv): ReadContract {
+  const client = createPublicClient({ chain: base, transport: http(env.BASE_RPC_URL?.trim() || 'https://mainnet.base.org') });
+  return (args) => client.readContract(args as Parameters<typeof client.readContract>[0]);
+}
+
+/** fetch for every call to a host, free or paid: safeFetch, with room for an output part and the door's own time limit. */
+const hostFetch: typeof fetch = (input, init) => safeFetch(input as string | URL | Request, { ...init, maxBytes: HOST_MAX_BYTES, timeoutMs: HOST_TIMEOUT_MS });
+
+/**
+ * One HostApi per host and payment terms (url, payTo, tick price), kept for the door's life: what a tick
+ * paid is remembered across calls, so a spent index is never sent again. A lease snapshots its offer, so all
+ * of one lease's calls reach one instance; every instance shares the door's payer and one queue.
+ */
+function hostApis(payer: DoorPayer): (o: Offer) => HostApi {
+  const queue = new HostQueue();
+  const apis = new Map<string, HostApi>();
+  return (o) => {
+    // A lease from before the cut-over names no HTTPS host: there is nothing to call.
+    if (!o.url || !o.hostId || !o.payTo) throw new Error('host_unreachable');
+    const key = `${o.hostId} ${o.url} ${o.payTo.toLowerCase()} ${o.tickPrice}`;
+    let api = apis.get(key);
+    if (!api) apis.set(key, (api = httpHostApi(o, { payer, queue, fetch: hostFetch })));
+    return api;
+  };
+}
+
 async function main(): Promise<void> {
   const env = process.env;
   const port = Number(need(env, 'CHARTER_DOOR_PORT'));
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('CHARTER_DOOR_PORT must be a port number');
-  const relayUrl = need(env, 'CHARTER_RELAY_URL');
   const dataDir = need(env, 'CHARTER_DATA_DIR');
   const ledger = new DoorLedger(join(dataDir, LEDGER_FILE));
   const trustProxy = parseTrustProxy(env.CHARTER_DOOR_TRUST_PROXY);
-  const hosts = parseDoorHosts(env.CHARTER_DOOR_HOSTS);
+  const funding = doorFunding(env);
+  blockAddresses(funding.selfAddrs);
 
   const grants = new GrantStore(join(dataDir, 'grants.jsonl'), Date.now);
   grants.dropOldPitches();
@@ -72,17 +116,34 @@ async function main(): Promise<void> {
   const fundAddressRaw = env.CHARTER_FUND_ADDRESS?.trim();
   if (fundAddressRaw && !/^0x[0-9a-fA-F]{40}$/.test(fundAddressRaw)) throw new Error('CHARTER_FUND_ADDRESS must be a 0x address (40 hex characters)');
 
-  const client = await doorPayer(env);
-  // The channel is opened (or found) now, at boot, not inside the first tick's payment window.
+  // Hosts: who registered, what the door has locked in their channels, and how much more it may lock.
+  const registry = new HostRegistry(join(dataDir, HOSTS_FILE));
+  const capital = new CapitalBook(join(dataDir, CAPITAL_FILE));
+  const locked = (hostId: string) => capital.locked(hostId);
+  const depositFor = capitalAllocator({
+    registry, locked, probeDeposit: funding.probeDeposit, hostDeposit: funding.hostDeposit, probeCap: funding.probeCap, hostCap: funding.hostCap,
+  });
+  const payer = doorPayer({
+    key: payerKey(env),
+    channelDir: env.CHARTER_HOST_CHANNEL_DIR?.trim() || join(dataDir, 'host-channels'),
+    depositFor,
+    fetch: hostFetch,
+    onDeposit: (hostId, channelId, amount) => {
+      capital.deposited(hostId, amount);
+      console.log(`charter-door: deposit ${amount} micro-USDC signed into channel ${channelId} of host ${hostId}`);
+    },
+    readContract: baseReader(env),
+  });
+  // A deposit or settle whose answer was lost before a restart: the chain says what landed.
   try {
-    await client.warm();
-    const left = await client.headroom();
-    console.log(`charter-door channel ready, headroom ${left === undefined ? 'unknown' : left.toString()} micro-USDC`);
+    await payer.resyncAll();
   } catch (e) {
-    console.error(`charter-door could not open its channel at boot (opens and ticks retry it at most once a minute): ${String(e instanceof Error ? e.message : e).slice(0, 200)}`);
+    console.error(`charter-door: host channels not resynced from chain at boot: ${String(e instanceof Error ? e.message : e).slice(0, 200)}`);
   }
-  const payer = serialized(client);
-  const x402 = x402Config(env);
+  const apiOf = hostApis(payer);
+  const fetchOffer = (url: string) => fetchHostOffer(url, (input, init) => safeFetch(input as string | URL | Request, init ?? {}));
+
+  const x402 = x402Config(env, payer.address);
   const schemes = buildSchemes(x402);
   const claims = claimManager(x402, schemes);
   // Batch is offered only when the facilitator lists it: otherwise every tick, exact included, would fail.
@@ -101,11 +162,9 @@ async function main(): Promise<void> {
   }
 
   const app = doorApp({
-    offers: () => fetchOffers(relayUrl, Date.now()),
-    api: (o) => hostApi(payer, o),
-    hosts,
-    headroom: () => client.headroom(),
-    reopen: () => client.warm(),
+    offers: listedOffers({ registry, fetchOffer, now: Date.now }),
+    api: apiOf,
+    payer: payer.address,
     ledger,
     dataDir,
     grants,
@@ -121,11 +180,16 @@ async function main(): Promise<void> {
   });
   const host = env.CHARTER_DOOR_HOST?.trim() || '127.0.0.1';
   const server = app.listen(port, host);
-  console.log(`charter-door listening on ${host}:${port}`);
+  console.log(`charter-door listening on ${host}:${port}, paying hosts as ${payer.address}`);
   // The refund idle window follows the longest interval of any lease this door has opened (two hours on an hourly offer).
   startClaims(claims, { log: (m) => console.log(m), idleMs: () => idleMsFor(ledger.all().map((l) => l.offer.intervalSeconds)) });
+  const stopProbes = startProbes({
+    registry, apiOf, fetchOffer, depositFor, locked, probeMaxTick: funding.probeMaxTick, perDay: funding.probesPerDay,
+    now: Date.now, log: (m) => console.log(`charter-door: ${m}`),
+  });
   await new Promise<void>((resolve) => {
     const stop = () => {
+      stopProbes();
       void claims.stop();
       server.close();
       resolve();
@@ -139,20 +203,16 @@ if (process.argv[2] === 'unblock') {
   process.exit(unblockCommand(process.argv.slice(3), process.env, Date.now, (m) => console.log(m)));
 }
 
-/** `charter-door x402 …` reads only CHARTER_PAY_TO, CHARTER_CLAIM_KEY_FILE, CHARTER_DATA_DIR and X402_FACILITATOR_URL. */
+/** `charter-door x402 …` reads only CHARTER_DOOR_PAYER_KEY_FILE, CHARTER_CLAIM_KEY_FILE, CHARTER_DATA_DIR and X402_FACILITATOR_URL. */
 async function x402Main(args: string[]): Promise<number> {
-  const cfg = x402Config(process.env);
+  const cfg = x402Config(process.env, privateKeyToAccount(payerKey(process.env)).address);
   const schemes = buildSchemes(cfg);
   // The same idle window the door uses: read from the ledger the door writes (the constructor only reads).
   const ledger = new DoorLedger(join(need(process.env, 'CHARTER_DATA_DIR'), LEDGER_FILE));
   return x402Command(args, claimManager(cfg, schemes), schemes.batch.getStorage(), Date.now, (m) => console.log(m), () => idleMsFor(ledger.all().map((l) => l.offer.intervalSeconds)));
 }
 
-const run = process.argv[2] === 'channel'
-  ? doorPayer(process.env).then((p) => channelCommand(process.argv.slice(3), p, (m) => console.log(m))).then((code) => process.exit(code))
-  : process.argv[2] === 'x402'
-    ? x402Main(process.argv.slice(3)).then((code) => process.exit(code))
-    : main();
+const run = process.argv[2] === 'x402' ? x402Main(process.argv.slice(3)).then((code) => process.exit(code)) : main();
 
 run.then(
   () => process.exit(0),

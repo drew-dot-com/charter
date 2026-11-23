@@ -19,10 +19,10 @@ import type { Runner } from '../host/runner.js';
 import { LeaseStore } from '../host/store.js';
 import { onJobExit } from '../lease.js';
 import { HostError } from '../tenant/host-api.js';
-import type { JobSpec } from '../types.js';
+import type { JobSpec, Offer } from '../types.js';
 import { BASE_USDC, type Gate } from '../x402/seller.js';
 import { stubGate } from './x402.js';
-import { CapitalCapError, DepositPendingError, doorPayer, httpHostApi, paysOnly, UnexpectedPaymentError, type DepositFor, type DoorPayer, type HostOffer } from './host-http.js';
+import { CapitalCapError, DepositPendingError, doorPayer, httpHostApi, MAX_OUTPUT_PARTS, PENDING_CHECK_MS, paysOnly, UnexpectedPaymentError, type DepositFor, type DoorPayer, type ReadContract } from './host-http.js';
 import { HostQueue } from './host-queue.js';
 
 const T0 = 1_700_000_000_000;
@@ -34,8 +34,8 @@ const AUTHORIZER = '0x' + '4'.repeat(40);
 const PRICE = 5000n;
 const JOB: JobSpec = { image: 'charter-job-fetch', args: { URLS: 'https://example.com' } };
 
-const offerAt = (url: string): HostOffer => ({
-  id: 'o1', hostPubkey: '', ilpBase: 'g.test', sealKey: '', sealUrl: '', cpu: 1, memoryMiB: 1024, intervalSeconds: 30,
+const offerAt = (url: string): Offer => ({
+  id: 'o1', cpu: 1, memoryMiB: 1024, intervalSeconds: 30,
   firstTickGraceSeconds: 90, tickPrice: PRICE, openPrice: 0n, statusPrice: 0n, images: ['charter-job-fetch'], hiddenHost: false,
   hiddenEgress: false, expiresAt: 0, hostId: HOST_ID, url, payTo: PAY_TO,
 });
@@ -113,8 +113,11 @@ async function setup(tickGate: Gate = stubGate(() => PRICE), output?: Buffer) {
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const channelDir = mkdtempSync(join(tmpdir(), 'door-host-http-'));
   const offer = offerAt(base);
-  const payerFor = (o: { depositFor?: DepositFor; onDeposit?: (hostId: string, channelId: string, amount: bigint) => void } = {}) =>
-    doorPayer({ key: KEY, channelDir, depositFor: o.depositFor ?? (() => 500_000n), ...(o.onDeposit ? { onDeposit: o.onDeposit } : {}) });
+  const payerFor = (o: { depositFor?: DepositFor; onDeposit?: (hostId: string, channelId: string, amount: bigint) => void; readContract?: ReadContract; now?: () => number } = {}) =>
+    doorPayer({
+      key: KEY, channelDir, depositFor: o.depositFor ?? (() => 500_000n),
+      ...(o.onDeposit ? { onDeposit: o.onDeposit } : {}), ...(o.readContract ? { readContract: o.readContract } : {}), ...(o.now ? { now: o.now } : {}),
+    });
   const apiFor = (o: { depositFor?: DepositFor; timeoutMs?: number; payer?: DoorPayer } = {}) =>
     httpHostApi(offer, {
       payer: o.payer ?? payerFor(o.depositFor ? { depositFor: o.depositFor } : {}),
@@ -377,6 +380,106 @@ test('a deposit tick that fails leaves the deposit pending: no second deposit is
     await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof HostError && e.status === 500);
     assert.equal(g.paid.at(-1)!.payload.type, 'voucher');
     assert.equal(deposits.length, 2);
+  } finally {
+    t.done();
+  }
+});
+
+/** A Base reader that answers `channels(id)` from `chain`, counting each read. */
+function fakeChain(chain: Map<string, [bigint, bigint]>) {
+  const reads: string[] = [];
+  const readContract: ReadContract = async (args) => {
+    assert.equal(args.functionName, 'channels');
+    const id = String(args.args?.[0]).toLowerCase();
+    reads.push(id);
+    return chain.get(id) ?? [0n, 0n];
+  };
+  return { readContract, reads };
+}
+
+test('R5: with a chain reader, a pending deposit the chain shows is cleared and the record takes the chain balance', async () => {
+  const g = challengeGate([ASK], { answer: 500 });
+  const t = await setup(g.gate);
+  try {
+    const chain = new Map<string, [bigint, bigint]>();
+    const c = fakeChain(chain);
+    const clock = { t: Date.now() };
+    const deposits: bigint[] = [];
+    const payer = t.payerFor({ readContract: c.readContract, now: () => clock.t, onDeposit: (_h, _c, a) => void deposits.push(a) });
+    const api = t.apiFor({ payer });
+    const { leaseId } = await api.open(JOB);
+    await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof HostError && e.status === 500);
+    assert.deepEqual(deposits, [500_000n]);
+
+    // Not on chain yet: still pending, and the chain is read at most once per PENDING_CHECK_MS.
+    await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof DepositPendingError);
+    const reads = c.reads.length;
+    await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof DepositPendingError);
+    assert.equal(c.reads.length, reads, 'no second read inside the window');
+
+    // The deposit landed although its answer was lost: the next look clears it, and the tick is a voucher.
+    chain.set(askChannelId(), [500_000n, 0n]);
+    clock.t += PENDING_CHECK_MS;
+    await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof HostError && e.status === 500);
+    assert.equal(g.paid.at(-1)!.payload.type, 'voucher');
+    assert.deepEqual(deposits, [500_000n], 'no second deposit');
+    const storage = new FileClientChannelStorage({ directory: join(t.channelDir, HOST_ID) });
+    assert.equal((await storage.get(askChannelId()))?.balance, '500000');
+  } finally {
+    t.done();
+  }
+});
+
+test('R5: a pending deposit the chain never shows is cleared once its authorization has lapsed', async () => {
+  const g = challengeGate([ASK], { answer: 500 });
+  const t = await setup(g.gate);
+  try {
+    const c = fakeChain(new Map());
+    const clock = { t: Date.now() };
+    const deposits: bigint[] = [];
+    const payer = t.payerFor({ readContract: c.readContract, now: () => clock.t, onDeposit: (_h, _c, a) => void deposits.push(a) });
+    const api = t.apiFor({ payer });
+    const { leaseId } = await api.open(JOB);
+    await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof HostError && e.status === 500);
+    const validBefore = Number(((g.paid[0]!.payload.deposit as { authorization: { erc3009Authorization: { validBefore: string } } }).authorization.erc3009Authorization.validBefore));
+    clock.t = validBefore * 1000 - 1000;
+    await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof DepositPendingError, 'still able to land');
+    clock.t = validBefore * 1000 + PENDING_CHECK_MS;
+    await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof HostError && e.status === 500);
+    assert.equal(deposits.length, 2, 'a lapsed deposit never lands, so a new one is signed');
+  } finally {
+    t.done();
+  }
+});
+
+test('R5: resyncAll brings every record up to the chain; charged may jump several ticks, never back', async () => {
+  const t = await setup();
+  try {
+    const channelId = askChannelId();
+    const storage = new FileClientChannelStorage({ directory: join(t.channelDir, HOST_ID) });
+    await storage.set(channelId, { chargedCumulativeAmount: '35000', balance: '500000' });
+    const chain = new Map<string, [bigint, bigint]>([[channelId, [600_000n, 50_000n]]]);
+    const payer = t.payerFor({ readContract: fakeChain(chain).readContract });
+    await payer.resyncAll();
+    assert.deepEqual(await storage.get(channelId), { chargedCumulativeAmount: '50000', balance: '600000', totalClaimed: '50000' });
+    assert.equal(await payer.charged(HOST_ID), 50_000n);
+    chain.set(channelId, [600_000n, 10_000n]);
+    await payer.resyncAll();
+    assert.equal((await storage.get(channelId))?.chargedCumulativeAmount, '50000', 'a lower claimed amount never lowers charged');
+    // Without a chain reader there is nothing to resync from.
+    chain.set(channelId, [900_000n, 90_000n]);
+    await t.payerFor().resyncAll();
+    assert.equal((await storage.get(channelId))?.balance, '600000');
+  } finally {
+    t.done();
+  }
+});
+
+test('output reads stop at MAX_OUTPUT_PARTS', async () => {
+  const t = await setup();
+  try {
+    const api = t.apiFor();
+    await assert.rejects(api.outputPart('a'.repeat(32), MAX_OUTPUT_PARTS), (e: unknown) => e instanceof HostError && e.status === 404);
   } finally {
     t.done();
   }

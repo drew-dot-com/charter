@@ -1,10 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCdpKey, parseDoorHosts, parseTrustProxy } from './config.js';
+import { doorFunding, parseCdpKey, parsePayerKey, parseTrustProxy } from './config.js';
 import { claimSigner, parseClaimKey } from '../x402/seller.js';
-
-const A = 'ab'.repeat(32);
-const B = 'cd'.repeat(32);
 
 test('F-I5: CHARTER_DOOR_TRUST_PROXY accepts 1, true, or a hop count, and nothing else', () => {
   assert.equal(parseTrustProxy(undefined), undefined);
@@ -15,14 +12,6 @@ test('F-I5: CHARTER_DOOR_TRUST_PROXY accepts 1, true, or a hop count, and nothin
   assert.equal(parseTrustProxy(' TRUE '), true);
   for (const bad of ['yes', 'loopback', '-1', '0', '1.5', 'false']) {
     assert.throws(() => parseTrustProxy(bad), /CHARTER_DOOR_TRUST_PROXY/, bad);
-  }
-});
-
-test('F-C1: CHARTER_DOOR_HOSTS is a comma list of <pubkey>=<ilpBase>, and is required', () => {
-  const m = parseDoorHosts(`${A}=g.toon.69b2a212547e7a9c, ${B}=g.toon.c50e6a019916b7cb`);
-  assert.deepEqual([...m], [[A, 'g.toon.69b2a212547e7a9c'], [B, 'g.toon.c50e6a019916b7cb']]);
-  for (const bad of [undefined, '', ' , ', `${A}`, `${A}=`, `${A.toUpperCase()}=g.toon.x`, `${A.slice(2)}=g.toon.x`, `${A}=not an address`, `${A}=g.toon.x,${A}=g.toon.y`]) {
-    assert.throws(() => parseDoorHosts(bad), /CHARTER_DOOR_HOSTS/, String(bad));
   }
 });
 
@@ -40,6 +29,36 @@ test('parseClaimKey refuses a missing prefix, a short key and a second line, and
       assert.doesNotMatch(e.message, /[0-9a-f]{8}/);
       return true;
     });
+  }
+});
+
+test('parsePayerKey: one 0x-prefixed 64-hex key; refusals name CHARTER_DOOR_PAYER_KEY_FILE and no key bytes', () => {
+  assert.equal(parsePayerKey(`${KEY}\n`), KEY);
+  for (const bad of ['ab'.repeat(32), `${KEY}\n${KEY}`, '']) {
+    assert.throws(() => parsePayerKey(bad), (e: unknown) => {
+      assert.ok(e instanceof Error);
+      assert.match(e.message, /CHARTER_DOOR_PAYER_KEY_FILE/);
+      assert.doesNotMatch(e.message, /[0-9a-f]{8}/);
+      return true;
+    });
+  }
+});
+
+test('doorFunding applies the defaults and reads overrides', () => {
+  assert.deepEqual(doorFunding({}), {
+    probesPerDay: 10, probeMaxTick: 10_000n, probeDeposit: 100_000n, probeCap: 1_000_000n,
+    hostDeposit: 500_000n, hostCap: 10_000_000n, selfAddrs: [],
+  });
+  const f = doorFunding({
+    CHARTER_PROBES_PER_DAY: '3', CHARTER_PROBE_MAX_TICK: '7000', CHARTER_PROBE_DEPOSIT: '200000', CHARTER_PROBE_CAPITAL_CAP: '2000000',
+    CHARTER_HOST_DEPOSIT: '1000000', CHARTER_HOST_CAPITAL_CAP: '20000000', CHARTER_DOOR_SELF_ADDRS: ' 37.27.86.235, 2a01:4f9::/64 ,',
+  });
+  assert.deepEqual(f, {
+    probesPerDay: 3, probeMaxTick: 7000n, probeDeposit: 200_000n, probeCap: 2_000_000n,
+    hostDeposit: 1_000_000n, hostCap: 20_000_000n, selfAddrs: ['37.27.86.235', '2a01:4f9::/64'],
+  });
+  for (const [k, v] of [['CHARTER_PROBES_PER_DAY', '-1'], ['CHARTER_PROBE_MAX_TICK', '0'], ['CHARTER_HOST_DEPOSIT', '1.5'], ['CHARTER_HOST_CAPITAL_CAP', 'lots']] as const) {
+    assert.throws(() => doorFunding({ [k]: v }), new RegExp(k));
   }
 });
 

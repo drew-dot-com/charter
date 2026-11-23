@@ -45,13 +45,6 @@ function parseJob(body: unknown): JobSpec | null {
   return { image, args: Object.fromEntries(entries) as Record<string, string> };
 }
 
-function newApp(): express.Express {
-  const app = express();
-  app.disable('x-powered-by');
-  app.use(express.json({ limit: '64kb', type: () => true }));
-  return app;
-}
-
 /** Last in the chain: unknown paths and methods answer 404, a bad body answers 400. */
 export function finish(app: express.Express): express.Express {
   app.use((_req, res) => {
@@ -95,7 +88,7 @@ export function openHandler(deps: HostDeps): express.RequestHandler {
     if (live() >= maxLeases) return refuse('busy');
     store.put(lease);
 
-    // The packet is paid whatever happens, so a boot failure answers 200 with the reason.
+    // A boot failure answers 200 with the reason: the open was answered, the lease is closed.
     const fail = async (error: string, stop: boolean, detail: string = error) => {
       deps.log?.(`open ${leaseId} boot failed: ${detail}`);
       const cur = store.get(leaseId)!;
@@ -128,19 +121,14 @@ export function openHandler(deps: HostDeps): express.RequestHandler {
   };
 }
 
-/**
- * `POST` tick, body `{ index }`: records a paid interval, and on tick 0 starts the job. `leaseIdOf` says where
- * the lease id is: the path (`:id`) by default, the body for the TOON tick app.
- */
-export function tickHandler(
-  deps: HostDeps, leaseIdOf: (req: express.Request) => unknown = (req) => req.params.id,
-): express.RequestHandler {
+/** `POST` tick of `:id`, body `{ index }`: records a paid interval, and on tick 0 starts the job. */
+export function tickHandler(deps: HostDeps): express.RequestHandler {
   const { store, runner, offer, now } = deps;
   const intervalMs = offer.intervalSeconds * 1000;
   const log = deps.log ?? ((msg: string) => console.error(msg));
 
   return async (req, res) => {
-    const leaseId = leaseIdOf(req);
+    const leaseId = req.params.id;
     const { index } = (req.body ?? {}) as { index?: unknown };
     if (typeof leaseId !== 'string' || !LEASE_ID.test(leaseId) || !isNonNegInt(index)) {
       return void res.status(400).json({ error: 'bad_request' });
@@ -230,23 +218,4 @@ export function outputHandler(deps: HostDeps): express.RequestHandler {
     const slice = bytes.subarray(part * OUTPUT_PART_BYTES, (part + 1) * OUTPUT_PART_BYTES);
     res.json({ part, parts, data: slice.toString('base64') });
   };
-}
-
-/**
- * The three apps the node puts behind its three priced TOON apps. Each handles
- * exactly one route, so a packet paid for one price can never reach another.
- * Bind each to 127.0.0.1 only.
- */
-export function hostApps(deps: HostDeps): { open: express.Express; tick: express.Express; status: express.Express } {
-  const open = newApp();
-  open.post('/open', openHandler(deps));
-
-  const tick = newApp();
-  tick.post('/tick', tickHandler(deps, (req) => (req.body as { leaseId?: unknown } | undefined)?.leaseId));
-
-  const status = newApp();
-  status.get('/leases/:id', statusHandler(deps));
-  status.get('/leases/:id/output/:part', outputHandler(deps));
-
-  return { open: finish(open), tick: finish(tick), status: finish(status) };
 }

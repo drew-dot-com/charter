@@ -113,7 +113,7 @@ async function payLease(api: HostApi, o: Offer, leaseId: string, opts: RunLeaseO
 
   /**
    * Local (tenant clock) estimate of when the paid time runs out, counted from when a tick was SENT:
-   * the host's clock runs while the packet travels. Taken from the host only when attaching to a lease
+   * the host's clock runs while the request travels. Taken from the host only when attaching to a lease
    * this tenant did not pay before, as it has no send time of its own for those ticks.
    */
   let paidUntil: number | undefined;

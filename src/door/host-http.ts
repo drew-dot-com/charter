@@ -2,7 +2,7 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { decodePaymentRequiredHeader } from '@x402/core/http';
 import type { ClientEvmSigner } from '@x402/evm';
-import { BatchSettlementEvmScheme } from '@x402/evm/batch-settlement/client';
+import { BatchSettlementEvmScheme, readChannelBalanceAndTotalClaimed } from '@x402/evm/batch-settlement/client';
 import { FileClientChannelStorage } from '@x402/evm/batch-settlement/client/file-storage';
 import { wrapFetchWithPayment, x402Client, type PaymentRequirements } from '@x402/fetch';
 import type { LocalAccount } from 'viem';
@@ -14,15 +14,16 @@ import type { JobSpec, Lease, Micro, Offer } from '../types.js';
 import { BASE_USDC } from '../x402/seller.js';
 import type { HostQueue } from './host-queue.js';
 
-/** An offer from an open host: where it answers and who it is paid as. Task 6 folds these fields into `Offer`. */
-export type HostOffer = Offer & { hostId: string; url: string; payTo: `0x${string}` };
-
 /** The only network the door pays hosts on. */
 export const DOOR_NETWORK = 'eip155:8453' as const;
 /** The longest channel `withdrawDelay` the door accepts from a host: its deposit is never locked past a day. */
 export const MAX_WITHDRAW_DELAY_SECONDS = 86_400;
 /** A host call's default time limit. */
 export const HOST_TIMEOUT_MS = 30_000;
+/** The most output parts the door reads of one lease (64 parts of 48 KiB: 3 MiB). */
+export const MAX_OUTPUT_PARTS = 64;
+/** A pending deposit is checked against the chain at most this often per host. */
+export const PENDING_CHECK_MS = 15_000;
 
 const HOST_ID = /^[0-9a-f]{64}$/;
 
@@ -61,17 +62,30 @@ export interface DoorPayer {
   /** Signs door requests (`signDoorRequest`) and, as the channel's payer, deposits and vouchers. */
   account: LocalAccount;
   /** fetch that pays one host's 402 for one tick at `tickPrice`, from that host's channel, and nothing else. */
-  paidFetch(offer: HostOffer, tickPrice: Micro): typeof fetch;
+  paidFetch(offer: Offer, tickPrice: Micro): typeof fetch;
   /** What the door's channel records say this host has charged so far, summed over its channels. */
   charged(hostId: string): Promise<bigint>;
   /** Forget an unconfirmed deposit for this host (after the door resyncs its channel from chain). */
   clearPendingDeposit(hostId: string): void;
+  /**
+   * With a chain reader: brings every channel record of every host up to the chain (balance, claimed, and a
+   * charged amount at least what was claimed) and clears the pending deposits the chain shows. The door runs
+   * it at boot, so a deposit or a settle whose answer was lost before a restart is not paid twice.
+   */
+  resyncAll(): Promise<void>;
 }
+
+/** Reads a channel's `[balance, totalClaimed]` on chain (x402BatchSettlement `channels(channelId)`). */
+export type ReadContract = NonNullable<ClientEvmSigner['readContract']>;
 
 interface PendingDeposit {
   channelId: string;
   /** The record's balance when the deposit was signed, plus the deposit: what a record that reflects it shows. */
   balanceAfter: bigint;
+  /** The deposit authorization's validBefore (epoch seconds): past it, a deposit not on chain never lands. */
+  validBefore?: number;
+  /** Epoch ms the chain was last read for it. */
+  checkedAt?: number;
 }
 
 const sameAddress = (a: unknown, b: string): boolean => typeof a === 'string' && a.toLowerCase() === b.toLowerCase();
@@ -121,6 +135,15 @@ function asksForTheTick(res: Response, payTo: string, tickPrice: Micro): boolean
   return Array.isArray(accepts) && accepts.some((r) => typeof r === 'object' && r !== null && isTheTick(r as PaymentRequirements, payTo, tickPrice));
 }
 
+/** The host ids the door holds channel records for (one dir each under `channelDir`). */
+async function hostDirs(channelDir: string): Promise<string[]> {
+  try {
+    return (await readdir(channelDir)).filter((d) => HOST_ID.test(d));
+  } catch {
+    return [];
+  }
+}
+
 /** Where the door keeps one host's channel records. */
 function hostChannelDir(channelDir: string, hostId: string): string {
   if (!HOST_ID.test(hostId)) throw new Error('hostId must be 64 lowercase hex');
@@ -149,21 +172,66 @@ export function doorPayer(o: {
   fetch?: typeof fetch;
   /** Called once for each deposit the door signs, with its amount in micro-USDC. */
   onDeposit?: (hostId: string, channelId: string, amount: bigint) => void;
+  /**
+   * Base reads (viem `readContract` on BASE_RPC_URL). With it the batch client rebuilds a lost record and
+   * resyncs one a host reports behind from chain and the door's own voucher signature, and a pending deposit
+   * is cleared once the chain shows it (or once its authorization has lapsed without it). Without: records
+   * only move by the hosts' answers.
+   */
+  readContract?: ReadContract;
+  /** Epoch ms. */
+  now?: () => number;
 }): DoorPayer {
   const account = privateKeyToAccount(o.key);
+  const now = o.now ?? Date.now;
   const signer: ClientEvmSigner = {
     address: account.address,
     signTypedData: (m) => account.signTypedData(m as unknown as Parameters<typeof account.signTypedData>[0]),
+    ...(o.readContract ? { readContract: o.readContract } : {}),
   };
   const base = o.fetch ?? fetch;
   const storageOf = (hostId: string) => new FileClientChannelStorage({ directory: hostChannelDir(o.channelDir, hostId) });
   const pending = new Map<string, PendingDeposit>();
 
-  /** Whether a deposit signed for this host is still unconfirmed. A record that shows it clears it. */
+  /**
+   * One record brought up to the chain (made from it when there is none yet, as after a first deposit whose
+   * answer was lost): its balance and claimed amount as the contract has them, its charged amount at least the
+   * claimed one. A resync may move charged by several ticks at once: every voucher behind it is one the door signed.
+   */
+  const resyncChannel = async (hostId: string, channelId: string): Promise<void> => {
+    const storage = storageOf(hostId);
+    const rec = (await storage.get(channelId)) ?? {};
+    const [balance, claimed] = await readChannelBalanceAndTotalClaimed(signer, channelId as `0x${string}`);
+    const charged = amountOf(rec.chargedCumulativeAmount);
+    await storage.set(channelId, {
+      ...rec,
+      balance: balance.toString(),
+      totalClaimed: claimed.toString(),
+      chargedCumulativeAmount: (claimed > charged ? claimed : charged).toString(),
+    });
+  };
+
+  /**
+   * Whether a deposit signed for this host is still unconfirmed. A record that shows it clears it; with a chain
+   * reader, so does the chain (read at most every PENDING_CHECK_MS), or the lapse of its authorization.
+   */
   const depositPending = async (hostId: string): Promise<boolean> => {
     const p = pending.get(hostId);
     if (!p) return false;
-    if (amountOf((await storageOf(hostId).get(p.channelId))?.balance) >= p.balanceAfter) {
+    const shows = async () => amountOf((await storageOf(hostId).get(p.channelId))?.balance) >= p.balanceAfter;
+    if (await shows()) {
+      pending.delete(hostId);
+      return false;
+    }
+    if (!o.readContract || (p.checkedAt !== undefined && now() - p.checkedAt < PENDING_CHECK_MS)) return true;
+    p.checkedAt = now();
+    try {
+      await resyncChannel(hostId, p.channelId);
+    } catch {
+      return true;
+    }
+    // Read after the chain: a deposit past its validBefore that the chain does not show can never land.
+    if ((await shows()) || (p.validBefore !== undefined && now() / 1000 > p.validBefore)) {
       pending.delete(hostId);
       return false;
     }
@@ -174,6 +242,14 @@ export function doorPayer(o: {
     address: account.address,
     account,
     clearPendingDeposit: (hostId) => void pending.delete(hostId),
+    async resyncAll() {
+      if (!o.readContract) return;
+      for (const hostId of await hostDirs(o.channelDir)) {
+        for (const key of await channelKeys(hostChannelDir(o.channelDir, hostId))) await resyncChannel(hostId, key);
+        const p = pending.get(hostId);
+        if (p && amountOf((await storageOf(hostId).get(p.channelId))?.balance) >= p.balanceAfter) pending.delete(hostId);
+      }
+    },
     async charged(hostId) {
       const storage = storageOf(hostId);
       let sum = 0n;
@@ -224,12 +300,18 @@ export function doorPayer(o: {
           })
           // A signed deposit is pending until the channel record shows it (a successful settle adds it).
           .onAfterPaymentCreation(async ({ paymentPayload }) => {
-            const p = paymentPayload.payload as { type?: unknown; deposit?: { amount?: unknown }; voucher?: { channelId?: unknown } };
+            const p = paymentPayload.payload as {
+              type?: unknown;
+              deposit?: { amount?: unknown; authorization?: { erc3009Authorization?: { validBefore?: unknown } } };
+              voucher?: { channelId?: unknown };
+            };
             if (p.type !== 'deposit' || typeof p.deposit?.amount !== 'string' || typeof p.voucher?.channelId !== 'string') return;
             const channelId = p.voucher.channelId.toLowerCase();
             const amount = amountOf(p.deposit.amount);
             const before = amountOf((await storage.get(channelId))?.balance);
-            pending.set(offer.hostId, { channelId, balanceAfter: before + amount });
+            const vb = p.deposit.authorization?.erc3009Authorization?.validBefore;
+            const validBefore = typeof vb === 'string' && /^\d{1,15}$/.test(vb) ? Number(vb) : undefined;
+            pending.set(offer.hostId, { channelId, balanceAfter: before + amount, ...(validBefore === undefined ? {} : { validBefore }) });
             o.onDeposit?.(offer.hostId, channelId, amount);
           });
         // The 402 itself is read first: when it asks for nothing the door pays, the client never sees it.
@@ -294,7 +376,7 @@ const ok = (a: Answer): boolean => a.status >= 200 && a.status < 300;
  * HostError(402, 'unexpected_payment').
  */
 export function httpHostApi(
-  o: HostOffer,
+  o: Offer,
   d: { payer: DoorPayer; queue: HostQueue; tickPrice?: Micro; timeoutMs?: number; now?: () => number; fetch?: typeof fetch },
 ): HostApi {
   const now = d.now ?? Date.now;
@@ -339,8 +421,11 @@ export function httpHostApi(
     return a.body;
   };
 
-  const part = async (leaseId: string, n: number): Promise<OutputPart> =>
-    (await call('GET', `/v1/leases/${leaseId}/output/${n}`)) as OutputPart;
+  const part = async (leaseId: string, n: number): Promise<OutputPart> => {
+    // Past MAX_OUTPUT_PARTS a lease's output is not read: no host makes the door fetch without end.
+    if (n >= MAX_OUTPUT_PARTS) throw new HostError(404, 'not_found');
+    return (await call('GET', `/v1/leases/${leaseId}/output/${n}`)) as OutputPart;
+  };
 
   return {
     open: async (job: JobSpec) => (await call('POST', '/v1/leases', { job })) as OpenResult,
@@ -382,6 +467,7 @@ export function httpHostApi(
     outputPart: part,
     output: async (leaseId) => {
       const first = await part(leaseId, 0);
+      if (!Number.isSafeInteger(first.parts) || first.parts > MAX_OUTPUT_PARTS) throw new HostError(502, 'too_many_parts');
       const chunks = [Buffer.from(first.data, 'base64')];
       for (let n = 1; n < first.parts; n++) chunks.push(Buffer.from((await part(leaseId, n)).data, 'base64'));
       return Buffer.concat(chunks);

@@ -22,7 +22,6 @@ async function start(over: { fundOpen?: () => boolean; noGrants?: boolean; fundT
   const server = doorApp({
     offers: async () => [OFFER],
     api: () => { throw new Error('no host'); },
-    hosts: new Map([[OFFER.hostPubkey, OFFER.ilpBase]]),
     ledger: new DoorLedger(join(dir, 'ledger.json')),
     x402: 'free-for-tests',
     now: () => clock.t,

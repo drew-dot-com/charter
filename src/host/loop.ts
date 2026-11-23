@@ -1,7 +1,5 @@
 import { due, isHome, isLive, onBootFailed, onHomeRestarted, onJobExit } from '../lease.js';
-import { offerToEvent } from '../offer.js';
-import type { ToonCli } from '../toon-cli.js';
-import type { Lease, Offer } from '../types.js';
+import type { Lease } from '../types.js';
 import { sweepDue, type HomeStore } from './homes.js';
 import { RunnerError, type Runner } from './runner.js';
 import type { LeaseStore } from './store.js';
@@ -18,9 +16,8 @@ export const HOME_PUBLISH_RETRY_MS = 60_000;
 
 /** A lease may stay `booting` this long before it is closed `boot_failed`. */
 export const BOOT_TIMEOUT_MS = 120_000;
-/** An offer stays valid this long, and is republished every OFFER_REPUBLISH_MS. */
+/** The offer `GET /v1/offer` answers stays valid this long after the answer. */
 export const OFFER_LIFETIME_MS = 45 * 60_000;
-export const OFFER_REPUBLISH_MS = 20 * 60_000;
 /** How often closed homes are checked against the retention rules. */
 export const HOME_SWEEP_MS = 3_600_000;
 /** How long reconcile waits for dockerd at boot, asking every DOCKER_POLL_MS. */
@@ -305,51 +302,4 @@ export async function homeSweep(deps: LoopDeps): Promise<string[]> {
     }
   }
   return removed;
-}
-
-export interface OfferDeps {
-  cli: Pick<ToonCli, 'publishEvent'>;
-  offer: Offer;
-  relayUrl: string;
-  now: () => number;
-}
-
-/** Publishes the offer, good for the next 45 minutes. Returns the event id. */
-export async function offerTick(deps: OfferDeps): Promise<string> {
-  const ev = offerToEvent({ ...deps.offer, expiresAt: deps.now() + OFFER_LIFETIME_MS });
-  return deps.cli.publishEvent(ev, deps.relayUrl);
-}
-
-export interface LandDeps {
-  cli: Pick<ToonCli, 'channels' | 'land'>;
-  store: LeaseStore;
-}
-
-export interface LandResult {
-  txs: Array<{ chain: string; tx: string }>;
-  errors: string[];
-  /** Ids of the leases that got a landing recorded. */
-  recorded: string[];
-}
-
-/** Lands every inbound channel, then records the first tx on each paid lease that has none. */
-export async function landAll(deps: LandDeps): Promise<LandResult> {
-  const result: LandResult = { txs: [], errors: [], recorded: [] };
-  const inbound = (await deps.cli.channels()).filter((c) => c.direction === 'inbound');
-  for (const ch of inbound) {
-    try {
-      result.txs.push(...(await deps.cli.land(ch.id)));
-    } catch (e) {
-      result.errors.push(`channel ${ch.id}: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-  const first = result.txs[0];
-  if (!first) return result;
-  for (const l of deps.store.all()) {
-    if (l.paidIntervals > 0 && !l.landing) {
-      deps.store.put({ ...l, landing: { chain: first.chain, tx: first.tx, shared: true } });
-      result.recorded.push(l.id);
-    }
-  }
-  return result;
 }

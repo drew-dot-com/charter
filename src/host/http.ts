@@ -16,7 +16,7 @@ export interface HostHttpDeps extends HostDeps {
 
 /**
  * The host over HTTPS. The offer and health are free and open; every lease route needs the door's signature,
- * and a tick is paid through `tickGate`. Answer bodies are those of the TOON apps (`hostApps`).
+ * and a tick is paid through `tickGate`. The lease handlers are those of server.ts.
  */
 export function hostHttpApp(deps: HostHttpDeps): express.Express {
   const app = express();
