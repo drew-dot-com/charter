@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { privateKeyToAccount } from 'viem/accounts';
 import { doorClient, usdcBalance, type DoorClient } from './door-client.js';
 import { judge, JUDGE_API_VERSION, JUDGE_TIMEOUT_MS, uncountedJudgeError } from './judge.js';
-import { cycle, DEFAULT_GRANT_MIN_LEASES, GRANT_HOURS, makeJudgeOne, MAX_TICK_MICRO, type CycleDeps } from './paymaster.js';
+import { cycle, DEFAULT_GRANT_HOMES_PER_HOST, DEFAULT_GRANT_MIN_LEASES, GRANT_HOURS, makeJudgeOne, MAX_TICK_MICRO, type CycleDeps } from './paymaster.js';
 import { emptyState, loadState, saveState, type FundState } from './state.js';
 
 export const CYCLE_MS = 60_000;
@@ -126,6 +126,14 @@ export function minLeases(env: NodeJS.ProcessEnv): number {
   return Number(raw);
 }
 
+/** CHARTER_GRANT_HOMES_PER_HOST: live grant homes one host may hold; default 2, 0 allowed (no new grant opens). */
+export function grantHomesPerHost(env: NodeJS.ProcessEnv): number {
+  const raw = env.CHARTER_GRANT_HOMES_PER_HOST?.trim();
+  if (!raw) return DEFAULT_GRANT_HOMES_PER_HOST;
+  if (!/^\d{1,6}$/.test(raw)) throw new Error('CHARTER_GRANT_HOMES_PER_HOST must be a whole number');
+  return Number(raw);
+}
+
 // ---- one iteration ----
 
 export interface OnceDeps {
@@ -139,6 +147,8 @@ export interface OnceDeps {
   runCycle?: (d: CycleDeps) => Promise<void>;
   /** Finished leases a host needs before a new grant opens on it. */
   minLeases?: number;
+  /** Live grant homes one host may hold. */
+  grantHomesPerHost?: number;
 }
 
 /**
@@ -165,6 +175,7 @@ export async function runOnce(d: OnceDeps): Promise<void> {
           door: d.door, address: d.address, balance: d.balance, now: d.now, state: d.state,
           save: () => saveState(join(d.dir, 'state.json'), d.state), problem, judgeOne: d.judgeOne,
           lastBalanceMicro: () => lastBalance(d.dir), ...(d.minLeases !== undefined ? { minLeases: d.minLeases } : {}),
+          ...(d.grantHomesPerHost !== undefined ? { grantHomesPerHost: d.grantHomesPerHost } : {}),
         });
       } catch (e) {
         problem('cycle', errText(e));
@@ -347,9 +358,10 @@ async function run(env: NodeJS.ProcessEnv): Promise<void> {
   process.on('SIGINT', stop);
   console.log(`charter-fund up: address ${address}, data ${dir}`);
   const grantMinLeases = minLeases(env);
+  const grantCap = grantHomesPerHost(env);
   await runLoop({
     signal,
-    once: () => runOnce({ dir, state, door, address, balance: () => usdcBalance(address, rpcUrl), now: Date.now, judgeOne, minLeases: grantMinLeases }),
+    once: () => runOnce({ dir, state, door, address, balance: () => usdcBalance(address, rpcUrl), now: Date.now, judgeOne, minLeases: grantMinLeases, grantHomesPerHost: grantCap }),
     sleep: (ms) => new Promise<void>((r) => {
       const t = setTimeout(r, ms);
       wake = () => {

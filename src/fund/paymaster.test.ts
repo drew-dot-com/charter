@@ -1314,3 +1314,86 @@ test('judgeOne: an empty queue does nothing; a bad id is never posted', async ()
   assert.equal(j.door.posts.length, 0);
   assert.equal(j.calls.length, 0);
 });
+
+// ---- at most N live grant homes on one host ----
+
+const HA = 'a'.repeat(64);
+const HB = 'b'.repeat(64);
+const roomy = (hostId: string) => offer({ offerId: `${hostId}:o1`, record: rec(9), home: { diskGiB: 2, retentionDays: 7, slots: 9, free: 9 } });
+const keysFor = (n: number) => [`ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeKeyForTestsOnly000000000000000000${n}0 g${n}@b`];
+const hostOf = (r: ReturnType<typeof rig>, id: string) => (r.door.g(id).leaseId ? r.door.leases.get(r.door.g(id).leaseId as string)?.offerId : undefined);
+
+test('with 2 per host, a third grant skips the full host and lands on another', async () => {
+  const r = rig({ balance: 100_000_000n });
+  r.door.offers = [roomy(HA), roomy(HB)];
+  const ids = [1, 2, 3].map((n) => r.door.grant({ sshKeys: keysFor(n) }));
+  for (let i = 0; i < 3; i++) await r.run({ grantHomesPerHost: 2 });
+  const rents = r.door.paid().filter((p) => p.path === '/v1/rent').map((p) => p.json.offerId);
+  assert.deepEqual(rents, [`${HA}:o1`, `${HA}:o1`, `${HB}:o1`]);
+  assert.ok(ids.every((id) => r.door.g(id).state === 'active'));
+});
+
+test('every eligible host full: the grant waits with the room text', async () => {
+  const r = rig({ balance: 100_000_000n });
+  r.door.offers = [roomy(HA)];
+  for (const n of [1, 2, 3]) r.door.grant({ sshKeys: keysFor(n) });
+  for (let i = 0; i < 3; i++) await r.run({ grantHomesPerHost: 2 });
+  assert.equal(r.door.paid().filter((p) => p.path === '/v1/rent').length, 2);
+  assert.ok(r.problems.some((p) => p.msg.includes('no host with a record has room for another grant home; waiting')), JSON.stringify(r.problems));
+});
+
+test('a cap of 0 opens nothing; no host with a record keeps the older text', async () => {
+  const r = rig();
+  r.door.offers = [roomy(HA)];
+  r.door.grant();
+  await r.run({ grantHomesPerHost: 0 });
+  assert.equal(r.door.paid().length, 0);
+  assert.ok(r.problems.some((p) => p.msg.includes('has room for another grant home')));
+  const r2 = rig();
+  r2.door.offers = [offer({ offerId: `${HA}:o1`, record: rec(1) })];
+  r2.door.grant();
+  await r2.run({ grantHomesPerHost: 0 });
+  assert.ok(r2.problems.some((p) => p.msg.includes('has a free home slot')));
+});
+
+test('a re-open of a grant\'s own home on a full host is not blocked', async () => {
+  const r = rig({ balance: 100_000_000n });
+  r.door.offers = [roomy(HA)];
+  const { id, leaseId } = await (async () => {
+    const id = r.door.grant({ sshKeys: keysFor(1) });
+    await r.run({ grantHomesPerHost: 1 });
+    return { id, leaseId: r.door.g(id).leaseId as string };
+  })();
+  r.door.close(leaseId);
+  r.clock.t += 2 * HOUR;
+  await r.run({ grantHomesPerHost: 1 });
+  const rents = r.door.paid().filter((p) => p.path === '/v1/rent');
+  assert.equal(rents.length, 2);
+  assert.equal(rents[1]!.json.offerId, `${HA}:o1`);
+  assert.equal(r.state.grants[id]!.reopened, true);
+});
+
+test('renewals (ticks) are never blocked by the cap', async () => {
+  const r = rig({ balance: 100_000_000n });
+  r.door.offers = [roomy(HA)];
+  const id = r.door.grant({ sshKeys: keysFor(1) });
+  await r.run({ grantHomesPerHost: 1 });
+  const before = r.state.grants[id]!.fundTicks;
+  r.clock.t += HOUR;
+  await r.run({ grantHomesPerHost: 1 });
+  assert.ok(r.state.grants[id]!.fundTicks > before, 'the tick was paid on a host at its cap');
+  assert.ok(hostOf(r, id) === undefined || hostOf(r, id)!.startsWith(HA));
+});
+
+test('an opening in progress counts toward its host', async () => {
+  const r = rig({ balance: 100_000_000n });
+  r.door.offers = [roomy(HA), roomy(HB)];
+  const first = r.door.grant({ sshKeys: keysFor(1) });
+  await r.run({ grantHomesPerHost: 1 });
+  r.state.grants[first]!.leaseId = undefined;
+  r.state.grants[first]!.opening = { offerId: `${HA}:o1`, at: T0 };
+  r.door.grant({ sshKeys: keysFor(2) });
+  await r.run({ grantHomesPerHost: 1 });
+  const rents = r.door.paid().filter((p) => p.path === '/v1/rent').map((p) => p.json.offerId);
+  assert.equal(rents[rents.length - 1], `${HB}:o1`);
+});

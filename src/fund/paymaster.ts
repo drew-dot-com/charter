@@ -90,6 +90,12 @@ export const GRANT_PROBE_FAIL_MS = 7 * 86_400_000;
 /** Finished paid leases a host needs before a new grant opens on it (CHARTER_GRANT_MIN_LEASES overrides). */
 export const DEFAULT_GRANT_MIN_LEASES = 5;
 export const NO_PROVEN_HOST = 'no host with a record has a free home slot; waiting';
+/** Live grant homes one host may hold at once (CHARTER_GRANT_HOMES_PER_HOST overrides). */
+export const DEFAULT_GRANT_HOMES_PER_HOST = 2;
+export const NO_ROOM_HOST = 'no host with a record has room for another grant home; waiting';
+
+/** The host part of an offerId (`<hostId>:<id>`). */
+const hostOfOffer = (offerId: string): string => offerId.split(':')[0]!;
 
 /** A host a new grant may open on: at least `minLeases` finished leases and no failed probe in the last 7 days. */
 export function grantEligible(
@@ -251,6 +257,8 @@ export interface CycleDeps {
   lastBalanceMicro?: () => string | undefined;
   /** Finished leases a host needs before a new grant opens on it. Default 5. */
   minLeases?: number;
+  /** Live grant homes one host may hold before new grants skip it. Default 2. */
+  grantHomesPerHost?: number;
 }
 
 /** One pass. Never throws: every failure is a `problem` and the pass goes on with the next grant. */
@@ -447,6 +455,26 @@ class Pass {
     return offers.filter((o) => o.free > 0 && o.images.includes(image) && o.record?.funding !== 'waiting' && grantEligible(o, this.t, min));
   }
 
+  /**
+   * `proven` offers on hosts that still have room under the per-host cap. A host's count is the fund's own
+   * grants with a live lease or an open in progress there, not counting `self` (a grant's own home never
+   * blocks itself). `full` is true when eligible offers exist but every one sits on a full host.
+   */
+  private withRoom(offers: Offer[], image: string, self: string): { fits: Offer[]; full: boolean } {
+    const eligible = this.proven(offers, image);
+    const cap = this.d.grantHomesPerHost ?? DEFAULT_GRANT_HOMES_PER_HOST;
+    const held = new Map<string, number>();
+    for (const g of Object.values(this.s.grants)) {
+      if (g.grantId === self || g.endedAt !== undefined || g.watchUntil !== undefined) continue;
+      const offerId = g.leaseId !== undefined ? g.offerId : g.opening?.offerId;
+      if (offerId === undefined) continue;
+      const h = hostOfOffer(offerId);
+      held.set(h, (held.get(h) ?? 0) + 1);
+    }
+    const fits = eligible.filter((o) => (held.get(hostOfOffer(o.offerId)) ?? 0) < cap);
+    return { fits, full: eligible.length > 0 && fits.length === 0 };
+  }
+
   private offers(): Promise<Offer[] | undefined> {
     this.offersP ??= (async () => {
       let a: Answer;
@@ -575,12 +603,13 @@ class Pass {
     // After an unanswered open, only the same offer: its host refuses a second home on these keys.
     // That retry does not need a free slot, since the host checks home_in_use before it counts slots.
     const pinned = rec0?.opening;
+    const room = pinned ? undefined : this.withRoom(offers, home.image, w.grantId);
     const offer = pinned
       ? offers.find((o) => o.offerId === pinned.offerId && o.images.includes(home.image))
-      : this.proven(offers, home.image)[0];
+      : room!.fits[0];
     if (!offer) {
       if (pinned) this.problem('open', `grant ${short(w.grantId)}: an earlier open on offer ${pinned.offerId} got no answer and that offer is not listed now; waiting for it, not opening anywhere else`);
-      else this.problem('open', `grant ${short(w.grantId)}: ${NO_PROVEN_HOST}`);
+      else this.problem('open', `grant ${short(w.grantId)}: ${room!.full ? NO_ROOM_HOST : NO_PROVEN_HOST}`);
       return;
     }
     const bal = await this.balance();
@@ -607,6 +636,7 @@ class Pass {
         const leaseId = isObj(ok.body) ? ok.body.leaseId : undefined;
         if (typeof leaseId !== 'string' || !ID.test(leaseId)) return this.paidUnusable(g, offer.tick);
         g.leaseId = leaseId;
+        g.offerId = offer.offerId;
         g.leaseTicks = 0;
         this.readAgainAt(g, ok.body.paidThrough, offer.intervalSeconds);
         return this.counted(g, offer.tick, { state: 'active', leaseId });
@@ -740,10 +770,13 @@ class Pass {
     if (!offers) return;
     const pinned = g.opening;
     let offer: Offer | undefined;
+    let full = false;
     if (pinned) {
       offer = offers.find((o) => o.offerId === pinned.offerId && o.images.includes(home.image));
     } else {
-      const fits = this.proven(offers, home.image);
+      const room = this.withRoom(offers, home.image, g.grantId);
+      full = room.full;
+      const fits = room.fits;
       const same = isObj(leaseOffer) ? leaseOffer.offerId : undefined;
       offer = fits.find((o) => o.offerId === same) ?? fits[0];
     }
@@ -753,7 +786,7 @@ class Pass {
         'open',
         pinned
           ? `grant ${short(g.grantId)}: an earlier re-open on offer ${pinned.offerId} got no answer and that offer is not listed now; waiting for it, not opening anywhere else`
-          : `grant ${short(g.grantId)}: its lease closed and ${NO_PROVEN_HOST}`,
+          : `grant ${short(g.grantId)}: its lease closed and ${full ? NO_ROOM_HOST : NO_PROVEN_HOST}`,
       );
     }
     if (!dayCapOk(this.spent(g), 1, offer.tick, offer.tick)) {
@@ -774,6 +807,7 @@ class Pass {
         const leaseId = isObj(ok.body) ? ok.body.leaseId : undefined;
         if (typeof leaseId !== 'string' || !ID.test(leaseId)) return this.paidUnusable(g, offer.tick);
         g.leaseId = leaseId;
+        g.offerId = offer.offerId;
         g.leaseTicks = 0;
         this.readAgainAt(g, ok.body.paidThrough, offer.intervalSeconds);
         return this.counted(g, offer.tick, { leaseId });

@@ -295,3 +295,13 @@ test('CHARTER_GRANT_MIN_LEASES: default 5, a whole number overrides, junk is ref
   assert.equal(minLeases({ CHARTER_GRANT_MIN_LEASES: '12' }), 12);
   assert.throws(() => minLeases({ CHARTER_GRANT_MIN_LEASES: 'many' }));
 });
+
+test('CHARTER_GRANT_HOMES_PER_HOST: default 2, 0 is allowed, junk is refused', async () => {
+  const { grantHomesPerHost } = await import('./main.js');
+  assert.equal(grantHomesPerHost({}), 2);
+  assert.equal(grantHomesPerHost({ CHARTER_GRANT_HOMES_PER_HOST: '0' }), 0);
+  assert.equal(grantHomesPerHost({ CHARTER_GRANT_HOMES_PER_HOST: '3' }), 3);
+  assert.throws(() => grantHomesPerHost({ CHARTER_GRANT_HOMES_PER_HOST: 'lots' }));
+  assert.throws(() => grantHomesPerHost({ CHARTER_GRANT_HOMES_PER_HOST: '-1' }));
+  assert.throws(() => grantHomesPerHost({ CHARTER_GRANT_HOMES_PER_HOST: '1.5' }));
+});

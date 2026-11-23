@@ -41,6 +41,8 @@ export interface FundGrant {
    * one-home-per-key-set check (`home_in_use`) stops a second home.
    */
   opening?: { offerId: string; at: number };
+  /** The offer the current lease was opened on, for the per-host cap on live grant homes. */
+  offerId?: string;
   /**
    * Set when `home_in_use` answered a retry of an unanswered open: the fund may have paid for a home it
    * cannot see. Nothing more is paid for this grant until Drew stops it.
@@ -95,6 +97,7 @@ function check(s: unknown): string | undefined {
     if (![g.lastPaidAt, g.endedAt, g.watchUntil, g.backoffUntil, g.nextReadAt, g.openUnknown].every(isTime)) return `grant ${id} times`;
     const o = g.opening;
     if (o !== undefined && !(isObj(o) && typeof o.offerId === 'string' && typeof o.at === 'number' && Number.isFinite(o.at))) return `grant ${id} opening`;
+    if (g.offerId !== undefined && typeof g.offerId !== 'string') return `grant ${id} offerId`;
     const f = g.inflight;
     if (f !== undefined && !(isObj(f) && typeof f.leaseId === 'string' && isCount(f.index) && typeof f.price === 'string' && /^\d+$/.test(f.price))) return `grant ${id} inflight`;
     const h = g.hostPaid;
