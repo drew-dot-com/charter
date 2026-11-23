@@ -66,10 +66,10 @@ Move what door and host will both use as x402 sellers out of `src/door/` so the 
 **Interfaces:**
 - Produces:
   - `DOOR_SIG_HEADER = 'x-charter-door-sig'`, `DOOR_TS_HEADER = 'x-charter-door-ts'`, `DOOR_AUTH_WINDOW_MS = 60_000`
-  - `doorAuthMessage(method: string, path: string, body: string, ts: number): string` = `charter-door-v1\n<METHOD upper>\n<path incl. query>\n<sha256 hex of body>\n<ts>`
-  - `signDoorRequest(account: LocalAccount, method: string, path: string, body: string, now: number): Promise<Record<string, string>>` (EIP-191 `signMessage`)
-  - `verifyDoorRequest(o: { headers: Record<string, string | undefined>; method: string; path: string; body: string; door: `0x${string}`; now: number }): Promise<boolean>`
-  - `requireDoor(door: () => `0x${string}` | undefined, now?: () => number): express.RequestHandler`: answers `401 {error:'not_door'}` when unset door, missing headers, bad signature or skew. Needs the raw body: export `rawJson = express.json({ verify: (req, _res, buf) => { (req as any).rawBody = buf.toString('utf8') } })` and use `rawBody ?? ''`.
+  - `doorAuthMessage(origin: string, method: string, path: string, body: string, ts: number): string` = `charter-door-v1\n<origin>\n<METHOD upper>\n<path incl. query>\n<sha256 hex of body>\n<ts>`, where origin is `new URL(hostUrl).origin` (ledger Ruling R4: binds a signature to one host so a host cannot replay it to another)
+  - `signDoorRequest(account: LocalAccount, origin: string, method: string, path: string, body: string, now: number): Promise<Record<string, string>>` (EIP-191 `signMessage`)
+  - `verifyDoorRequest(o: { headers: Record<string, string | undefined>; origin: string; method: string; path: string; body: string; door: `0x${string}`; now: number }): Promise<boolean>`
+  - `requireDoor(door: () => `0x${string}` | undefined, origin: () => string, now?: () => number): express.RequestHandler` (origin = the host's own configured URL origin): answers `401 {error:'not_door'}` when unset door, missing headers, bad signature or skew. Needs the raw body: export `rawJson = express.json({ verify: (req, _res, buf) => { (req as any).rawBody = buf.toString('utf8') } })` and use `rawBody ?? ''`.
 
 - [ ] **Step 1: Write the failing tests** in `src/door-auth.test.ts`:
   - `a signed request verifies` (viem `privateKeyToAccount` with a fixed test key)
