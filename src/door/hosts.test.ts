@@ -653,3 +653,28 @@ test('I4: leasesTicking: an unstopped lease on the host with a host tick within 
   assert.equal(leasesTicking([lease({})], OFFER.hostId, NOW), false, 'never ticked');
   assert.equal(leasesTicking([lease({ lastTickAt: NOW - 1000 })], 'cd'.repeat(32), NOW), false, 'another host');
 });
+
+test('M1: a reaper log never carries the RPC URL an error names', async () => {
+  const { reg } = registry();
+  const f = fakeChannels();
+  const id = withRecord(reg, 'a', 1, 0);
+  f.open(id, 500_000n);
+  f.chain.state = async () => {
+    throw Object.assign(new Error('HTTP request failed.\n\nURL: https://base-mainnet.example/v2/SECRETKEY\nDetails: 429'), { shortMessage: 'HTTP request failed. URL: https://base-mainnet.example/v2/SECRETKEY' });
+  };
+  f.clock.t = T0 + 8 * DAY;
+  const r = reaperFor(reg, f, new Map([[id, T0]]), new Map());
+  await r.run();
+  assert.ok(r.logs.some((l) => l.includes('<url>')), r.logs.join('\n'));
+  assert.ok(!r.logs.some((l) => l.includes('SECRETKEY')), r.logs.join('\n'));
+  const logs: string[] = [];
+  const stop = startChannelReaper({
+    registry: reg, chain: f.chain, capital: { locked: () => 0n, withdrawn: () => undefined },
+    payer: { ...f.payer, channels: async () => { throw new Error('fetch https://rpc.example/SECRETKEY failed'); } },
+    lastLeaseAt: () => undefined, ticking: () => false, now: () => f.clock.t, log: (m) => void logs.push(m),
+  });
+  await new Promise((res) => setImmediate(res));
+  stop();
+  assert.ok(logs.some((l) => l.includes('channel reaper') && l.includes('<url>')), logs.join('\n'));
+  assert.ok(!logs.some((l) => l.includes('SECRETKEY')));
+});

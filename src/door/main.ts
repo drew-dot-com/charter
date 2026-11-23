@@ -21,6 +21,7 @@ import { DoorLedger, LEDGER_FILE } from './ledger.js';
 import { startProbes } from './probe.js';
 import { fileRequestSink } from './reqlog.js';
 import { blockAddresses, safeFetch } from './safe-fetch.js';
+import { errorReason } from './redact.js';
 import { doorApp } from './server.js';
 import { GrantStore, readFundPublic } from './grants.js';
 import { BASE_USDC, buildSchemes, facilitatorOffersBatch, parseClaimKey, type Schemes, type X402Config } from '../x402/seller.js';
@@ -154,7 +155,7 @@ async function main(): Promise<void> {
   try {
     await payer.resyncAll();
   } catch (e) {
-    console.error(`charter-door: host channels not resynced from chain at boot: ${String(e instanceof Error ? e.message : e).slice(0, 200)}`);
+    console.error(`charter-door: host channels not resynced from chain at boot: ${errorReason(e)}`);
   }
   const apiOf = hostApis(payer);
   const fetchOffer = (url: string) => fetchHostOffer(url, (input, init) => safeFetch(input as string | URL | Request, init ?? {}));

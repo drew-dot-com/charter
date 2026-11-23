@@ -8,6 +8,7 @@ import type { CapitalBook } from './capital.js';
 import type { ChannelChain, DoorChannel } from './channel-chain.js';
 import type { DepositFor } from './host-http.js';
 import { utcDay, type DoorLease } from './ledger.js';
+import { errorReason } from './redact.js';
 import { blockedAddress } from './safe-fetch.js';
 
 /** The registry file's name inside the door data dir. */
@@ -533,7 +534,7 @@ export async function reapChannels(d: ReaperDeps): Promise<void> {
         }
       } catch (e) {
         empty = false;
-        d.log(`channel ${c.channelId} of host ${r.url}: ${String(e instanceof Error ? e.message : e).slice(0, 200)}`);
+        d.log(`channel ${c.channelId} of host ${r.url}: ${errorReason(e)}`);
       }
     }
     const locked = d.capital.locked(r.hostId);
@@ -553,7 +554,7 @@ export function startChannelReaper(d: ReaperDeps): () => void {
     try {
       await reapChannels(d);
     } catch (e) {
-      d.log(`channel reaper: ${String(e instanceof Error ? e.message : e).slice(0, 200)}`);
+      d.log(`channel reaper: ${errorReason(e)}`);
     } finally {
       busy = false;
     }
