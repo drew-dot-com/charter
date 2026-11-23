@@ -24,6 +24,7 @@ import { blockAddresses, safeFetch } from './safe-fetch.js';
 import { doorApp } from './server.js';
 import { GrantStore, readFundPublic } from './grants.js';
 import { BASE_USDC, buildSchemes, facilitatorOffersBatch, parseClaimKey, type Schemes, type X402Config } from '../x402/seller.js';
+import { baseUsdcWallet, startSweep } from './sweep.js';
 import { unblockCommand } from './unblock.js';
 
 const REQUEST_LOG_FILE = 'requests.jsonl';
@@ -220,8 +221,21 @@ async function main(): Promise<void> {
     capital: { locked, withdrawn: (hostId, amount) => capital.withdrawn(hostId, amount) },
     now: Date.now, log: (m) => console.log(`charter-door: ${m}`),
   });
+  // Daily: everything the wallet holds above CHARTER_SWEEP_KEEP goes to CHARTER_SWEEP_TO. A failure is logged
+  // at error level with a stable prefix the ops check greps for.
+  const sweepTo = need(env, 'CHARTER_SWEEP_TO');
+  if (!/^0x[0-9a-fA-F]{40}$/.test(sweepTo)) throw new Error('CHARTER_SWEEP_TO must be a 0x address (40 hex characters)');
+  const sweepKeep = BigInt(env.CHARTER_SWEEP_KEEP?.trim() || '15000000');
+  const stopSweep = startSweep({
+    ...baseUsdcWallet(baseRpcUrl(env), key),
+    keep: sweepKeep,
+    to: sweepTo as `0x${string}`,
+    log: (m) => console.log(`charter-door: ${m}`),
+    alert: async (m) => console.error(`charter-door ${m}`),
+  });
   await new Promise<void>((resolve) => {
     const stop = () => {
+      stopSweep();
       stopProbes();
       stopReaper();
       void claims.stop();

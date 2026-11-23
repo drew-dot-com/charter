@@ -127,6 +127,15 @@ The burn is the republish cadence: a 45 minute offer rewritten every 20 minutes 
 and 10 until then, 1 USDC a week). The 45 minutes lets one failed write pass without the storefront going
 empty. Stopping the host between demos stops the burn.
 
+## Daily sweep
+
+The door's payer wallet is the renters' payTo and funds host channels. Once a day (and at boot) the door sends
+every USDC above `CHARTER_SWEEP_KEEP` (micro-USDC, default 15000000) to `CHARTER_SWEEP_TO`, which is required.
+Channel deposits are already out of the wallet, so only the free balance is swept. The transfer is a Base USDC
+`transfer` from the payer key, so the payer wallet must keep a little ETH for gas. A failed sweep logs at error
+level with the prefix `charter-door sweep failed:`; the ops check can grep for it. A success logs the amount and
+the transaction hash, never the key.
+
 ## Backup
 
 Nightly at 03:40 Air local, `charter-backup-pull.sh` on the Air pulls `/root/charter-door/data` from the box as

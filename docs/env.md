@@ -72,6 +72,8 @@ one (a paid python job that hashes a nonce) before it lists it, and pays each ho
 | `CHARTER_PROBE_CAPITAL_CAP` | no | `1000000` | All unproven hosts' deposits together. |
 | `CHARTER_HOST_DEPOSIT` | no | `500000` | The deposit into a proven host's channel. |
 | `CHARTER_HOST_CAPITAL_CAP` | no | `10000000` | All proven hosts' deposits together. |
+| `CHARTER_SWEEP_TO` | yes | none | Address the door sends its USDC above the keep amount to, once a day and at boot. Gas is paid in ETH from the payer address. |
+| `CHARTER_SWEEP_KEEP` | no | `15000000` | micro-USDC the payer wallet keeps; only the free balance above it is swept. |
 | `CHARTER_DOOR_FEE` | no | `0` | Micro-USDC the door adds to each tick a renter pays, on top of the host's price. A lease keeps the fee of its open. |
 | `CHARTER_DOOR_SELF_ADDRS` | no | none | Comma list of the box's own IPs or CIDRs. A registered host URL resolving to one is refused, as loopback and private addresses always are. |
 
