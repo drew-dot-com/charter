@@ -168,16 +168,20 @@ Anyone can run a host. In v1 a host needs a public HTTPS address (no hosts behin
 the door, and is paid only by the door. You set your own tick price; the door adds its fee (0 today) on
 top for renters.
 
-1. **Install.** On Ubuntu 24.04 (amd64), as root, from a checkout of this repo:
+1. **Install.** On Ubuntu 24.04 (amd64), as root, from a checkout of this repo (the `charter` user makes
+   its own in step 2):
    `HOST_NAME=<your DNS name> bash deploy/host/install-host.sh`. It installs docker, gVisor's `runsc`,
    Node 22 and Anyone's `anon` from their signed repositories, makes the `charter` user, runs Caddy
    (pinned image, host network) to terminate TLS for `https://<HOST_NAME>` in front of
    `127.0.0.1:7401`, and writes `~charter/.config/charter/env` from `deploy/host/env.example`. Ports 80
    and 443 must reach the machine for Caddy's certificate. A name such as `1-2-3-4.sslip.io` works for a
    bare IP.
-2. **Build**, as the `charter` user:
+2. **Build**, as the `charter` user, in a checkout of its own:
 
    ```sh
+   sudo -iu charter git clone https://github.com/drew-dot-com/charter.git
+   sudo -iu charter   # a shell as charter, then:
+   cd charter
    npm ci && npm run build && npm install -g --prefix ~/.local .
    docker build -t charter-job-python jobs/python
    docker build -t charter-job-fetch jobs/fetch     # optional

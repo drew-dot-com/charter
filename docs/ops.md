@@ -218,9 +218,10 @@ host"; every variable is in `docs/env.md`. In short:
    `charter-caddy.service`, config `/etc/charter-caddy/Caddyfile`) terminating TLS for `https://<name>` in
    front of `127.0.0.1:7401`, and `~charter/.config/charter/env` from `deploy/host/env.example` when there is
    none. Ports 80 and 443 must be open for the certificate.
-2. As `charter`: the claim key (`node deploy/door/new-claim-key.mjs ~/.config/charter/claim-key`), the env
-   (`CHARTER_HOST_URL`, `CHARTER_HOST_PAY_TO`, `CHARTER_CLAIM_KEY_FILE`, `CHARTER_DOOR_URL`,
-   `CHARTER_HOST_PORT`, and `charter-job-python` in `CHARTER_ALLOW_IMAGES`), the build, the images, then
+2. As `charter`, in its own checkout: the build (`npm ci && npm run build`), the images, the claim key
+   (`node deploy/door/new-claim-key.mjs ~/.config/charter/claim-key`, which needs the build's dependencies),
+   the env (`CHARTER_HOST_URL`, `CHARTER_HOST_PAY_TO`, `CHARTER_CLAIM_KEY_FILE`, `CHARTER_DOOR_URL`,
+   `CHARTER_HOST_PORT`, and `charter-job-python` in `CHARTER_ALLOW_IMAGES`), then
    `systemctl --user enable --now charter-host`.
 
 What happens next, and where to look:

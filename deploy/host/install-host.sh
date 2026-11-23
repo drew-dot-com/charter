@@ -250,9 +250,9 @@ fi
 echo
 say "done: $(docker --version), $(runsc --version | sed -n 1p), node $node_v, $anon_v"
 echo "Next, as $HOST_USER (README.md, \"Run a host\"):"
+echo "  npm ci && npm run build && npm install -g --prefix ~/.local . && docker build -t charter-job-python jobs/python"
 echo "  node deploy/door/new-claim-key.mjs $host_home/.config/charter/claim-key   # the x402 claim key, holds no funds"
 echo "  edit $env_file   # CHARTER_HOST_URL, CHARTER_HOST_PAY_TO (your Base address), the rest as docs/env.md says"
-echo "  npm ci && npm run build && npm install -g --prefix ~/.local . && docker build -t charter-job-python jobs/python"
 echo "  cp deploy/host/charter-host.service ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now charter-host"
 echo "For homes, from this directory as root (the anon below is copied, so an upgrade of the package never touches the running one):"
 echo "  SUDO_USER=$HOST_USER ANON_BIN=$anon_bin ANON_GEOIP=$geoip ANON_GEOIP6=$geoip6 ./install-home.sh"

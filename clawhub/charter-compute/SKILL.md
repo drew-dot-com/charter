@@ -100,8 +100,8 @@ Read this first, because a home is not an ordinary VPS:
   `access.ssh`. No special client, no proxy. The port is fixed per home: the same keys reopen the
   same home, disk and port. A host may also publish `access.onion` as a second way in; only that
   one needs an Anyone client.
-- The box's own traffic out leaves only through the Anyone network: slow, and some services
-  refuse it.
+- On a host set up as `deploy/host/` does, the box's own traffic out leaves only through the Anyone
+  network: slow, and some services refuse it.
 - Homes are limited: `home.slots` in the offer says how many. When they are full the rent answers
   `busy`; try later.
 - The host's operator can read the disk. Put secrets in over `scp`, never through Charter.
