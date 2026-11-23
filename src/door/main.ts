@@ -10,7 +10,7 @@ import { HTTPFacilitatorClient } from '@x402/core/server';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { HostApi } from '../tenant/host-api.js';
 import type { Offer } from '../types.js';
-import { CAPITAL_FILE, CapitalBook } from './capital.js';
+import { CAPITAL_FILE, CapitalBook, capitalAtRisk } from './capital.js';
 import { baseChannelChain } from './channel-chain.js';
 import { doorFunding, parseCdpKey, parsePayerKey, parseTrustProxy } from './config.js';
 import { fetchHostOffer, listedOffers } from './host-offers.js';
@@ -123,7 +123,8 @@ async function main(): Promise<void> {
   // Hosts: who registered, what the door has locked in their channels, and how much more it may lock.
   const registry = new HostRegistry(join(dataDir, HOSTS_FILE));
   const capital = new CapitalBook(join(dataDir, CAPITAL_FILE));
-  const locked = (hostId: string) => capital.locked(hostId);
+  // What the caps count: deposits not withdrawn and not yet charged by the host (R10). `payer` is built below; this runs later.
+  const locked = capitalAtRisk(capital, (hostId) => payer.chargedNow(hostId));
   const depositFor = capitalAllocator({
     registry, locked, probeDeposit: funding.probeDeposit, hostDeposit: funding.hostDeposit, probeCap: funding.probeCap, hostCap: funding.hostCap,
   });
@@ -211,7 +212,9 @@ async function main(): Promise<void> {
     return last;
   };
   const stopReaper = startChannelReaper({
-    registry, payer, chain: baseChannelChain(baseRpcUrl(env), key), capital, lastLeaseAt,
+    registry, payer, chain: baseChannelChain(baseRpcUrl(env), key), lastLeaseAt,
+    // Releasing what is at risk leaves the book equal to what the host charged: nothing counted once channels are empty.
+    capital: { locked, withdrawn: (hostId, amount) => capital.withdrawn(hostId, amount) },
     now: Date.now, log: (m) => console.log(`charter-door: ${m}`),
   });
   await new Promise<void>((resolve) => {

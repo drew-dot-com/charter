@@ -368,6 +368,9 @@ test('a paid tick keeps its channel config on disk, so the door can withdraw the
     assert.equal((sent.receiver as string).toLowerCase(), PAY_TO.toLowerCase());
     assert.deepEqual(await payer.channels(HOST_ID), want);
     assert.deepEqual(await t.payerFor().channels(HOST_ID), want, 'a restarted door reads it back');
+    assert.equal(payer.chargedNow(HOST_ID), 2n * PRICE, 'the synchronous read the allocator uses');
+    assert.equal(payer.chargedNow(HOST_ID), await payer.charged(HOST_ID));
+    assert.equal(t.payerFor().chargedNow('cd'.repeat(32)), 0n, 'a host with no channel has charged nothing');
   } finally {
     t.done();
   }

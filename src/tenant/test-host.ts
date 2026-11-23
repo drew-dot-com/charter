@@ -135,6 +135,7 @@ export async function testHost(opts: TestHostOpts = {}): Promise<TestHost> {
     resyncAll: async () => undefined,
     channels: async () => [],
     resync: async () => undefined,
+    chargedNow: () => charged,
   };
   // The door signs with the host's clock, so a skewed host still takes its signature.
   host.api = httpHostApi({ ...offer, url: origin }, { payer, queue: new HostQueue(), fetch: counted, now: hostNow });

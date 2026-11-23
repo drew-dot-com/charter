@@ -209,15 +209,18 @@ export function doorApp(deps: DoorDeps): express.Express {
     job && isHomeImage(job.image) ? homeIdOf((job.args.SSH_KEYS ?? '').split('\n')) : undefined;
 
   /**
-   * A home whose disk is on a host opens there, whatever the ranking or a named offer says: the named offer
-   * when it is that host's, else that host's best offer for the image. 'home_host_gone' when that host is not
-   * listed or lists nothing open; undefined for a home no host holds yet, or a job that is not a home.
+   * A home whose disk is on a listed host opens there, whatever the ranking or a named offer says: the named
+   * offer when it is that host's, else that host's best offer for the image. When that host is not listed, a
+   * named offer opens a fresh home on purpose (and the open pins the home to its host); without one,
+   * 'home_host_gone'. Also 'home_host_gone' when a listed holder lists nothing open. Undefined for a home no
+   * host holds yet, or a job that is not a home.
    */
   const pinnedOffer = (open: Offer[], job: JobSpec | null, named?: Offer): Offer | 'home_host_gone' | 'image_not_offered' | undefined => {
     const homeId = homeOf(job);
     const hostId = homeId === undefined ? undefined : registry.homeHost(homeId);
     if (!job || hostId === undefined) return undefined;
     if (named?.hostId === hostId) return named;
+    if (!listed(hostId)) return named ?? 'home_host_gone';
     const its = open.filter((o) => o.hostId === hostId);
     if (its.length === 0) return 'home_host_gone';
     return rankOffers(its.filter((o) => o.images.includes(job.image)), registry, { home: true })[0] ?? 'image_not_offered';

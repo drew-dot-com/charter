@@ -1,3 +1,4 @@
+import { readdirSync, readFileSync } from 'node:fs';
 import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { decodePaymentRequiredHeader } from '@x402/core/http';
@@ -66,6 +67,8 @@ export interface DoorPayer {
   paidFetch(offer: Offer, tickPrice: Micro): typeof fetch;
   /** What the door's channel records say this host has charged so far, summed over its channels. */
   charged(hostId: string): Promise<bigint>;
+  /** `charged`, read synchronously: for the capital allocator, which answers at once. */
+  chargedNow(hostId: string): bigint;
   /** Forget an unconfirmed deposit for this host (after the door resyncs its channel from chain). */
   clearPendingDeposit(hostId: string): void;
   /**
@@ -304,6 +307,24 @@ export function doorPayer(o: {
     },
     async resync(hostId, channelId) {
       if (o.readContract) await resyncChannel(hostId, channelId);
+    },
+    chargedNow(hostId) {
+      const dir = join(hostChannelDir(o.channelDir, hostId), 'client');
+      let files: string[];
+      try {
+        files = readdirSync(dir).filter((f) => f.endsWith('.json'));
+      } catch {
+        return 0n;
+      }
+      let sum = 0n;
+      for (const f of files) {
+        try {
+          sum += amountOf((JSON.parse(readFileSync(join(dir, f), 'utf8')) as { chargedCumulativeAmount?: string }).chargedCumulativeAmount);
+        } catch {
+          // A record mid-write or unreadable counts nothing: the async reads see it next time.
+        }
+      }
+      return sum;
     },
     async charged(hostId) {
       const storage = storageOf(hostId);

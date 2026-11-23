@@ -49,3 +49,14 @@ export class CapitalBook {
     renameSync(tmp, this.file);
   }
 }
+
+/**
+ * The door's capital at risk in a host's channels, what the caps count (ruling R10): deposited, less withdrawn
+ * (the book), less what the host has charged (money already paid for ticks is not at risk), floored at 0.
+ */
+export function capitalAtRisk(book: Pick<CapitalBook, 'locked'>, charged: (hostId: string) => bigint): (hostId: string) => bigint {
+  return (hostId) => {
+    const left = book.locked(hostId) - charged(hostId);
+    return left > 0n ? left : 0n;
+  };
+}

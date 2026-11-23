@@ -1415,7 +1415,7 @@ async function queuedDoor() {
   const account = privateKeyToAccount(('0x' + '11'.repeat(32)) as `0x${string}`);
   let charged = 0n;
   const payer: DoorPayer = {
-    address: account.address, account, clearPendingDeposit: () => undefined, resyncAll: async () => undefined, channels: async () => [], resync: async () => undefined,
+    address: account.address, account, clearPendingDeposit: () => undefined, resyncAll: async () => undefined, channels: async () => [], resync: async () => undefined, chargedNow: () => charged,
     charged: async () => charged,
     paidFetch: (_o, price) => (async (input, init) => {
       const res = await host(input, init);
@@ -2161,7 +2161,7 @@ function multiHost(over: Partial<HostApi> = {}, tickFailure?: Error | ((n: numbe
   return { host, ids, built, api: (o: Offer) => (built.push(o), host.api) };
 }
 
-test('a home re-open goes to the host that holds the home; home_host_gone when that host is hidden', async () => {
+test('a home re-open goes to the host that holds the home; home_host_gone when that host is hidden and no offer is named', async () => {
   const m = multiHost();
   const registry = listedRegistry(mkdtempSync(join(tmpdir(), 'reg-')), [OFFER.hostId, H2]);
   let prices = { h1: 9000n, h2: 5000n };
@@ -2191,9 +2191,15 @@ test('a home re-open goes to the host that holds the home; home_host_gone when t
     const gone = await d.post('/v1/rent', { home: { sshKeys: [KEY_A] } });
     assert.equal(gone.status, 409);
     assert.deepEqual(await gone.json(), { error: 'home_host_gone' });
-    const goneNamed = await d.post('/v1/leases', { offerId: OFFER_ID, home: { sshKeys: [KEY_A] } });
-    assert.equal(goneNamed.status, 409);
-    assert.deepEqual(await goneNamed.json(), { error: 'home_host_gone' });
+    // R9: naming an offer on another host opens a fresh home there on purpose, and the home follows it.
+    const homeId = homeIdOf(normalizeSshKeys([KEY_A])!);
+    const fresh = await d.post('/v1/rent', { offerId: OFFER_ID, home: { sshKeys: [KEY_A] } });
+    assert.equal(fresh.status, 200);
+    assert.equal(m.built.at(-1)!.hostId, OFFER.hostId);
+    assert.equal(registry.homeHost(homeId), OFFER.hostId, 're-pinned to the host it opened on');
+    const back = await d.post('/v1/rent', { home: { sshKeys: [KEY_A] } });
+    assert.equal(back.status, 200);
+    assert.equal(m.built.at(-1)!.hostId, OFFER.hostId, 'later opens follow the new pin');
     // Other keys are a new home, and open where the ranking says.
     const other = await d.post('/v1/rent', { home: { sshKeys: [KEY_A.replace('IOMqq', 'IOMqr')] } });
     assert.equal(other.status, 200);
