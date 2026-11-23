@@ -789,7 +789,9 @@ export function doorApp(deps: DoorDeps): express.Express {
       // A send that timed out may have been paid, though nothing was counted.
       const lost = e instanceof SendTimeoutError ? offer.tickPrice : api.spent() - before;
       if (lost > 0n) {
-        hostRefused(id, lost, payer);
+        // A deposit timeout is the door's own spend: it neither uses up the host's budget nor hides it.
+        if (e instanceof DepositTimeoutError) ledger.loss(id, lost, 'deposit_timeout', now(), payer);
+        else hostRefused(id, lost, payer);
         ledger.stop(id);
       }
       if (over) return void res.status(409).json({ error: (e as HostError).error, ...extra });

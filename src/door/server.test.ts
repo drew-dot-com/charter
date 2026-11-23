@@ -1411,6 +1411,31 @@ test('I5: a tick that timed out while carrying a deposit books the possible loss
   }
 });
 
+test('I5: a deposit timeout is door spend: it never counts against the host\'s loss budget or hides it; an ordinary host_refused still does', async () => {
+  const host = fakeHost({ open: counterOpen() }, (n) => (n === 1 ? new DepositTimeoutError() : new HostError(500, 'boom')));
+  // The budget is one tick: one host_refused tick reaches it.
+  const d = await start(host, { hostDailyLoss: 5000n });
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' })).status, 502);
+    const rec = d.ledger.get(LEASE_1)!;
+    assert.equal(rec.losses, 5000n);
+    assert.equal(rec.lossKind, 'deposit_timeout');
+    assert.equal(rec.stopped, true);
+    assert.equal(rec.ticksPaidByRenter, 0, 'the renter is not charged');
+    assert.equal(d.ledger.hostLossToday(OFFER.hostId, d.clock.t), 0n);
+    assert.equal(d.ledger.unpaidToday(d.clock.t), 5000n, 'booked as the door\'s own spend');
+    assert.equal(d.registry.get(OFFER.hostId)!.state, 'listed');
+    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' })).status, 502);
+    assert.equal(d.ledger.get(LEASE_2)!.lossKind, 'host_refused');
+    assert.equal(d.ledger.hostLossToday(OFFER.hostId, d.clock.t), 5000n);
+    assert.equal(d.registry.get(OFFER.hostId)!.state, 'hidden');
+  } finally {
+    d.close();
+  }
+});
+
 test('N3: a tick whose send timed out answers 502 host_timeout, books host_refused (it may have been paid) and stops the lease', async () => {
   const host = fakeHost({ tick: async () => { throw new SendTimeoutError(); } });
   const d = await start(host);

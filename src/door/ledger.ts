@@ -74,8 +74,10 @@ export type LeaseOutcome = 'finished' | 'host_failed';
  * settle_failed: the payer's payment failed for a reason that is theirs (no balance, a used nonce, a bad signature).
  * settle_failed_transient: it failed for any other reason (facilitator down, an authorization that expired in the queue).
  * host_refused: the host answered the tick with an error, or the send timed out.
+ * deposit_timeout: the send timed out while its deposit was landing on chain. The wait was the door's own, so it
+ * is door spend (unpaidToday), never the host's budget.
  */
-export type LossKind = 'settle_failed' | 'settle_failed_transient' | 'host_refused';
+export type LossKind = 'settle_failed' | 'settle_failed_transient' | 'host_refused' | 'deposit_timeout';
 
 /** The ledger file's name inside the data dir. */
 export const LEDGER_FILE = 'door-ledger.json';
