@@ -66,7 +66,7 @@ back); the running door picks it up and withdraws the host's channels once no le
 | `CHARTER_DOOR_PORT` | yes | | Port to listen on. |
 | `CHARTER_DOOR_HOST` | no | `127.0.0.1` | Address to bind. |
 | `CHARTER_DOOR_TRUST_PROXY` | no | none | `true`, or a hop count (`1` for one Caddy in front), so rate limits see the client's address. |
-| `CHARTER_DATA_DIR` | yes | | `door-ledger.json`, its sidecars (`.payments`, `.unblocks`, `.unpaid`), cached output parts, `hosts.json` (the host registry, and `hosts.json.drops`) and `capital.json` (what the door has deposited into each host's channels). |
+| `CHARTER_DATA_DIR` | yes | | `door-ledger.json`, its sidecars (`.payments`, `.unblocks`, `.unpaid`, `.hostloss`), cached output parts, `hosts.json` (the host registry, and `hosts.json.drops`) and `capital.json` (what the door has deposited into each host's channels). |
 | `CHARTER_DOOR_PAYER_KEY_FILE` | yes | | File (mode 0400) holding the door's Base key: one `0x` + 64 hex private key. Its address is where renters' x402 payments go (`payTo`, `payer` in `GET /v1/door`) and what funds every host channel, pays hosts and signs every request to them. It needs USDC on Base for host and probe deposits (up to `CHARTER_HOST_CAPITAL_CAP` plus `CHARTER_PROBE_CAPITAL_CAP`) and a little ETH on Base for the sweep and channel withdrawals. |
 | `CHARTER_HOST_CHANNEL_DIR` | no | `<CHARTER_DATA_DIR>/host-channels` | The door's channel records, one directory per host. A lost `client/` record is rebuilt from chain, but the `config/<channelId>.json` files cannot be: they name the channel on chain, and the reaper needs them to withdraw the door's deposit. Back the directory up (the default sits in the data dir the nightly backup takes). |
 | `BASE_RPC_URL` | no | `https://mainnet.base.org` | Base RPC the door reads host channels from: at boot, and to resync a record or a pending deposit a lost answer left behind. The door also withdraws its own channels through it, hourly: one idle 7 days (no lease or probe) or of a dropped host. Those transactions pay gas in ETH from the payer address. |
@@ -81,12 +81,14 @@ back); the running door picks it up and withdraws the host's channels once no le
 | `CHARTER_SWEEP_TO` | yes | none | Address the door sends its USDC above the keep amount to, once a day and at boot. Gas is paid in ETH from the payer address. |
 | `CHARTER_SWEEP_KEEP` | no | `15000000` | micro-USDC the payer wallet keeps; only the free balance above it is swept. |
 | `CHARTER_DOOR_FEE` | no | `0` | Micro-USDC the door adds to each tick a renter pays, on top of the host's price. A lease keeps the fee of its open. |
+| `CHARTER_HOST_DAILY_LOSS` | no | `50000` | micro-USDC one host's refused ticks (it took the door's payment and refused or never answered) may cost the door in a UTC day, kept in `door-ledger.json.hostloss`. Past it the host is hidden until its next probe passes; these losses never count toward the door-wide daily cap. |
 | `CHARTER_DOOR_SELF_ADDRS` | no | none | Comma list of the box's own IPs or CIDRs. A registered host URL resolving to one is refused, as loopback and private addresses always are. |
 
 Fixed, not configurable: 10 host registrations (`POST /v1/hosts`) an hour per IP and 1 per host URL; 10 opens an hour per IP and 30 across all IPs; 120 GETs a minute per IP on
 `/v1/leases/*`; 30 tick POSTs a minute per IP; at most 500000 micro-USDC a UTC day of door spend no
-renter paid for (opens, free reads, the status read before each tick, losses), past which opens,
-ticks and uncached reads answer 503 `capacity` (opens and status reads are free at the host, so in practice this counts losses). A host's offer is fetched again at most once a minute; one
+renter paid for (opens, free reads, the status read before each tick, losses a renter's payment caused), past which opens,
+ticks and uncached reads answer 503 `capacity` (opens and status reads are free at the host, so in practice this counts losses). A tick a host
+took and refused counts against that host's own `CHARTER_HOST_DAILY_LOSS` instead. A host's offer is fetched again at most once a minute; one
 that cannot be fetched stays listed 10 minutes, then is hidden until it answers.
 
 ## charter (tenant CLI)

@@ -309,6 +309,13 @@ export class HostRegistry {
     });
   }
 
+  /** Hides a listed host (its refused ticks cost the door past its daily budget) until its next probe passes. */
+  hide(hostId: string): void {
+    this.update(hostId, (r) => {
+      if (r.state === 'listed') r.state = 'hidden';
+    });
+  }
+
   markHomeTested(hostId: string): void {
     this.update(hostId, (r) => void (r.homeTested = true));
   }

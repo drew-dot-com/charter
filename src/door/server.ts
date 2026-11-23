@@ -30,6 +30,8 @@ export interface DoorDeps {
   registry: HostRegistry;
   /** Micro-USDC the door adds to each tick a renter pays (CHARTER_DOOR_FEE). Default 0. A lease keeps the fee of its open. */
   fee?: Micro;
+  /** What one host's refused ticks may cost the door in a UTC day (CHARTER_HOST_DAILY_LOSS); past it the host is hidden. Default 50000. */
+  hostDailyLoss?: Micro;
   /** A proven host the door cannot fund now: listed with `funding: 'waiting'`, never picked. Default: none. */
   fundingWaiting?: (hostId: string) => boolean;
   /** fetch for a registering host's offer. Default: safeFetch. */
@@ -95,8 +97,13 @@ const RECENT_LEASES = 12;
 const HOUR_MS = 3_600_000;
 /** Opens across every IP in an hour. */
 export const DOOR_OPENS_PER_HOUR = 30;
-/** Door spend no renter paid for (opens, free reads, losses) in one UTC day, in micro-USDC. Past it: 503 capacity. */
+/**
+ * Door spend no renter paid for (opens, free reads, losses a renter's payment caused) in one UTC day, in
+ * micro-USDC. Past it: 503 capacity. A host's refused ticks count against its own budget instead (HOST_DAILY_LOSS).
+ */
 export const DAILY_UNPAID_CAP: Micro = 500_000n;
+/** What one host's refused ticks may cost the door in a UTC day, unless CHARTER_HOST_DAILY_LOSS says otherwise. */
+export const HOST_DAILY_LOSS: Micro = 50_000n;
 /** The most the door pays for an offer's open, status read and tick, in micro-USDC. A pricier offer is not listed. */
 export const MAX_OPEN_PRICE: Micro = 10_000n;
 export const MAX_STATUS_PRICE: Micro = 1_000n;
@@ -159,6 +166,7 @@ export function doorApp(deps: DoorDeps): express.Express {
   const now = deps.now ?? Date.now;
   const fee = deps.fee ?? 0n;
   const waiting = deps.fundingWaiting ?? (() => false);
+  const hostDailyLoss = deps.hostDailyLoss ?? HOST_DAILY_LOSS;
   const listed = (hostId: string): boolean => registry.get(hostId)?.state === 'listed';
   const webDir = deps.webDir ?? fileURLToPath(new URL('../../web/dist', import.meta.url));
 
@@ -257,6 +265,12 @@ export function doorApp(deps: DoorDeps): express.Express {
       { home: homeOf(job) !== undefined, waiting },
     );
     return fits[0] ? { offer: fits[0], job } : 'not_found';
+  };
+  /** Books a tick the host took the door's money for and refused: against its own budget, which hides it once spent. */
+  const hostRefused = (id: string, lost: Micro, payer: string | undefined): void => {
+    ledger.loss(id, lost, 'host_refused', now(), payer);
+    const hostId = ledger.get(id)?.offer.hostId;
+    if (hostId && registry.get(hostId) && ledger.hostLossToday(hostId, now()) >= hostDailyLoss) registry.hide(hostId);
   };
   /** Runs a host call and books whatever it cost the door as spend no renter paid for. */
   const unpaid = async <T>(api: HostApi, fn: () => Promise<T>): Promise<T> => {
@@ -761,7 +775,7 @@ export function doorApp(deps: DoorDeps): express.Express {
         // The host already counted this index: it was paid for nothing, and the renter is not charged.
         const lost = api.spent() - before;
         if (lost > 0n) {
-          ledger.loss(id, lost, 'host_refused', now(), payer);
+          hostRefused(id, lost, payer);
           outcome(id, 'host_failed');
         }
         ledger.stop(id);
@@ -786,7 +800,7 @@ export function doorApp(deps: DoorDeps): express.Express {
       // A send that timed out may have been paid, though nothing was counted.
       const lost = e instanceof SendTimeoutError ? offer.tickPrice : api.spent() - before;
       if (lost > 0n) {
-        ledger.loss(id, lost, 'host_refused', now(), payer);
+        hostRefused(id, lost, payer);
         ledger.stop(id);
       }
       if (over) return void res.status(409).json({ error: (e as HostError).error, ...extra });

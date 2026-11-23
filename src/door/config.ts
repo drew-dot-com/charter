@@ -36,6 +36,8 @@ export interface DoorFunding {
   selfAddrs: string[];
   /** CHARTER_DOOR_FEE: what the door adds to each tick a renter pays, on top of the host's price. */
   doorFee: bigint;
+  /** CHARTER_HOST_DAILY_LOSS: what one host's refused ticks may cost the door in a UTC day before it is hidden. */
+  hostDailyLoss: bigint;
 }
 
 function wholeEnv(env: Record<string, string | undefined>, name: string, dflt: bigint, min: bigint): bigint {
@@ -55,6 +57,7 @@ export function doorFunding(env: Record<string, string | undefined>): DoorFundin
     hostCap: wholeEnv(env, 'CHARTER_HOST_CAPITAL_CAP', 10_000_000n, 0n),
     selfAddrs: (env.CHARTER_DOOR_SELF_ADDRS ?? '').split(',').map((a) => a.trim()).filter(Boolean),
     doorFee: wholeEnv(env, 'CHARTER_DOOR_FEE', 0n, 0n),
+    hostDailyLoss: wholeEnv(env, 'CHARTER_HOST_DAILY_LOSS', 50_000n, 0n),
   };
 }
 

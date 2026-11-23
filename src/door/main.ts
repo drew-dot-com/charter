@@ -181,6 +181,7 @@ async function main(): Promise<void> {
     payer: payer.address,
     registry,
     fee: funding.doorFee,
+    hostDailyLoss: funding.hostDailyLoss,
     fundingWaiting,
     ledger,
     dataDir,

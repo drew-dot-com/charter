@@ -11,7 +11,7 @@ import { listedRegistry, OFFER } from '../tenant/test-host.js';
 import { HOSTS_FILE, HostRegistry } from './hosts.js';
 import type { Lease, Micro, Offer } from '../types.js';
 import { DoorLedger, offerOfSnapshot, snapshotOffer } from './ledger.js';
-import { doorApp, readBudget, type DoorDeps } from './server.js';
+import { DAILY_UNPAID_CAP, doorApp, readBudget, type DoorDeps } from './server.js';
 import type { RequestEntry } from './reqlog.js';
 import { SendTimeoutError } from '../errors.js';
 import { hostHttpApp } from '../host/http.js';
@@ -128,7 +128,7 @@ async function start(host: ReturnType<typeof fakeHost>, over: Partial<DoorDeps> 
   await new Promise((r) => server.once('listening', r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return {
-    base, ledger, gate, settled, clock, dir, offerCalls: () => offerCalls,
+    base, ledger, gate, settled, clock, dir, registry: deps.registry, offerCalls: () => offerCalls,
     close: () => void server.close(),
     post: (path: string, body: unknown, headers: Record<string, string | undefined> = {}) =>
       fetch(base + path, {
@@ -1400,6 +1400,44 @@ test('N2: a block lapses 24 h after the loss, and unblock (even from another pro
   }
 });
 
+test('I3: a host_refused loss counts against that host\'s daily loss budget, never the door-wide unpaid cap; past the budget the host is hidden', async () => {
+  const host = fakeHost({ open: counterOpen() }, new HostError(500, 'boom'));
+  const d = await start(host, { hostDailyLoss: 10_000n });
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' })).status, 502);
+    assert.equal(d.ledger.unpaidToday(d.clock.t), 0n, 'not the door-wide cap');
+    assert.equal(d.ledger.hostLossToday(OFFER.hostId, d.clock.t), 5000n);
+    // A finished lease between keeps the host listed under the two-failures rule; only the budget hides it.
+    d.registry.leaseFinished(OFFER.hostId, 1);
+    assert.equal(d.registry.get(OFFER.hostId)!.state, 'listed');
+    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' })).status, 502);
+    assert.equal(d.ledger.hostLossToday(OFFER.hostId, d.clock.t), 10_000n);
+    assert.equal(d.registry.get(OFFER.hostId)!.state, 'hidden');
+    assert.equal(d.ledger.unpaidToday(d.clock.t), 0n);
+    // Kept across a restart, and a new UTC day starts at 0.
+    const again = new DoorLedger(join(d.dir, 'ledger.json'));
+    assert.equal(again.hostLossToday(OFFER.hostId, d.clock.t), 10_000n);
+    assert.equal(again.hostLossToday(OFFER.hostId, d.clock.t + 86_400_000), 0n);
+  } finally {
+    d.close();
+  }
+});
+
+test('I3: past the door-wide unpaid cap, host_refused losses alone never refuse other renters', async () => {
+  const d = await start(fakeHost());
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    d.ledger.open({ leaseId: 'b'.repeat(32), offerId: OFFER_ID, createdAt: d.clock.t, offer: snapshotOffer(OFFER) });
+    d.ledger.loss('b'.repeat(32), DAILY_UNPAID_CAP * 2n, 'host_refused', d.clock.t);
+    assert.equal(d.ledger.unpaidToday(d.clock.t), 0n);
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 })).status, 200);
+  } finally {
+    d.close();
+  }
+});
+
 test('N3: a tick whose send timed out answers 502 host_timeout, books host_refused (it may have been paid) and stops the lease', async () => {
   const host = fakeHost({ tick: async () => { throw new SendTimeoutError(); } });
   const d = await start(host);
@@ -1590,7 +1628,7 @@ test('F-I1: at most 30 opens an hour across all IPs; the 31st answers 503 capaci
   }
 });
 
-test('F-I1: door spend no renter paid for (opens, reads, losses) is counted per UTC day and kept across a restart', async () => {
+test('F-I1: door spend no renter paid for (opens, reads) is counted per UTC day and kept across a restart; a host_refused loss is the host\'s', async () => {
   const host = fakeHost({}, new HostError(500, 'internal'), { open: 1000n, status: 100n });
   const d = await start(host);
   try {
@@ -1599,8 +1637,9 @@ test('F-I1: door spend no renter paid for (opens, reads, losses) is counted per 
     await d.get(`/v1/leases/${LEASE}`);
     assert.equal(d.ledger.unpaidToday(d.clock.t), 1100n, 'a free read');
     assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 })).status, 502);
-    assert.equal(d.ledger.unpaidToday(d.clock.t), 1100n + 100n + 5000n, 'the read before the tick, and the lost tick');
-    assert.equal(new DoorLedger(join(d.dir, 'ledger.json')).unpaidToday(d.clock.t), 6200n);
+    assert.equal(d.ledger.unpaidToday(d.clock.t), 1100n + 100n, 'the read before the tick; the lost tick is the host\'s (I3)');
+    assert.equal(d.ledger.hostLossToday(OFFER.hostId, d.clock.t), 5000n);
+    assert.equal(new DoorLedger(join(d.dir, 'ledger.json')).unpaidToday(d.clock.t), 1200n);
     assert.equal(d.ledger.unpaidToday(d.clock.t + 86_400_000), 0n, 'a new UTC day starts at zero');
   } finally {
     d.close();

@@ -108,9 +108,12 @@ export class DoorLedger {
   private readonly paymentsFile: string;
   private readonly unblocksFile: string;
   private readonly unpaidFile: string;
+  private readonly hostLossFile: string;
   private paymentLines = 0;
-  /** Door spend no renter paid for (opens, free reads, losses) in one UTC day. */
+  /** Door spend no renter paid for (opens, free reads, losses the host is not to blame for) in one UTC day. */
   private unpaid: { day: string; micro: Micro } = { day: '', micro: 0n };
+  /** host_refused losses per hostId in one UTC day: each host's own budget, apart from `unpaid`. */
+  private hostLoss: { day: string; hosts: Map<string, Micro> } = { day: '', hosts: new Map() };
 
   constructor(
     private readonly file: string,
@@ -119,6 +122,16 @@ export class DoorLedger {
     this.paymentsFile = `${file}.payments`;
     this.unblocksFile = `${file}.unblocks`;
     this.unpaidFile = `${file}.unpaid`;
+    this.hostLossFile = `${file}.hostloss`;
+    const hostLoss = readIfThere(this.hostLossFile);
+    if (hostLoss !== undefined) {
+      const h = JSON.parse(hostLoss) as { day?: unknown; hosts?: Record<string, unknown> };
+      if (typeof h.day === 'string' && h.hosts && typeof h.hosts === 'object') {
+        const hosts = new Map<string, Micro>();
+        for (const [id, v] of Object.entries(h.hosts)) if (typeof v === 'string' && /^\d+$/.test(v)) hosts.set(id, BigInt(v));
+        this.hostLoss = { day: h.day, hosts };
+      }
+    }
     const unpaid = readIfThere(this.unpaidFile);
     if (unpaid !== undefined) {
       const u = JSON.parse(unpaid) as { day?: unknown; micro?: unknown };
@@ -181,10 +194,14 @@ export class DoorLedger {
 
   /**
    * Money the door paid a host that the renter did not cover, at `at` (epoch ms). Only a payment that
-   * failed for the payer's own reason blocks them from new ticks, and only for BLOCK_MS.
+   * failed for the payer's own reason blocks them from new ticks, and only for BLOCK_MS. A `host_refused` loss
+   * counts against that host's daily budget (hostLossToday), not the door-wide unpaid spend: one host cannot
+   * stop every renter's ticks.
    */
   loss(leaseId: string, amount: Micro, kind: LossKind, at: number, payer?: string): void {
-    this.addUnpaid(amount, at);
+    const hostId = this.leases.get(leaseId)?.offer.hostId;
+    if (kind === 'host_refused' && hostId) this.addHostLoss(hostId, amount, at);
+    else this.addUnpaid(amount, at);
     this.update(leaseId, (l) => {
       l.losses += amount;
       l.lossKind = kind;
@@ -247,6 +264,24 @@ export class DoorLedger {
     const tmp = `${this.unpaidFile}.tmp`;
     writeFileSync(tmp, JSON.stringify({ day, micro: this.unpaid.micro.toString() }), { mode: 0o600 });
     renameSync(tmp, this.unpaidFile);
+  }
+
+  /** What this host's refused ticks cost the door in the UTC day of `at` (epoch ms). */
+  hostLossToday(hostId: string, at: number): Micro {
+    return this.hostLoss.day === utcDay(at) ? (this.hostLoss.hosts.get(hostId) ?? 0n) : 0n;
+  }
+
+  /** Adds a host_refused loss to that host's UTC day of `at`. Kept across a restart. */
+  private addHostLoss(hostId: string, amount: Micro, at: number): void {
+    if (amount <= 0n) return;
+    const day = utcDay(at);
+    if (this.hostLoss.day !== day) this.hostLoss = { day, hosts: new Map() };
+    this.hostLoss.hosts.set(hostId, (this.hostLoss.hosts.get(hostId) ?? 0n) + amount);
+    const rows = Object.fromEntries([...this.hostLoss.hosts].map(([k, v]) => [k, v.toString()]));
+    mkdirSync(dirname(this.hostLossFile), { recursive: true, mode: 0o700 });
+    const tmp = `${this.hostLossFile}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ day, hosts: rows }), { mode: 0o600 });
+    renameSync(tmp, this.hostLossFile);
   }
 
   /** One paid host status or output call for a free read. */
