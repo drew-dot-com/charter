@@ -1397,3 +1397,43 @@ test('an opening in progress counts toward its host', async () => {
   const rents = r.door.paid().filter((p) => p.path === '/v1/rent').map((p) => p.json.offerId);
   assert.equal(rents[rents.length - 1], `${HB}:o1`);
 });
+
+test('an in-flight re-open counts on the host it is going to, not the old one', async () => {
+  const r = rig({ balance: 100_000_000n });
+  r.door.offers = [roomy(HA), roomy(HB)];
+  const first = r.door.grant({ sshKeys: keysFor(1) });
+  await r.run({ grantHomesPerHost: 1 });
+  assert.equal(r.state.grants[first]!.offerId, `${HA}:o1`);
+  // leaseId stays set; the re-open is heading to B
+  r.state.grants[first]!.opening = { offerId: `${HB}:o1`, at: T0 };
+  r.door.grant({ sshKeys: keysFor(2) });
+  const spy = r.door.paid().length;
+  await r.run({ grantHomesPerHost: 1 });
+  const rents = r.door.paid().slice(spy).filter((p) => p.path === '/v1/rent').map((p) => p.json.offerId);
+  assert.ok(rents.includes(`${HA}:o1`) && !rents.includes(`${HB}:o1`), JSON.stringify(rents));
+});
+
+test('a live grant with no recorded host is reported and not counted', async () => {
+  const r = rig({ balance: 100_000_000n });
+  r.door.offers = [roomy(HA)];
+  const old = r.door.grant({ sshKeys: keysFor(1) });
+  await r.run({ grantHomesPerHost: 1 });
+  delete r.state.grants[old]!.offerId;
+  r.door.grant({ sshKeys: keysFor(2) });
+  await r.run({ grantHomesPerHost: 1 });
+  assert.ok(r.problems.some((p) => p.msg.includes('no host on record, not counted toward the per-host cap until it re-opens')), JSON.stringify(r.problems));
+  assert.equal(r.door.paid().filter((p) => p.path === '/v1/rent').length, 2);
+});
+
+test('an ended grant releases its host', async () => {
+  const r = rig({ balance: 100_000_000n });
+  r.door.offers = [roomy(HA)];
+  const a = r.door.grant({ sshKeys: keysFor(1) });
+  await r.run({ grantHomesPerHost: 1 });
+  r.door.grant({ sshKeys: keysFor(2) });
+  await r.run({ grantHomesPerHost: 1 });
+  assert.equal(r.door.paid().filter((p) => p.path === '/v1/rent').length, 1, 'host full');
+  r.state.grants[a]!.endedAt = r.clock.t;
+  await r.run({ grantHomesPerHost: 1 });
+  assert.equal(r.door.paid().filter((p) => p.path === '/v1/rent').length, 2, 'released');
+});

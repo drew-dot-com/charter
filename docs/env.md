@@ -106,6 +106,15 @@ that cannot be fetched stays listed 10 minutes, then is hidden until it answers.
 `CHARTER_PAYER` and `CHARTER_OFFER_JSON` belonged to the TOON payer, which is gone: the CLI refuses to run
 with either set, so an old script stops before paying another way. `--relay` is gone too.
 
+## charter-fund
+
+The grant fund (`deploy/fund/fund.env`). Besides its key, token and RPC files:
+
+| variable | required | default | what it is |
+| --- | --- | --- | --- |
+| `CHARTER_GRANT_MIN_LEASES` | no | `5` | Finished paid leases a host needs on record before a new grant opens on it. |
+| `CHARTER_GRANT_HOMES_PER_HOST` | no | `2` | Most live grant homes (a live lease or an open in progress) one host may hold at once; a new grant or an unpinned re-open skips a full host, and with every eligible host full it waits. `0` opens none. Renewals and a grant's own re-open are never blocked. |
+
 ## Development only
 
 `npm run dev:door` (a door with no payments and a fake host): `DEV_DOOR_PORT` (default 8787) and `DEV_INTERVAL_SECONDS` (default 30, at least 12).

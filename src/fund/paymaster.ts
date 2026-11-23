@@ -466,8 +466,12 @@ class Pass {
     const held = new Map<string, number>();
     for (const g of Object.values(this.s.grants)) {
       if (g.grantId === self || g.endedAt !== undefined || g.watchUntil !== undefined) continue;
-      const offerId = g.leaseId !== undefined ? g.offerId : g.opening?.offerId;
-      if (offerId === undefined) continue;
+      // An open in progress (a re-open keeps the old leaseId until it answers) counts on the host it is going to.
+      const offerId = g.opening?.offerId ?? g.offerId;
+      if (offerId === undefined) {
+        if (g.leaseId !== undefined) this.problem('cap-' + g.grantId, `grant ${short(g.grantId)}: no host on record, not counted toward the per-host cap until it re-opens`);
+        continue;
+      }
       const h = hostOfOffer(offerId);
       held.set(h, (held.get(h) ?? 0) + 1);
     }
