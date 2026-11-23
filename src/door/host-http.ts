@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { decodePaymentRequiredHeader } from '@x402/core/http';
 import type { ChannelConfig, ClientEvmSigner } from '@x402/evm';
-import { BatchSettlementEvmScheme, readChannelBalanceAndTotalClaimed } from '@x402/evm/batch-settlement/client';
+import { BatchSettlementEvmScheme, computeChannelId, readChannelBalanceAndTotalClaimed } from '@x402/evm/batch-settlement/client';
 import { FileClientChannelStorage } from '@x402/evm/batch-settlement/client/file-storage';
 import { wrapFetchWithPayment, x402Client, type PaymentRequirements } from '@x402/fetch';
 import type { LocalAccount } from 'viem';
@@ -79,6 +79,8 @@ export interface DoorPayer {
   resyncAll(): Promise<void>;
   /** The door's channels to this host whose config it kept (every channel a payment of this door opened). */
   channels(hostId: string): Promise<DoorChannel[]>;
+  /** The channel the host's pinned config names: set by the door's first deposit to it, undefined before. */
+  pinnedChannel(hostId: string): Promise<string | undefined>;
   /** Brings one channel record up to the chain, as resyncAll does. Nothing without a chain reader. */
   resync(hostId: string, channelId: string): Promise<void>;
 }
@@ -130,10 +132,10 @@ function carriesPayment(input: RequestInfo | URL, init?: RequestInit): boolean {
 }
 
 /**
- * Whether a 402 offers the tick the door pays. One with no readable PAYMENT-REQUIRED header is left to the
+ * Whether a 402 offers a payment `pays` allows. One with no readable PAYMENT-REQUIRED header is left to the
  * client, which refuses it without signing.
  */
-function asksForTheTick(res: Response, payTo: string, tickPrice: Micro): boolean {
+function asksFor(res: Response, pays: (r: PaymentRequirements) => boolean): boolean {
   const h = res.headers.get('payment-required');
   if (!h) return true;
   let accepts: unknown;
@@ -142,7 +144,7 @@ function asksForTheTick(res: Response, payTo: string, tickPrice: Micro): boolean
   } catch {
     return true;
   }
-  return Array.isArray(accepts) && accepts.some((r) => typeof r === 'object' && r !== null && isTheTick(r as PaymentRequirements, payTo, tickPrice));
+  return Array.isArray(accepts) && accepts.some((r) => typeof r === 'object' && r !== null && pays(r as PaymentRequirements));
 }
 
 /** The host ids the door holds channel records for (one dir each under `channelDir`). */
@@ -177,6 +179,34 @@ export const channelSalt = (hostId: string): `0x${string}` => `0x${hostId}`;
 /** Where the door keeps each channel's config (`config/<channelId>.json` in the host's dir): what a withdrawal names on chain. */
 const configDir = (dir: string): string => join(dir, 'config');
 
+/**
+ * The channel config the door pinned for a host at its first deposit (`pin.json` in the host's dir). A 402 naming
+ * another config is refused while the door has capital at risk with that host, so a host cannot make the door
+ * open a new channel, and lock a new deposit, on every tick.
+ */
+interface Pin {
+  channelId: string;
+  receiver: string;
+  receiverAuthorizer: string;
+  withdrawDelay: number;
+}
+
+const pinFile = (dir: string): string => join(dir, 'pin.json');
+
+function readPin(dir: string): Pin | undefined {
+  try {
+    return JSON.parse(readFileSync(pinFile(dir), 'utf8')) as Pin;
+  } catch {
+    return undefined;
+  }
+}
+
+async function writePin(dir: string, pin: Pin): Promise<void> {
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await writeFile(`${pinFile(dir)}.tmp`, JSON.stringify(pin), { mode: 0o600 });
+  await rename(`${pinFile(dir)}.tmp`, pinFile(dir));
+}
+
 /** Keeps a channel's config the first time a payment carries it. */
 async function keepConfig(dir: string, channelId: string, config: unknown): Promise<void> {
   if (!/^0x[0-9a-f]{64}$/.test(channelId) || typeof config !== 'object' || config === null) return;
@@ -200,6 +230,8 @@ export function doorPayer(o: {
   key: `0x${string}`;
   channelDir: string;
   depositFor: DepositFor;
+  /** The door's capital at risk with this host (what the caps count): while above 0, the host's pinned channel config holds. */
+  atRisk: (hostId: string) => bigint;
   fetch?: typeof fetch;
   /** Called once for each deposit the door signs, with its amount in micro-USDC. */
   onDeposit?: (hostId: string, channelId: string, amount: bigint) => void;
@@ -309,6 +341,7 @@ export function doorPayer(o: {
       }
       return out;
     },
+    pinnedChannel: async (hostId) => readPin(hostChannelDir(o.channelDir, hostId))?.channelId,
     async resync(hostId, channelId) {
       if (o.readContract) await resyncChannel(hostId, channelId);
     },
@@ -340,6 +373,24 @@ export function doorPayer(o: {
       const dir = hostChannelDir(o.channelDir, offer.hostId);
       const storage = storageOf(offer.hostId);
       const keep = paysOnly(offer, tickPrice);
+      // The scheme builds the channel config a requirement names; its salt is the hostId.
+      const configs = new BatchSettlementEvmScheme(signer, { salt: channelSalt(offer.hostId) });
+      /** The channel a requirement names, or undefined when it names none the door can build. */
+      const channelOf = (r: PaymentRequirements): string | undefined => {
+        try {
+          return computeChannelId(configs.buildChannelConfig(r), DOOR_NETWORK).toLowerCase();
+        } catch {
+          return undefined;
+        }
+      };
+      /** The host's pinned channel, or any channel once nothing of the door's is at risk with it. */
+      const onPinned = (r: PaymentRequirements): boolean => {
+        const id = channelOf(r);
+        if (id === undefined) return false;
+        const pin = readPin(dir);
+        return pin === undefined || pin.channelId === id || o.atRisk(offer.hostId) === 0n;
+      };
+      const pays = (r: PaymentRequirements): boolean => isTheTick(r, offer.payTo, tickPrice) && onPinned(r);
       return (async (input: RequestInfo | URL, init?: RequestInit) => {
         // A deposit already signed and not yet in the record: the chain may hold it. Nothing more is sent.
         if (await depositPending(offer.hostId)) throw new DepositPendingError(offer.hostId);
@@ -370,13 +421,13 @@ export function doorPayer(o: {
         const client = new x402Client().register(DOOR_NETWORK, scheme).setSpendControls(false);
         client
           .registerPolicy((version, reqs) => {
-            const kept = keep(version, reqs);
+            const kept = keep(version, reqs).filter(onPinned);
             if (kept.length === 0) refused.unexpected = true;
             return kept;
           })
           // And once one is chosen, check it again before anything is signed.
           .onBeforePaymentCreation(async ({ selectedRequirements }) => {
-            if (isTheTick(selectedRequirements, offer.payTo, tickPrice)) return undefined;
+            if (pays(selectedRequirements)) return undefined;
             refused.unexpected = true;
             return { abort: true, reason: 'unexpected_payment' };
           })
@@ -391,6 +442,9 @@ export function doorPayer(o: {
             if (typeof p.voucher?.channelId === 'string') await keepConfig(dir, p.voucher.channelId.toLowerCase(), p.channelConfig);
             if (p.type !== 'deposit' || typeof p.deposit?.amount !== 'string' || typeof p.voucher?.channelId !== 'string') return;
             const channelId = p.voucher.channelId.toLowerCase();
+            // Funding pins the config: the first deposit, or the first into a new config once nothing was at risk.
+            const c = p.channelConfig as Partial<Record<'receiver' | 'receiverAuthorizer', string> & { withdrawDelay: number }> | undefined;
+            await writePin(dir, { channelId, receiver: String(c?.receiver), receiverAuthorizer: String(c?.receiverAuthorizer), withdrawDelay: Number(c?.withdrawDelay) });
             const amount = amountOf(p.deposit.amount);
             const before = amountOf((await storage.get(channelId))?.balance);
             const vb = p.deposit.authorization?.erc3009Authorization?.validBefore;
@@ -401,7 +455,7 @@ export function doorPayer(o: {
         // The 402 itself is read first: when it asks for nothing the door pays, the client never sees it.
         const asked: typeof fetch = async (req, reqInit) => {
           const res = await base(req, reqInit);
-          if (res.status === 402 && !carriesPayment(req, reqInit) && !asksForTheTick(res, offer.payTo, tickPrice)) {
+          if (res.status === 402 && !carriesPayment(req, reqInit) && !asksFor(res, pays)) {
             await res.body?.cancel().catch(() => undefined);
             throw new UnexpectedPaymentError();
           }

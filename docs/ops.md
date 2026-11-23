@@ -152,7 +152,10 @@ The door's payer key (`CHARTER_DOOR_PAYER_KEY_FILE`, mode 0400) is one Base key.
 
 The door starts at most `CHARTER_PROBES_PER_DAY` (10) first probes a UTC day, and a probe pays at most
 `CHARTER_PROBE_MAX_TICK` (10000) for its tick. It withdraws a channel idle 7 days, and at once for a dropped
-host (after its live leases end). `CHARTER_DOOR_SELF_ADDRS` lists the box's own IPs so a registered URL
+host (after its live leases end). Each host's channel config is pinned at its first deposit; a host whose 402
+names another config is refused while the door has capital at risk with it, and the door withdraws its old
+config's channels. No host holds more than about one deposit at risk. To drop a host by hand:
+`docker compose -f deploy/door/docker-compose.yml run --rm charter-door node dist/door/main.js hosts drop <hostId>`. `CHARTER_DOOR_SELF_ADDRS` lists the box's own IPs so a registered URL
 cannot point the door at itself; loopback and private addresses are refused anyway. `BASE_RPC_URL` is
 where it reads channels and sends withdrawals. Capital in use: `capital.json` in the data dir; hosts and
 their records: `hosts.json`, or `GET /v1/hosts`.

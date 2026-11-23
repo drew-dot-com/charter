@@ -2118,7 +2118,7 @@ test('the door opens and ticks a host over httpHostApi', async () => {
   } as unknown as Runner;
   const hostGate: string[] = [];
   const key = ('0x' + '11'.repeat(32)) as `0x${string}`;
-  const payer = doorPayer({ key, channelDir: mkdtempSync(join(tmpdir(), 'door-channels-')), depositFor: () => 100_000n });
+  const payer = doorPayer({ key, channelDir: mkdtempSync(join(tmpdir(), 'door-channels-')), depositFor: () => 100_000n, atRisk: () => 0n });
   let origin = '';
   const hostServer = hostHttpApp({
     store, runner, offer: OFFER, now: () => 1_000_000, door: () => payer.address, origin: () => origin,

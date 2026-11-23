@@ -117,9 +117,9 @@ async function setup(tickGate: Gate = stubGate(() => PRICE), output?: Buffer) {
   const channelDir = mkdtempSync(join(tmpdir(), 'door-host-http-'));
   const offer = offerAt(base);
   type DepositHook = (hostId: string, channelId: string, amount: bigint) => void;
-  const payerFor = (o: { depositFor?: DepositFor; onDeposit?: DepositHook; onDepositLapsed?: DepositHook; readContract?: ReadContract; now?: () => number } = {}) =>
+  const payerFor = (o: { depositFor?: DepositFor; atRisk?: (hostId: string) => bigint; onDeposit?: DepositHook; onDepositLapsed?: DepositHook; readContract?: ReadContract; now?: () => number } = {}) =>
     doorPayer({
-      key: KEY, channelDir, depositFor: o.depositFor ?? (() => 500_000n),
+      key: KEY, channelDir, depositFor: o.depositFor ?? (() => 500_000n), atRisk: o.atRisk ?? (() => 0n),
       ...(o.onDeposit ? { onDeposit: o.onDeposit } : {}), ...(o.onDepositLapsed ? { onDepositLapsed: o.onDepositLapsed } : {}), ...(o.readContract ? { readContract: o.readContract } : {}), ...(o.now ? { now: o.now } : {}),
     });
   const apiFor = (o: { depositFor?: DepositFor; timeoutMs?: number; payer?: DoorPayer } = {}) =>
@@ -260,7 +260,7 @@ test('a 402 asking more than the snapshot, another payTo, network, asset or exac
   try {
     const api = t.apiFor();
     const { leaseId } = await api.open(JOB);
-    const pay = doorPayer({ key: KEY, channelDir: t.channelDir, depositFor: () => 500_000n }).paidFetch(t.offer, PRICE);
+    const pay = doorPayer({ key: KEY, channelDir: t.channelDir, depositFor: () => 500_000n, atRisk: () => 0n }).paidFetch(t.offer, PRICE);
     const path = `/v1/leases/${leaseId}/ticks`;
     const body = JSON.stringify({ index: 0 });
     const headers = { ...(await signDoorRequest(DOOR, t.offer.url, 'POST', path, body, T0)), 'content-type': 'application/json' };
@@ -554,6 +554,59 @@ test('R5: resyncAll brings every record up to the chain; charged may jump severa
     chain.set(channelId, [900_000n, 90_000n]);
     await t.payerFor().resyncAll();
     assert.equal((await storage.get(channelId))?.balance, '600000');
+  } finally {
+    t.done();
+  }
+});
+
+test('C2: the first deposit pins the host\'s channel config; a 402 naming another is refused while capital is at risk', async () => {
+  const OTHER_AUTH = { ...ASK, extra: { ...ASK.extra, receiverAuthorizer: '0x' + '6'.repeat(40) } };
+  const OTHER_DELAY = { ...ASK, extra: { ...ASK.extra, withdrawDelay: 7200 } };
+  const OTHER_PAY_TO = '0x' + '7'.repeat(40) as `0x${string}`;
+  let asks: PaymentRequirements[] = [ASK];
+  const g = challengeGate([], { settle: 'on2xx' });
+  const gate: Gate = async (req, res, next) => {
+    if (!req.get('payment-signature')) {
+      res.setHeader('PAYMENT-REQUIRED', encodePaymentRequiredHeader({ x402Version: 2, resource: { url: req.originalUrl }, accepts: asks }));
+      return void res.status(402).json({});
+    }
+    return g.gate(req, res, next);
+  };
+  const t = await setup(gate);
+  try {
+    let risk = 0n;
+    const deposits: string[] = [];
+    const payer = t.payerFor({ atRisk: () => risk, onDeposit: (_h, c) => void deposits.push(c) });
+    assert.equal(await payer.pinnedChannel(HOST_ID), undefined, 'nothing funded yet');
+    const api = t.apiFor({ payer });
+    const { leaseId } = await api.open(JOB);
+    await api.tick(leaseId, 0);
+    assert.equal(await payer.pinnedChannel(HOST_ID), askChannelId());
+    assert.equal(await t.payerFor().pinnedChannel(HOST_ID), askChannelId(), 'kept on disk');
+    risk = 495_000n;
+    const signed = g.paid.length;
+    for (const [why, r] of [['another receiverAuthorizer', OTHER_AUTH], ['another withdrawDelay', OTHER_DELAY]] as const) {
+      asks = [r];
+      await assert.rejects(api.tick(leaseId, 1), (e: unknown) => e instanceof HostError && e.status === 402 && e.error === 'unexpected_payment', why);
+    }
+    // A host that changed its offer's payTo: a lease on the new offer names a new channel too.
+    asks = [{ ...ASK, payTo: OTHER_PAY_TO }];
+    const moved = httpHostApi({ ...t.offer, payTo: OTHER_PAY_TO }, { payer, queue: new HostQueue(), now: () => T0 });
+    await assert.rejects(moved.tick(leaseId, 1), (e: unknown) => e instanceof HostError && e.status === 402 && e.error === 'unexpected_payment');
+    assert.equal(g.paid.length, signed, 'nothing signed for another config');
+    assert.deepEqual(deposits, [askChannelId()]);
+    // The pinned config itself is still paid.
+    asks = [ASK];
+    await api.tick(leaseId, 1);
+    assert.equal(g.paid.at(-1)!.payload.type, 'voucher');
+    // Nothing at risk any more: the new config is paid, and it is pinned from its first deposit.
+    risk = 0n;
+    asks = [OTHER_AUTH];
+    await api.tick(leaseId, 2);
+    assert.equal(g.paid.at(-1)!.payload.type, 'deposit');
+    const newId = (g.paid.at(-1)!.payload.voucher as { channelId: string }).channelId.toLowerCase();
+    assert.notEqual(newId, askChannelId());
+    assert.equal(await payer.pinnedChannel(HOST_ID), newId);
   } finally {
     t.done();
   }

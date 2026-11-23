@@ -175,7 +175,7 @@ test('R11: the door\'s channel salted with the hostId is accepted by a host\'s r
     const channelId = computeChannelId(config, NETWORK).toLowerCase();
     const channelDir = mkdtempSync(join(tmpdir(), 'door-salt-'));
     await new FileClientChannelStorage({ directory: join(channelDir, hostId) }).set(channelId, { balance: '100000', chargedCumulativeAmount: '0' });
-    const payer = doorPayer({ key: ('0x' + 'cd'.repeat(32)) as `0x${string}`, channelDir, depositFor: () => 'over_cap' });
+    const payer = doorPayer({ key: ('0x' + 'cd'.repeat(32)) as `0x${string}`, channelDir, depositFor: () => 'over_cap', atRisk: () => 0n });
     const offer = { hostId, payTo: PAY_TO } as Offer;
     const res = await payer.paidFetch(offer, PRICE)(g.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"index":0}' });
     assert.equal(res.status, 200, await res.clone().text());

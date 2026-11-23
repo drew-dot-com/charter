@@ -1,6 +1,6 @@
 // The door's registry of hosts anyone may register, and how much of its capital each may lock up.
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { dirname } from 'node:path';
 import type { Offer } from '../types.js';
@@ -84,6 +84,8 @@ export interface HostRecord {
   intervalsPaid: number;
   /** A paid home lease on this host reached `running` with access published. */
   homeTested: boolean;
+  /** Epoch ms the operator dropped the host (`charter-door hosts drop`): it stays dropped, re-registered or not. */
+  operatorDroppedAt?: number;
 }
 
 /** A host that has passed a probe, ever. */
@@ -151,12 +153,16 @@ const toJson = (v: unknown): string => JSON.stringify(v, (_k, x) => (typeof x ==
 const fromJson = (s: string): unknown =>
   JSON.parse(s, (_k, x) => (x && typeof x === 'object' && typeof x.$bigint === 'string' && Object.keys(x).length === 1 ? BigInt(x.$bigint) : x));
 
+/** The operator's drops beside the registry file: one `<hostId> <epoch ms>` line each, so another process can write it. */
+const dropsFileOf = (file: string): string => `${file}.drops`;
+
 /** Every host the door knows, by hostId: a JSON file rewritten whole through a temp file and a rename. */
 export class HostRegistry {
   private readonly hosts = new Map<string, HostRecord>();
   /** homeId to the hostId that holds its disk. */
   private readonly homes = new Map<string, string>();
   private firstProbes = { day: '', count: 0 };
+  private dropsSeen = '';
 
   constructor(private readonly file: string) {
     let raw: string;
@@ -173,16 +179,53 @@ export class HostRegistry {
   }
 
   /**
+   * The operator drops a host (`charter-door hosts drop`), at `at`: appended to a file beside the registry, so it
+   * is safe while the door runs. A running registry applies it at its next read; the reaper then withdraws the
+   * host's channels once no lease ticks on it.
+   */
+  static drop(file: string, hostId: string, at: number): void {
+    if (!/^[0-9a-f]{64}$/.test(hostId)) throw new Error('a hostId is 64 lowercase hex digits');
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    appendFileSync(dropsFileOf(file), `${hostId} ${at}\n`, { mode: 0o600 });
+  }
+
+  /** Applies operator drops not applied yet, when the drops file has changed. */
+  private refreshDrops(): void {
+    const dropsFile = dropsFileOf(this.file);
+    let stamp: string;
+    try {
+      const st = statSync(dropsFile);
+      stamp = `${st.mtimeMs}:${st.size}`;
+    } catch {
+      return;
+    }
+    if (stamp === this.dropsSeen) return;
+    this.dropsSeen = stamp;
+    let changed = false;
+    for (const line of readFileSync(dropsFile, 'utf8').split('\n')) {
+      const [hostId, at] = line.split(' ');
+      const r = hostId ? this.hosts.get(hostId) : undefined;
+      if (!r || !/^\d+$/.test(at ?? '') || Number(at) <= (r.operatorDroppedAt ?? -1)) continue;
+      r.state = 'dropped';
+      r.operatorDroppedAt = Number(at);
+      changed = true;
+    }
+    if (changed) this.save();
+  }
+
+  /**
    * Adds a host, or answers the one already there. A dropped host comes back as `probing` with every counter
-   * kept, its run of failed probes included: one more failed probe drops it again.
+   * kept, its run of failed probes included: one more failed probe drops it again. One the operator dropped
+   * stays dropped.
    */
   register(url: string, now: number): { hostId: string; state: HostState } | 'bad_url' {
     const n = normalizeHostUrl(url);
     if (n === null) return 'bad_url';
+    this.refreshDrops();
     const hostId = hostIdOf(n);
     const r = this.hosts.get(hostId);
     if (r) {
-      if (r.state === 'dropped') {
+      if (r.state === 'dropped' && r.operatorDroppedAt === undefined) {
         r.state = 'probing';
         this.save();
       }
@@ -199,11 +242,13 @@ export class HostRegistry {
   }
 
   get(hostId: string): HostRecord | undefined {
+    this.refreshDrops();
     const r = this.hosts.get(hostId);
     return r && structuredClone(r);
   }
 
   all(): HostRecord[] {
+    this.refreshDrops();
     return [...this.hosts.values()].map((r) => structuredClone(r));
   }
 
@@ -294,6 +339,7 @@ export class HostRegistry {
    * at most `perDay` a UTC day: the rest wait.
    */
   dueProbes(now: number, firstProbesToday: number, perDay: number): string[] {
+    this.refreshDrops();
     const ready = (r: HostRecord): boolean => r.probes.lastAt === undefined || now - r.probes.lastAt >= PROBE_EVERY_MS;
     const hosts = [...this.hosts.values()].filter(ready);
     const again = hosts
@@ -327,8 +373,10 @@ const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 /**
  * How much the door deposits into a host's channel. Unproven hosts get `probeDeposit` while the sum locked
  * in all unproven hosts' channels, this deposit included, stays at or under `probeCap`; proven hosts get
- * `hostDeposit` within `hostCap` the same way. Past a cap, or for an unknown or dropped host: 'over_cap'.
- * `locked(hostId)` is what the door has put into that host's channels and not withdrawn. No side effects.
+ * `hostDeposit` within `hostCap` the same way. Past a cap, or for an unknown or dropped host: 'over_cap'. A host
+ * whose own capital at risk already reaches its tier's deposit gets nothing more either: one host holds at most
+ * about one deposit, however many channels its 402s name. `locked(hostId)` is the door's capital at risk in that
+ * host's channels. No side effects.
  */
 export function capitalAllocator(o: {
   registry: HostRegistry;
@@ -345,6 +393,7 @@ export function capitalAllocator(o: {
     let tier = 0n;
     for (const h of o.registry.all()) if (isProven(h) === proven) tier += o.locked(h.hostId);
     const [deposit, cap] = proven ? [o.hostDeposit, o.hostCap] : [o.probeDeposit, o.probeCap];
+    if (o.locked(hostId) >= deposit) return 'over_cap';
     return tier + deposit <= cap ? deposit : 'over_cap';
   };
 }
@@ -368,7 +417,12 @@ export const REAP_EVERY_MS = 3_600_000;
 
 export interface ReaperDeps {
   registry: HostRegistry;
-  payer: { channels(hostId: string): Promise<DoorChannel[]>; resync(hostId: string, channelId: string): Promise<void> };
+  payer: {
+    channels(hostId: string): Promise<DoorChannel[]>;
+    resync(hostId: string, channelId: string): Promise<void>;
+    /** The channel the host's pinned config names; undefined before the door first funded it. */
+    pinnedChannel(hostId: string): Promise<string | undefined>;
+  };
   chain: ChannelChain;
   capital: Pick<CapitalBook, 'locked' | 'withdrawn'>;
   /** Epoch ms of the host's newest lease or probe; undefined when it never had one. */
@@ -387,7 +441,8 @@ const bigMax = (a: bigint, b: bigint): bigint => (a > b ? a : b);
  * state. A due host's channel with funds the door does not owe the host (balance less the larger of claimed and
  * the door's own charged amount) and no withdrawal pending gets one asked for those funds. Once every channel of a
  * due host holds nothing of the door's (withdrawn, or refunded by the host itself), what `capital.locked` counts
- * for it is released. The door's record of a channel follows the chain after its balance moved. A channel id kept
+ * for it is released. A channel that is not the one the host's pinned config names (an old config's) is withdrawn
+ * the same way even while its host is active, and what its withdrawal brings back is released as it lands. The door's record of a channel follows the chain after its balance moved. A channel id kept
  * under more than one host is never touched: whose it is cannot be told.
  */
 export async function reapChannels(d: ReaperDeps): Promise<void> {
@@ -405,8 +460,12 @@ export async function reapChannels(d: ReaperDeps): Promise<void> {
     const last = d.lastLeaseAt(r.hostId);
     const idle = last === undefined || d.now() - last >= IDLE_WITHDRAW_MS;
     const due = (r.state === 'dropped' && !d.ticking(r.hostId)) || idle;
+    const pinned = await d.payer.pinnedChannel(r.hostId);
     let empty = true;
     for (const c of channels) {
+      // Not the channel the door pays this host through now: nothing will be paid into it again.
+      const stale = pinned !== undefined && c.channelId !== pinned;
+      const withdraw = due || stale;
       if (owners.get(c.channelId)! > 1) {
         empty = false;
         d.log(`channel ${c.channelId} is kept under more than one host; left alone`);
@@ -419,18 +478,20 @@ export async function reapChannels(d: ReaperDeps): Promise<void> {
           await d.chain.finalizeWithdraw(c);
           const after = await d.chain.state(c.channelId);
           d.log(`channel ${c.channelId} of host ${r.url}: withdrawal finalized, ${s.balance - after.balance} micro-USDC back`);
+          // A due host's capital is released below, once all its channels are empty; an active host's as it lands.
+          if (stale && !due && s.balance > after.balance) d.capital.withdrawn(r.hostId, s.balance - after.balance);
           s = after;
           finalized = true;
         }
         // Only on a quiet channel: a busy one's record may be ahead of the chain by a deposit still landing.
-        if (s.balance !== c.balance && (due || finalized)) await d.payer.resync(r.hostId, c.channelId);
+        if (s.balance !== c.balance && (withdraw || finalized)) await d.payer.resync(r.hostId, c.channelId);
         // What the door's vouchers already owe the host stays in the channel for it to claim.
         const free = s.balance - bigMax(s.totalClaimed, c.charged);
         if (free <= 0n && s.withdrawInitiatedAt === 0) continue;
         empty = false;
-        if (due && s.withdrawInitiatedAt === 0) {
+        if (withdraw && s.withdrawInitiatedAt === 0) {
           await d.chain.initiateWithdraw(c, free);
-          d.log(`channel ${c.channelId} of host ${r.url}: withdrawal of ${free} micro-USDC asked (${idle ? 'idle' : 'dropped'})`);
+          d.log(`channel ${c.channelId} of host ${r.url}: withdrawal of ${free} micro-USDC asked (${idle ? 'idle' : due ? 'dropped' : 'not the pinned channel'})`);
         }
       } catch (e) {
         empty = false;

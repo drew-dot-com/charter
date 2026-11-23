@@ -26,6 +26,7 @@ import { GrantStore, readFundPublic } from './grants.js';
 import { BASE_USDC, buildSchemes, facilitatorOffersBatch, parseClaimKey, type Schemes, type X402Config } from '../x402/seller.js';
 import { baseUsdcWallet, startSweep } from './sweep.js';
 import { unblockCommand } from './unblock.js';
+import { hostsCommand } from './hosts-command.js';
 
 const REQUEST_LOG_FILE = 'requests.jsonl';
 /** The body a host may answer the door with: an output part (48 KiB as base64) and its JSON wrapper fit. */
@@ -134,6 +135,7 @@ async function main(): Promise<void> {
     key,
     channelDir: env.CHARTER_HOST_CHANNEL_DIR?.trim() || join(dataDir, 'host-channels'),
     depositFor,
+    atRisk: locked,
     fetch: hostFetch,
     onDeposit: (hostId, channelId, amount) => {
       capital.deposited(hostId, amount);
@@ -249,6 +251,10 @@ async function main(): Promise<void> {
 
 if (process.argv[2] === 'unblock') {
   process.exit(unblockCommand(process.argv.slice(3), process.env, Date.now, (m) => console.log(m)));
+}
+
+if (process.argv[2] === 'hosts') {
+  process.exit(hostsCommand(process.argv.slice(3), process.env, Date.now, (m) => console.log(m)));
 }
 
 /** `charter-door x402 …` reads only CHARTER_DOOR_PAYER_KEY_FILE, CHARTER_CLAIM_KEY_FILE, CHARTER_DATA_DIR and X402_FACILITATOR_URL. */

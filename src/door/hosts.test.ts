@@ -263,6 +263,23 @@ test('allocator: a host that passes its probe moves its locked capital to the pr
   assert.equal(alloc(ids[0]!), 500_000n);
 });
 
+test('C2: allocator: no new deposit to a host whose capital at risk already reaches its tier deposit', () => {
+  const { reg } = registry();
+  const locked = new Map<string, bigint>();
+  const alloc = capitalAllocator({ registry: reg, locked: (id) => locked.get(id) ?? 0n, ...CAPS });
+  const u = add(reg, 'u');
+  locked.set(u, 99_999n);
+  assert.equal(alloc(u), 100_000n, 'under one probe deposit at risk: a top-up');
+  locked.set(u, 100_000n);
+  assert.equal(alloc(u), 'over_cap', 'one probe deposit at risk: no second channel or deposit');
+  const p = add(reg, 'p');
+  reg.probeResult(p, true, T0);
+  locked.set(p, 499_999n);
+  assert.equal(alloc(p), 500_000n);
+  locked.set(p, 500_000n);
+  assert.equal(alloc(p), 'over_cap', 'the proven tier has room, this host does not');
+});
+
 test('allocator: an unknown or dropped host gets nothing', () => {
   const { reg } = registry();
   const alloc = capitalAllocator({ registry: reg, locked: () => 0n, ...CAPS });
@@ -364,6 +381,8 @@ function fakeChannels() {
   const byHost = new Map<string, DoorChannel[]>();
   const writes: string[] = [];
   const resynced: string[] = [];
+  /** hostId to the channel its current config names (the door pins it at first funding). */
+  const pins = new Map<string, string>();
   let n = 0;
   /** A channel the door holds to `hostId`; `charged` is the door's record of what its vouchers owe (default: all claimed). */
   const open = (hostId: string, balance: bigint, totalClaimed = 0n, charged = totalClaimed): `0x${string}` => {
@@ -396,8 +415,9 @@ function fakeChannels() {
   const payer = {
     channels: async (hostId: string) => byHost.get(hostId) ?? [],
     resync: async (hostId: string, channelId: string) => void resynced.push(`${hostId.slice(0, 4)} ${channelId}`),
+    pinnedChannel: async (hostId: string) => pins.get(hostId),
   };
-  return { chain, payer, open, share, state, writes, resynced, clock };
+  return { chain, payer, open, share, state, writes, resynced, clock, pins };
 }
 
 function reaperFor(reg: HostRegistry, f: ReturnType<typeof fakeChannels>, lastLeaseAt: Map<string, number>, locked: Map<string, bigint>, ticking = new Set<string>()) {
@@ -543,3 +563,49 @@ test('R11: the withdrawal leaves what the door\'s vouchers owe the host, claimed
   assert.equal(f.writes.length, 2, 'and it is not withdrawn again');
 });
 
+
+test('C2: the reaper withdraws an active host\'s channels that are not its pinned one, and books what came back', async () => {
+  const { reg } = registry();
+  const f = fakeChannels();
+  const id = withRecord(reg, 'a', 1, 0);
+  // An old config's channel: 0.10 of the door's left in it. The pinned one is busy.
+  const old = f.open(id, 100_000n, 20_000n);
+  const cur = f.open(id, 500_000n, 50_000n);
+  f.pins.set(id, cur);
+  const locked = new Map([[id, 530_000n]]);
+  f.clock.t = T0 + DAY;
+  const r = reaperFor(reg, f, new Map([[id, f.clock.t - 60_000]]), locked);
+  await r.run();
+  assert.deepEqual(f.writes, [`initiate ${old} 80000`], 'only the unpinned channel, though the host is active');
+  f.clock.t += 3600 * 1000;
+  await r.run();
+  assert.deepEqual(f.writes, [`initiate ${old} 80000`, `finalize ${old}`]);
+  assert.equal(locked.get(id), 450_000n, 'what came back is no longer at risk');
+  assert.ok(f.resynced.some((x) => x.endsWith(old)));
+  await r.run();
+  assert.equal(f.writes.length, 2);
+  // With no pin (a door from before pinning) nothing of an active host is withdrawn.
+  const { reg: reg2 } = registry();
+  const g = fakeChannels();
+  const b = withRecord(reg2, 'b', 1, 0);
+  g.open(b, 100_000n);
+  g.open(b, 500_000n);
+  g.clock.t = T0 + DAY;
+  await reaperFor(reg2, g, new Map([[b, g.clock.t]]), new Map()).run();
+  assert.deepEqual(g.writes, []);
+});
+
+test('C2: registry.drop marks a host dropped for good: a running registry sees it, a restart keeps it, re-registering does not revive it', () => {
+  const { reg, file } = registry();
+  const id = withRecord(reg, 'a', 1, 0);
+  const other = withRecord(reg, 'b', 1, 0);
+  HostRegistry.drop(file, id, T0 + 5);
+  assert.equal(reg.get(id)!.state, 'dropped', 'the running door picks it up');
+  assert.equal(reg.get(other)!.state, 'listed');
+  assert.deepEqual(reg.listed().map((r) => r.hostId), [other]);
+  assert.deepEqual(reg.register('https://a.example', T0 + 10), { hostId: id, state: 'dropped' });
+  const again = new HostRegistry(file);
+  assert.equal(again.get(id)!.state, 'dropped');
+  assert.deepEqual(again.register('https://a.example', T0 + 20), { hostId: id, state: 'dropped' });
+  assert.deepEqual(again.dueProbes(T0 + 10 * DAY, 0, 10), [other]);
+});

@@ -56,6 +56,8 @@ installs the sudo rule (`/etc/sudoers.d/charter-home`, that one command only).
 `charter-door` serves the storefront and pays hosts for renters. Hosts register themselves; the door probes each
 one (a paid python job that hashes a nonce) before it lists it, and pays each host's ticks over x402
 `batch-settlement` from its payer key, one channel per host. `charter-door unblock <0x address>` reads only
+`CHARTER_DATA_DIR`. `charter-door hosts drop <hostId>` drops a host for good (re-registering does not bring it
+back); the running door picks it up and withdraws the host's channels once no lease ticks on it. It reads only
 `CHARTER_DATA_DIR`.
 `charter-door x402 status | claim | settle | refund` lists renters' batch-settlement channels, claims and settles their vouchers to the door payer address, settles what earlier claims (refunds included) left unsettled, or refunds idle channels, now. The door does the same on a 10 min timer: it claims channels idle 10 min or whose payer asked to withdraw (their vouchers are refused as `channel_withdrawing`), refunds idle channels' unspent balance, and settles after every refund round. Safe beside a running door.
 
@@ -64,7 +66,7 @@ one (a paid python job that hashes a nonce) before it lists it, and pays each ho
 | `CHARTER_DOOR_PORT` | yes | | Port to listen on. |
 | `CHARTER_DOOR_HOST` | no | `127.0.0.1` | Address to bind. |
 | `CHARTER_DOOR_TRUST_PROXY` | no | none | `true`, or a hop count (`1` for one Caddy in front), so rate limits see the client's address. |
-| `CHARTER_DATA_DIR` | yes | | `door-ledger.json`, its sidecars (`.payments`, `.unblocks`, `.unpaid`), cached output parts, `hosts.json` (the host registry) and `capital.json` (what the door has deposited into each host's channels). |
+| `CHARTER_DATA_DIR` | yes | | `door-ledger.json`, its sidecars (`.payments`, `.unblocks`, `.unpaid`), cached output parts, `hosts.json` (the host registry, and `hosts.json.drops`) and `capital.json` (what the door has deposited into each host's channels). |
 | `CHARTER_DOOR_PAYER_KEY_FILE` | yes | | File (mode 0400) holding the door's Base key: one `0x` + 64 hex private key. Its address is where renters' x402 payments go (`payTo`, `payer` in `GET /v1/door`) and what funds every host channel, pays hosts and signs every request to them. It needs USDC on Base for host and probe deposits (up to `CHARTER_HOST_CAPITAL_CAP` plus `CHARTER_PROBE_CAPITAL_CAP`) and a little ETH on Base for the sweep and channel withdrawals. |
 | `CHARTER_HOST_CHANNEL_DIR` | no | `<CHARTER_DATA_DIR>/host-channels` | The door's channel records, one directory per host. A lost `client/` record is rebuilt from chain, but the `config/<channelId>.json` files cannot be: they name the channel on chain, and the reaper needs them to withdraw the door's deposit. Back the directory up (the default sits in the data dir the nightly backup takes). |
 | `BASE_RPC_URL` | no | `https://mainnet.base.org` | Base RPC the door reads host channels from: at boot, and to resync a record or a pending deposit a lost answer left behind. The door also withdraws its own channels through it, hourly: one idle 7 days (no lease or probe) or of a dropped host. Those transactions pay gas in ETH from the payer address. |
