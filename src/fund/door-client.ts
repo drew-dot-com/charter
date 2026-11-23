@@ -1,5 +1,6 @@
-// The grant fund's only way to spend: plain x402 calls to Charter's door, `exact` USDC on Base, to the
-// payee the door names, at most a tick's cap. Everything the fund pays goes through `pay` below.
+// Plain x402 calls to Charter's door, `exact` USDC on Base, to the payee the door names, at most a tick's cap.
+// The grant fund and the charter CLI pay through it: everything either pays goes through `pay` below.
+import { decodePaymentSignatureHeader } from '@x402/core/http';
 import { ExactEvmScheme } from '@x402/evm/exact/client';
 import { decodePaymentResponseHeader, wrapFetchWithPaymentFromConfig } from '@x402/fetch';
 import { createPublicClient, erc20Abi, http } from 'viem';
@@ -12,9 +13,12 @@ const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const PAID_MS = 60_000;
 const FREE_MS = 20_000;
 
-export interface Answer { status: number; body: any; tx?: string }
+/** `paid`: micro-USDC this call signed, on a 2xx answer (what an `exact` payment settles). */
+export interface Answer { status: number; body: any; tx?: string; paid?: bigint }
 export interface DoorClient {
   get(path: string): Promise<Answer>;
+  /** A free POST: nothing is signed, whatever the door answers. */
+  post(path: string, json: unknown): Promise<Answer>;
   pay(path: string, json: unknown): Promise<Answer>;
   fund(method: 'GET' | 'POST' | 'PUT', path: string, json?: unknown): Promise<Answer>;
   payTo: string;
@@ -34,6 +38,16 @@ export function onlyDoorExact(payTo: string, maxTick: bigint) {
         /^\d+$/.test(String(r.amount)) &&
         BigInt(String(r.amount)) <= maxTick,
     );
+}
+
+/** The amount of the requirement a payment header signed for, or undefined when it names none. */
+function signedAmount(header: string): bigint | undefined {
+  try {
+    const amount = (decodePaymentSignatureHeader(header) as { accepted?: { amount?: unknown } }).accepted?.amount;
+    return typeof amount === 'string' && /^\d+$/.test(amount) ? BigInt(amount) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function answer(res: Response): Promise<Answer> {
@@ -59,10 +73,11 @@ function cleanUrl(u: string): string {
   return u.replace(/\/+$/, '');
 }
 
+/** `key` unset: `pay` throws. `fundToken` unset: `fund` throws. Either throws before sending anything. */
 export async function doorClient(o: {
   doorUrl: string;
-  key: `0x${string}`;
-  fundToken: string;
+  key?: `0x${string}`;
+  fundToken?: string;
   maxTickMicro: bigint;
   fetch?: typeof fetch;
 }): Promise<DoorClient> {
@@ -77,10 +92,7 @@ export async function doorClient(o: {
   }
   const payTo: string = info.body.payTo;
 
-  const paidFetch = wrapFetchWithPaymentFromConfig(base_, {
-    schemes: [{ network: BASE, client: new ExactEvmScheme(privateKeyToAccount(o.key)) }],
-    policies: [onlyDoorExact(payTo, o.maxTickMicro) as never],
-  });
+  const scheme = o.key ? new ExactEvmScheme(privateKeyToAccount(o.key)) : undefined;
 
   const send = async (f: typeof fetch, method: string, path: string, json: unknown, headers: Record<string, string>, ms: number) => {
     const hasBody = json !== undefined;
@@ -92,9 +104,26 @@ export async function doorClient(o: {
     async get(path) {
       return answer(await send(base_, 'GET', path, undefined, {}, FREE_MS));
     },
+    async post(path, json) {
+      return answer(await send(base_, 'POST', path, json, {}, PAID_MS));
+    },
     async pay(path, json) {
+      if (!scheme) throw new Error('this door client holds no key, so it pays nothing');
+      // What this call signed, read off the retried request the payment wrapper sends: one wrapper per call,
+      // so calls side by side never see each other's payment.
+      let signed: bigint | undefined;
+      const watched = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const header = input instanceof Request ? input.headers.get('payment-signature') : null;
+        if (header) signed = signedAmount(header);
+        return base_(input, init);
+      }) as typeof fetch;
+      const paidFetch = wrapFetchWithPaymentFromConfig(watched, {
+        schemes: [{ network: BASE, client: scheme }],
+        policies: [onlyDoorExact(payTo, o.maxTickMicro) as never],
+      });
       const res = await send(paidFetch, 'POST', path, json, {}, PAID_MS);
       const out = await answer(res);
+      if (signed !== undefined && res.status >= 200 && res.status < 300) out.paid = signed;
       const receipt = res.headers.get('payment-response');
       if (receipt) {
         try {
@@ -107,6 +136,7 @@ export async function doorClient(o: {
       return out;
     },
     async fund(method, path, json) {
+      if (!o.fundToken) throw new Error('this door client holds no fund token');
       return answer(await send(base_, method, path, json, { authorization: `Bearer ${o.fundToken}` }, FREE_MS));
     },
   };

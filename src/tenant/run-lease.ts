@@ -2,6 +2,9 @@ import type { HomeAccess, JobSpec, Lease, Micro, Offer } from '../types.js';
 import { GRACE_MS, tickLeadMs } from '../lease.js';
 import { HostError, type HostApi } from './host-api.js';
 
+/** What the loop needs of an offer: its id for the record, and its interval for the timing. */
+export type LeaseOffer = Pick<Offer, 'id' | 'intervalSeconds'>;
+
 export type LeaseEvent =
   | { kind: 'opened'; leaseId: string }
   | { kind: 'boot_failed'; leaseId: string; error?: string }
@@ -31,7 +34,7 @@ export interface RunLeaseResult {
  * tick 0 is paid), then keep paying one tick per interval until the job finishes, the lease closes,
  * or `maxIntervals` ticks are paid.
  */
-export async function runLease(api: HostApi, o: Offer, job: JobSpec, opts: RunLeaseOpts): Promise<RunLeaseResult> {
+export async function runLease(api: HostApi, o: LeaseOffer, job: JobSpec, opts: RunLeaseOpts): Promise<RunLeaseResult> {
   checkMaxIntervals(opts.maxIntervals);
   const now = opts.now ?? Date.now;
   const emit = opts.onEvent ?? (() => undefined);
@@ -74,11 +77,11 @@ export class FromMismatchError extends Error {
  * next tick index is the host's `paidIntervals`: a guessed index would buy duplicates (too low) or a paid
  * 409 (too high). A `from` that differs from the host's count throws FromMismatchError before any tick.
  */
-export async function continueLease(api: HostApi, o: Offer, leaseId: string, opts: RunLeaseOpts & { from?: number }): Promise<RunLeaseResult> {
+export async function continueLease(api: HostApi, o: LeaseOffer, leaseId: string, opts: RunLeaseOpts & { from?: number }): Promise<RunLeaseResult> {
   return payLease(api, o, leaseId, opts, true);
 }
 
-async function payLease(api: HostApi, o: Offer, leaseId: string, opts: RunLeaseOpts & { from?: number }, attach: boolean): Promise<RunLeaseResult> {
+async function payLease(api: HostApi, o: LeaseOffer, leaseId: string, opts: RunLeaseOpts & { from?: number }, attach: boolean): Promise<RunLeaseResult> {
   checkMaxIntervals(opts.maxIntervals);
   if (opts.from !== undefined && (!Number.isSafeInteger(opts.from) || opts.from < 0)) throw new Error('from must be a non-negative integer');
   const now = opts.now ?? Date.now;

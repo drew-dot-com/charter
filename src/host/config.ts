@@ -47,8 +47,6 @@ export interface HostConfig {
     /** Directory the anon daemon reads onion confs from. Set when `onion` is true. */
     anonHsDir?: string;
     anonPidFile?: string;
-    /** The connector a box pays through, as the box sees it. */
-    tenantConnectorUrl: string;
   };
   /** The base offer. `expiresAt` is 0 here; `GET /v1/offer` sets it on each answer. */
   offer: Offer;
@@ -134,8 +132,6 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
   const dataDir = need(env, 'CHARTER_DATA_DIR');
   let home: HostConfig['home'];
   if (maxHomes > 0) {
-    const tenantConnectorUrl = need(env, 'CHARTER_TENANT_CONNECTOR_URL');
-    if (!/^https?:\/\/[^\s/]+/.test(tenantConnectorUrl)) throw new Error('CHARTER_TENANT_CONNECTOR_URL must be an http(s) URL');
     const gateway = env.CHARTER_HOME_GATEWAY?.trim() || '172.19.0.1';
     const octets = gateway.split('.');
     if (octets.length !== 4 || octets.some((o) => !/^\d{1,3}$/.test(o) || Number(o) > 255)) {
@@ -166,7 +162,6 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
       ...(publicHost !== undefined ? { publicHost } : {}),
       onion,
       ...(onion ? { anonHsDir: need(env, 'CHARTER_ANON_HS_DIR'), anonPidFile: need(env, 'CHARTER_ANON_PIDFILE') } : {}),
-      tenantConnectorUrl,
     };
   }
 

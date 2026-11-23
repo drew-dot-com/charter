@@ -118,3 +118,58 @@ test('usdcBalance hides what the reader threw: no URL, no message', async () => 
     (e: Error) => /balance read failed/.test(e.message) && !/rpc\.test|KEY/.test(e.message),
   );
 });
+
+test('a client with no fund token reads and pays, and fund() throws before sending anything', async () => {
+  const { f, calls } = fake({}, (u) => (u.endsWith('/v1/offers') ? json(200, []) : undefined));
+  const c = await mk(f, { fundToken: undefined });
+  assert.equal((await c.get('/v1/offers')).status, 200);
+  const before = calls.length;
+  await assert.rejects(c.fund('GET', '/v1/fund/queue'), /fund token/);
+  assert.equal(calls.length, before);
+});
+
+test('a client with no key reads, and pay() throws before sending anything', async () => {
+  const { f, calls } = fake({}, (u) => (u.endsWith('/v1/offers') ? json(200, []) : undefined));
+  const c = await mk(f, { key: undefined });
+  assert.equal((await c.get('/v1/offers')).status, 200);
+  const before = calls.length;
+  await assert.rejects(c.pay('/v1/rent', { a: 1 }), /key/);
+  assert.equal(calls.length, before);
+});
+
+test('post() sends JSON unpaid, with no bearer', async () => {
+  const { f, calls } = fake({}, (u) => (u.endsWith('/v1/leases') ? json(200, { leaseId: 'x' }) : undefined));
+  const c = await mk(f);
+  assert.deepEqual(await c.post('/v1/leases', { offerId: 'o' }), { status: 200, body: { leaseId: 'x' } });
+  const last = calls.at(-1)!;
+  assert.equal(last.init?.method, 'POST');
+  assert.equal(last.init?.body, '{"offerId":"o"}');
+  assert.equal(new Headers(last.init?.headers).get('authorization'), null);
+  assert.equal(new Headers(last.init?.headers).get('payment-signature'), null);
+});
+
+test('pay() reports the exact amount it signed on a 2xx answer, and none on a refused one', async () => {
+  const offer = {
+    x402Version: 2, error: 'payment required', resource: { url: 'https://door.test/v1/leases/l/ticks' },
+    accepts: [{ ...req(), maxTimeoutSeconds: 300, extra: { name: 'USD Coin', version: '2' } }],
+  };
+  let answerPaid = 200;
+  const { f } = fake({}, (u, init) => {
+    if (!u.endsWith('/ticks')) return undefined;
+    const signed = init?.headers ? new Headers(init.headers).get('payment-signature') : null;
+    return signed ? json(answerPaid, { paidIntervals: 1 }) : json(402, {}, { 'payment-required': Buffer.from(JSON.stringify(offer)).toString('base64') });
+  });
+  // The wrapper sends a Request: read its headers too.
+  const f2 = (async (input: RequestInfo | URL, init?: RequestInit) =>
+    input instanceof Request ? f(input.url, { method: input.method, headers: input.headers }) : f(input, init)) as typeof fetch;
+  const c = await mk(f2);
+  const a = await c.pay('/v1/leases/l/ticks', { index: 0 });
+  assert.equal(a.status, 200);
+  assert.equal(a.paid, 7000n);
+  answerPaid = 409;
+  const refused = await c.pay('/v1/leases/l/ticks', { index: 1 });
+  assert.equal(refused.status, 409);
+  assert.equal(refused.paid, undefined, 'a non-2xx answer settles nothing');
+  const { f: free } = fake({}, (u) => (u.endsWith('/v1/free') ? json(200, {}) : undefined));
+  assert.equal((await (await mk(free)).pay('/v1/free', {})).paid, undefined, 'nothing asked, nothing paid');
+});

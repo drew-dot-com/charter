@@ -70,7 +70,7 @@ test('a hermes home runs Hermes 0.22.7 and the charter CLI read-only, boots by d
     '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '512',
     '-p', '127.0.0.1:0:2222', '--mount', `type=volume,src=${vol},dst=/home/tenant`,
     '-e', `SSH_KEYS=${pub}`, '-e', 'HTTPS_PROXY=http://10.0.0.1:9080', '-e', 'CHARTER_LEASE_ID=abc',
-    '-e', 'CHARTER_OFFER_JSON={"id":"o1","hostPubkey":""}', tag);
+    '-e', 'CHARTER_DOOR_URL=https://door.example', tag);
   const port = () => docker('port', n, '2222/tcp').split('\n')[0].split(':').pop();
   const ssh = (p, cmd) => sh('ssh', ['-i', join(tmp, 'a'), '-p', p,
     '-o', 'StrictHostKeyChecking=no', '-o', `UserKnownHostsFile=${join(tmp, 'known_hosts')}`,
@@ -97,7 +97,7 @@ test('a hermes home runs Hermes 0.22.7 and the charter CLI read-only, boots by d
   // The CLI answers --help with its usage text and exit 2, as it does any invocation it does not run.
   const usage = ssh(p, 'charter --help');
   assert.equal(usage.code, 2, usage.err);
-  assert.match(`${usage.out}\n${usage.err}`, /charter rent --offer/);
+  assert.match(`${usage.out}\n${usage.err}`, /charter rent \[--offer/);
   ok(p, 'rg --version');
   assert.match(ok(p, 'readlink -f /opt/hermes/venv/bin/python').out, /^\/opt\/hermes\/python\//);
   ok(p, "/opt/hermes/venv/bin/python -c 'import telegram, discord, mcp, fastapi'");
@@ -125,6 +125,8 @@ test('a hermes home runs Hermes 0.22.7 and the charter CLI read-only, boots by d
   assert.equal(started.code, 0, 'no "boot: gateway started" in ~/.charter/boot.log within 90 s');
   // Time for the gateway to write its home before the files are read.
   pause(10_000);
+  // The real CLI read the address of the key the boot made (written before the gateway starts): the wallet renew pays the door from.
+  ok(p, 'grep -Eq "^0x[0-9a-fA-F]{40}$" ~/.charter/payer.address');
   ok(p, 'test ! -e ~/.hermes/tools');
   // Hermes made its own home, so the log grep below reads a directory that exists (grep exits 1, not 2).
   assert.match(ok(p, 'ls ~/.hermes').out, /^logs$/m);

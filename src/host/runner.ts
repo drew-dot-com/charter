@@ -117,8 +117,8 @@ export interface HomeRunnerOpts {
   anon?: AnonDeps;
   /** losetup runs as root (`sudo -n losetup` on the host): docker gets a loop device, not the image. */
   tools: { truncate: Exec; mkfs: Exec; losetup: Exec };
-  offerJson: string;
-  connectorUrl: string;
+  /** The door this host registered with (its CHARTER_DOOR_URL): a home renews through it. */
+  doorUrl: string;
   /**
    * New homes are root homes: the box runs as root on its own copy of the system, kept on its disk
    * (HomeRecord.layout 2). Only under gVisor. A home made without it keeps the first layout.
@@ -213,8 +213,7 @@ function homeArgs(profile: JobProfile, rec: HomeRecord, homeId: string, leaseId:
     'NODE_USE_ENV_PROXY=1',
     `CHARTER_LEASE_ID=${leaseId}`,
     `CHARTER_HOME_ID=${homeId}`,
-    `CHARTER_OFFER_JSON=${h.offerJson}`,
-    `CHARTER_CONNECTOR_URL=${h.connectorUrl}`,
+    `CHARTER_DOOR_URL=${h.doorUrl}`,
     'CHARTER_PAID_THROUGH_FILE=/charter/paid-through',
     ...(rec.layout === 2 ? ['CHARTER_HOME_ROOT=1'] : []),
   ];

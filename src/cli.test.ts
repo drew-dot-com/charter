@@ -1,29 +1,199 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatUsdc, MOVED, runCli, sshLine } from './cli.js';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { privateKeyToAccount } from 'viem/accounts';
+import { DEFAULT_DOOR, formatUsdc, runCli, sshLine, type CliDeps } from './cli.js';
+import type { Answer, DoorClient } from './fund/door-client.js';
 
-async function cli(argv: string[]) {
+const KEY_HEX = '59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
+const HOST = 'ab'.repeat(32);
+const OTHER = 'cd'.repeat(32);
+const LEASE = 'a'.repeat(32);
+
+function keyFile(contents = `${KEY_HEX}\n`): string {
+  const f = join(mkdtempSync(join(tmpdir(), 'charter-cli-')), 'payer.key');
+  writeFileSync(f, contents);
+  return f;
+}
+
+const offer = (id: string, over: Record<string, unknown> = {}) => ({
+  offerId: id, cpu: 1, memoryMiB: 1024, intervalSeconds: 3600, tickPrice: '7000', images: ['charter-job-fetch', 'charter-home'],
+  hiddenHost: false, hiddenEgress: false, expiresAt: 9_999_999_999_000, operator: 'independent', ...over,
+});
+
+interface FakeDoor {
+  client: DoorClient;
+  built: Array<{ doorUrl: string; key?: string; maxTickMicro: bigint }>;
+  calls: string[];
+  paid: unknown[];
+}
+
+/**
+ * A door that lists `offers`, opens LEASE on POST /v1/leases, and keeps one lease whose host count starts at
+ * `paidIntervals`. Each paid tick at the expected index counts one more and costs 7000.
+ */
+function fakeDoor(o: { offers?: unknown[]; paidIntervals?: number; clock: { t: number } }): FakeDoor {
+  const calls: string[] = [];
+  const paid: unknown[] = [];
+  let count = o.paidIntervals ?? 0;
+  let paidThrough: number | undefined = count > 0 ? o.clock.t : undefined;
+  let state = count > 0 ? 'running' : 'awaiting_first_tick';
+  const lease = () => ({ id: LEASE, offerId: `${HOST}:o1`, job: { image: 'charter-job-fetch', args: {} }, state, createdAt: 0, paidIntervals: count, ...(paidThrough ? { paidThrough } : {}) });
+  const ok = (body: unknown): Answer => ({ status: 200, body });
+  const client: DoorClient = {
+    payTo: `0x${'2'.repeat(40)}`,
+    get: async (path) => {
+      calls.push(`GET ${path}`);
+      if (path === '/v1/offers') return ok(o.offers ?? [offer(`${HOST}:o1`)]);
+      if (path === `/v1/leases/${LEASE}`) return ok({ lease: lease(), stopped: false, offer: offer(`${HOST}:o1`) });
+      return { status: 404, body: { error: 'not_found' } };
+    },
+    post: async (path, json) => (calls.push(`POST ${path} ${JSON.stringify(json)}`), ok({ leaseId: LEASE, state: 'awaiting_first_tick' })),
+    pay: async (path, json) => {
+      calls.push(`PAY ${path}`);
+      paid.push(json);
+      const index = (json as { index: number }).index;
+      if (index !== count) return { status: 409, body: { error: 'out_of_order', expected: count } };
+      count++;
+      state = 'running';
+      paidThrough = (paidThrough ?? o.clock.t) + 3_600_000;
+      return { status: 200, body: { paidIntervals: count, paidThrough, duplicate: false }, paid: 7000n };
+    },
+    fund: async () => assert.fail('the CLI never calls fund'),
+  };
+  return { client, built: [], calls, paid };
+}
+
+async function cli(argv: string[], env: Record<string, string | undefined> = {}, door?: FakeDoor, clock = { t: 1_000_000 }) {
   const out: string[] = [];
   const err: string[] = [];
-  const code = await runCli(argv, {}, { out: (s) => out.push(s), err: (s) => err.push(s) });
+  const deps: Partial<CliDeps> = {
+    out: (s) => out.push(s),
+    err: (s) => err.push(s),
+    now: () => clock.t,
+    sleep: async (ms) => void (clock.t += ms),
+    client: async (o) => {
+      if (!door) assert.fail('no door client expected');
+      door.built.push(o);
+      return door.client;
+    },
+  };
+  const code = await runCli(argv, env, deps);
   return { code, out: out.join('\n'), err: err.join('\n') };
 }
 
-test('offers, rent, renew and status say they move to the door and exit 2, paying nothing', async () => {
-  for (const argv of [['offers'], ['rent', '--offer', 'x', '--urls', 'https://e.com', '--max-intervals', '1'], ['renew', '--lease', 'a'], ['status', 'a', 'b']]) {
-    const r = await cli(argv);
+test('rent without CHARTER_KEY_FILE exits 2 with usage', async () => {
+  const r = await cli(['rent', '--urls', 'https://e.com', '--max-intervals', '1']);
+  assert.equal(r.code, 2);
+  assert.match(r.err, /CHARTER_KEY_FILE/);
+  assert.match(r.err, /^usage:/m);
+  assert.equal(r.out, '');
+});
+
+test('CHARTER_PAYER set prints that it is gone', async () => {
+  const r = await cli(['renew', '--lease', LEASE, '--max-intervals', '1'], { CHARTER_PAYER: 'url', CHARTER_KEY_FILE: keyFile() });
+  assert.equal(r.code, 2);
+  assert.match(r.err, /CHARTER_PAYER is gone/);
+  assert.match(r.err, /^usage:/m);
+});
+
+test('CHARTER_OFFER_JSON, --relay and `charter payer` are gone too: usage and exit 2, no door called', async () => {
+  for (const [argv, env, says] of [
+    [['offers'], { CHARTER_OFFER_JSON: '{}' }, /CHARTER_OFFER_JSON is gone/],
+    [['offers', '--relay', 'wss://r'], {}, /--relay is gone/],
+    [['payer'], {}, /charter payer is gone/],
+    [[], {}, /^usage:/],
+    [['nope'], {}, /^usage:/],
+  ] as const) {
+    const r = await cli([...argv], { ...env });
     assert.equal(r.code, 2, argv.join(' '));
-    assert.equal(r.err, MOVED);
-    assert.equal(r.out, '');
+    assert.match(r.err, says);
+    assert.match(r.err, /^usage:/m);
   }
 });
 
-test('payer is gone: it and anything else print the usage and exit 2', async () => {
-  for (const argv of [['payer'], [], ['nope']]) {
-    const r = await cli(argv);
-    assert.equal(r.code, 2);
-    assert.match(r.err, /^usage:/);
-  }
+test('renew pays from the host\'s paid count', async () => {
+  const clock = { t: 1_000_000 };
+  const door = fakeDoor({ paidIntervals: 3, clock });
+  const r = await cli(['renew', '--lease', LEASE, '--max-intervals', '1', '--json'], { CHARTER_KEY_FILE: keyFile() }, door, clock);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(door.paid, [{ index: 3 }]);
+  const j = JSON.parse(r.out);
+  assert.equal(j.leaseId, LEASE);
+  assert.equal(j.paidIntervals, 4);
+  assert.equal(j.spent, '7000');
+  // The key file's hex key, with the default door and the default cap.
+  assert.deepEqual(door.built, [{ doorUrl: DEFAULT_DOOR, key: `0x${KEY_HEX}`, maxTickMicro: 10000n }]);
+});
+
+test('renew --from that is not the host\'s count pays nothing and exits 2', async () => {
+  const clock = { t: 1_000_000 };
+  const door = fakeDoor({ paidIntervals: 3, clock });
+  const r = await cli(['renew', '--lease', LEASE, '--from', '2', '--max-intervals', '1'], { CHARTER_KEY_FILE: keyFile() }, door, clock);
+  assert.equal(r.code, 2);
+  assert.match(r.err, /--from 2 does not match the host's paid intervals 3/);
+  assert.deepEqual(door.paid, []);
+});
+
+test('rent with no --offer opens on the cheapest listed offer that runs the job, and pays from tick 0', async () => {
+  const clock = { t: 1_000_000 };
+  const door = fakeDoor({
+    clock,
+    offers: [offer(`${OTHER}:dear`, { tickPrice: '9000' }), offer(`${OTHER}:python`, { tickPrice: '1000', images: ['charter-job-python'] }), offer(`${HOST}:o1`)],
+  });
+  const r = await cli(['rent', '--urls', 'https://e.com/a,https://e.com/b', '--max-intervals', '2', '--json'], { CHARTER_KEY_FILE: keyFile(), CHARTER_DOOR_URL: 'https://door.example' }, door, clock);
+  assert.equal(r.code, 0, r.err);
+  assert.ok(door.calls.includes(`POST /v1/leases ${JSON.stringify({ offerId: `${HOST}:o1`, urls: ['https://e.com/a', 'https://e.com/b'] })}`), door.calls.join('\n'));
+  assert.deepEqual(door.paid, [{ index: 0 }, { index: 1 }]);
+  assert.equal(JSON.parse(r.out).spent, '14000');
+  assert.equal(door.built[0]!.doorUrl, 'https://door.example');
+});
+
+test('rent refuses an offer dearer than CHARTER_MAX_TICK before opening anything', async () => {
+  const clock = { t: 1_000_000 };
+  const door = fakeDoor({ clock });
+  const r = await cli(['rent', '--offer', `${HOST}:o1`, '--urls', 'https://e.com', '--max-intervals', '1', '--door', 'https://d.example'],
+    { CHARTER_KEY_FILE: keyFile(), CHARTER_MAX_TICK: '5000' }, door, clock);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /0\.007 USDC a tick, above CHARTER_MAX_TICK \(0\.005 USDC\)/);
+  assert.ok(!door.calls.some((c) => c.startsWith('POST') || c.startsWith('PAY')));
+  assert.equal(door.built[0]!.maxTickMicro, 5000n);
+  assert.equal(door.built[0]!.doorUrl, 'https://d.example');
+});
+
+test('a key file that is not a hex key is refused without printing it', async () => {
+  const r = await cli(['renew', '--lease', LEASE, '--max-intervals', '1'], { CHARTER_KEY_FILE: keyFile('not a key secret-ish\n') });
+  assert.equal(r.code, 1);
+  assert.match(r.err, /CHARTER_KEY_FILE \S+ must hold one hex private key/);
+  assert.doesNotMatch(r.err, /secret-ish/);
+});
+
+test('offers lists what the door lists, with no key', async () => {
+  const door = fakeDoor({ clock: { t: 0 }, offers: [offer(`${HOST}:o1`, { home: { diskGiB: 10, retentionDays: 7, slots: 2, free: 1 } })] });
+  const r = await cli(['offers'], {}, door);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, new RegExp(`^${HOST}:o1  0\\.007 USDC per 3600s tick`));
+  assert.match(r.out, /home 10 GiB, 1 of 2 free/);
+  assert.equal(door.built[0]!.key, undefined);
+});
+
+test('status reads the lease from the door, with no key', async () => {
+  const clock = { t: 1_000_000 };
+  const door = fakeDoor({ paidIntervals: 2, clock });
+  const r = await cli(['status', LEASE, '--json'], {}, door, clock);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(JSON.parse(r.out), { leaseId: LEASE, state: 'running', paidIntervals: 2, paidThrough: 1_000_000, offerId: `${HOST}:o1` });
+  const missing = await cli(['status', 'f'.repeat(32)], {}, fakeDoor({ clock }));
+  assert.equal(missing.code, 1);
+  assert.match(missing.err, /404 not_found/);
+});
+
+test('address prints the key file\'s address', async () => {
+  const r = await cli(['address'], { CHARTER_KEY_FILE: keyFile(`0x${KEY_HEX}`) });
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.out, privateKeyToAccount(`0x${KEY_HEX}`).address);
 });
 
 test('formatUsdc prints micro-USDC as a decimal', () => {

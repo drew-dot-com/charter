@@ -89,10 +89,9 @@ const HOME_ENV = {
   CHARTER_MAX_HOMES: '1',
   CHARTER_ANON_HS_DIR: '/etc/anon/hs.d',
   CHARTER_ANON_PIDFILE: '/run/anon/anon.pid',
-  CHARTER_TENANT_CONNECTOR_URL: 'https://connector.mainnet.toonprotocol.dev',
 };
 
-test('a host with homes needs the anon paths and a tenant connector URL and advertises its terms', () => {
+test('a host with homes needs the anon paths and advertises its terms', () => {
   const c = loadConfig(HOME_ENV);
   assert.equal(c.maxHomes, 1);
   assert.deepEqual(c.offer.home, { diskGiB: 2, retentionDays: 7, slots: 1 });
@@ -107,12 +106,10 @@ test('a host with homes needs the anon paths and a tenant connector URL and adve
     onion: true,
     anonHsDir: '/etc/anon/hs.d',
     anonPidFile: '/run/anon/anon.pid',
-    tenantConnectorUrl: 'https://connector.mainnet.toonprotocol.dev',
   });
-  for (const k of ['CHARTER_ANON_HS_DIR', 'CHARTER_ANON_PIDFILE', 'CHARTER_TENANT_CONNECTOR_URL']) {
+  for (const k of ['CHARTER_ANON_HS_DIR', 'CHARTER_ANON_PIDFILE']) {
     assert.throws(() => loadConfig({ ...HOME_ENV, [k]: '' }), new RegExp(k));
   }
-  assert.throws(() => loadConfig({ ...HOME_ENV, CHARTER_TENANT_CONNECTOR_URL: 'ftp://x' }), /CHARTER_TENANT_CONNECTOR_URL/);
   assert.throws(() => loadConfig({ ...HOME_ENV, CHARTER_HOME_GATEWAY: 'gw.local' }), /CHARTER_HOME_GATEWAY/);
   assert.throws(() => loadConfig({ ...HOME_ENV, CHARTER_HOME_SOCKS_PORT: '0' }), /CHARTER_HOME_SOCKS_PORT/);
   assert.equal(loadConfig({ ...HOME_ENV, CHARTER_HOME_DIR: '/mnt/h' }).home?.dir, '/mnt/h');

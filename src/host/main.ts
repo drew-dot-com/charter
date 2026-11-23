@@ -86,8 +86,7 @@ async function main(argv: string[]): Promise<number> {
               // Loop devices need root; -n fails fast instead of waiting on a password prompt.
               losetup: (args, env) => execFileExec('sudo')(['-n', 'losetup', ...args], env),
             },
-            offerJson: offerToJson({ ...cfg.offer, expiresAt: 0 }),
-            connectorUrl: h.tenantConnectorUrl,
+            doorUrl: cfg.doorUrl,
           }
         : undefined,
   });

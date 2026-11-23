@@ -17,7 +17,7 @@ door's x402 `batch-settlement` vouchers on Base, which it claims through the fac
 | `CHARTER_HOST_PAY_TO` | yes | | The Base address ticks are paid to. |
 | `CHARTER_CLAIM_KEY_FILE` | yes | | File holding the host's x402 claim key: one `0x` + 64 hex secp256k1 private key (`deploy/door/new-claim-key.mjs`). It authorizes claims and refunds on the door's channel and holds no funds. Channel records live in `<CHARTER_DATA_DIR>/x402-channels/`; the door's channel is refunded after 7 idle days. |
 | `CHARTER_HOST_PORT` | no | `7401` | Loopback port the host app listens on, behind the TLS proxy. |
-| `CHARTER_DOOR_URL` | no | `https://charter.mainnet.toonprotocol.dev` | The door this host registers with (`POST /v1/hosts`, at boot, every minute until accepted, and when its free home slots change) and answers: the host reads the door's payer address from `GET /v1/door` at boot and every 10 minutes. |
+| `CHARTER_DOOR_URL` | no | `https://charter.mainnet.toonprotocol.dev` | The door this host registers with (`POST /v1/hosts`, at boot, every minute until accepted, and when its free home slots change) and answers: the host reads the door's payer address from `GET /v1/door` at boot and every 10 minutes. Each home is handed it as `CHARTER_DOOR_URL`, to renew through. |
 | `X402_FACILITATOR_URL` | no | `https://facilitator.payai.network` | x402 facilitator that verifies and settles the door's vouchers. |
 | `CHARTER_OFFER_ID` | yes | | The offer's id (`<hostId>:<id>` is its `offerId` at the door). |
 | `CHARTER_PROXY` | no | none | SOCKS proxy for job egress (for example `socks5://172.17.0.1:9150`). Set means the offer says `hiddenEgress`. A loopback host is rewritten to `host.docker.internal` for the container. |
@@ -29,7 +29,6 @@ door's x402 `batch-settlement` vouchers on Base, which it claims through the fac
 | `CHARTER_CPU` | no | `1` | Advertised CPUs. The v1 container limit is fixed at 1 CPU. |
 | `CHARTER_MEMORY_MIB` | no | `1024` | Advertised memory. The v1 container limit is fixed at 1 GiB. |
 | `CHARTER_MAX_HOMES` | no | `0` | Homes live at once, counted inside `CHARTER_MAX_LEASES` (so at most that). `0` offers no homes; toon2 runs 1. The rows below are read only when it is above 0. |
-| `CHARTER_TENANT_CONNECTOR_URL` | with homes | | The `http(s)` connector a home is handed as `CHARTER_CONNECTOR_URL`, for paying from inside the box (on toon2 `https://connector.mainnet.toonprotocol.dev/ilp`). |
 | `CHARTER_HOME_PUBLIC_HOST` | no | | A public dotted IPv4 address (no scheme, no port) homes are reached on. A hostname is refused: docker binds this address, and `docker run -p` takes only an IP. Set, it turns the onion off unless `CHARTER_HOME_ONION` is on. Homes take ports 22000-22099. |
 | `CHARTER_HOME_ONION` | no | on without a public host, off with one | `1` publishes each home as an onion service even with a public host set. |
 | `CHARTER_ANON_HS_DIR` | with homes and the onion | | Directory Charter's own anon `%include`s; the host writes one `<homeId>.conf` onion service there per home (`~/.config/charter/anon/hs.d`, made by `deploy/host/install-home.sh`). |

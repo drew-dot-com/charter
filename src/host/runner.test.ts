@@ -437,8 +437,7 @@ async function homeSetup(free = 10 * GIB, mkfsCode: () => number = () => 0, rmGa
       },
       losetup,
     },
-    offerJson: '{"price":"7000"}',
-    connectorUrl: 'https://connector.mainnet.toonprotocol.dev',
+    doorUrl: 'https://door.example',
     freeBytes: async () => free,
     now: () => 1_700_000_000_000,
   };
@@ -476,8 +475,8 @@ test('create for a home puts the box on its network with its disk, its port and 
   has('-e', 'CHARTER_LEASE_ID=l1');
   has('-e', `CHARTER_HOME_ID=${HOME_ID}`);
   has('-e', 'CHARTER_PAID_THROUGH_FILE=/charter/paid-through');
-  has('-e', 'CHARTER_OFFER_JSON={"price":"7000"}');
-  has('-e', 'CHARTER_CONNECTOR_URL=https://connector.mainnet.toonprotocol.dev');
+  has('-e', 'CHARTER_DOOR_URL=https://door.example');
+  assert.ok(!a.some((x) => x.startsWith('CHARTER_OFFER_JSON=') || x.startsWith('CHARTER_CONNECTOR_URL=')), 'no TOON payer variables');
   has('-e', `SSH_KEYS=${KEYS.join('\n')}`);
   assert.equal(a[a.length - 1], 'charter-home');
   assert.ok(!a.some((x) => x.endsWith(':/out')));
