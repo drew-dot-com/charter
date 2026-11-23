@@ -2,7 +2,11 @@ import { randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { ToonClient, type NodeSelfDescription, type SendRequest, type SendOptions, type SendResult, type ToonClientConfig } from '@toon-protocol/client';
+import { DeadlinePassedError, MIN_SEND_MS, SendTimeoutError } from './errors.js';
 import type { Micro } from './types.js';
+
+// Moved to errors.ts; re-exported until the TOON payer is removed.
+export { DeadlinePassedError, MIN_SEND_MS, SendTimeoutError };
 
 export interface PacketRequest {
   method: 'GET' | 'POST';
@@ -132,30 +136,12 @@ export class KeyFileError extends Error {
 /** Per-packet timeout handed to ToonClient. */
 export const CLIENT_SEND_TIMEOUT_MS = 40_000;
 
-/** The least time a send with a deadline is given. Closer to its deadline than this, it is not sent. */
-export const MIN_SEND_MS = 5_000;
-
-/** A send skipped because its deadline was too close: nothing was sent and nothing paid. */
-export class DeadlinePassedError extends Error {
-  constructor() {
-    super('send deadline passed');
-    this.name = 'DeadlinePassedError';
-  }
-}
 
 /** How long a send starting at `now` may take: the client timeout, capped by the deadline. Undefined: too late to send. */
 export function sendTimeoutMs(deadline: number | undefined, now: number): number | undefined {
   if (deadline === undefined) return CLIENT_SEND_TIMEOUT_MS;
   const left = deadline - now;
   return left < MIN_SEND_MS ? undefined : Math.min(CLIENT_SEND_TIMEOUT_MS, left);
-}
-
-/** A send that got no answer in time. The packet may or may not have been paid. */
-export class SendTimeoutError extends Error {
-  constructor() {
-    super('send timed out');
-    this.name = 'SendTimeoutError';
-  }
 }
 
 /** How long past a send's deadline `serialized` waits before giving up on it. */
