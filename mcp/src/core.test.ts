@@ -7,7 +7,7 @@ import {
   MAX_PARTS,
   MAX_TEXT,
   PayError,
-  cheapestOffer,
+  firstFitOffer,
   extend,
   grantStatus,
   lease,
@@ -120,17 +120,30 @@ test('the policy signs only exact USDC on Base to the door payee, within the hou
   assert.deepEqual(pick(2, [...refused, ok]), [ok]);
 });
 
-test('the cheapest offer that runs the job is picked, and no fitting offer is an error before any payment', async () => {
+test('I2: the first offer in the door\'s order that runs the job is picked, whatever is cheaper later; no fitting offer is an error before any payment', async () => {
   const dear = { ...OFFER, offerId: 'host:dear', tickPrice: '9000' };
   const pythonOnly = { ...OFFER, offerId: 'host:py', tickPrice: '1000', images: ['charter-job-python'] };
-  const d = fake({ '/v1/offers': { status: 200, body: [dear, OFFER, pythonOnly] } });
-  assert.equal((await cheapestOffer(d, { python: { script: 'x' } })).offerId, 'host:py');
-  assert.equal((await cheapestOffer(d, { urls: ['https://example.com'] })).offerId, 'host:one');
-  await assert.rejects(cheapestOffer(d, { home: { sshKeys: ['k'], image: 'charter-hermes' } }), /no machine on sale runs charter-hermes/);
-  await assert.rejects(cheapestOffer(fake({}), { urls: ['https://example.com'] }), /answered 404/);
+  const d = { ...fake({ '/v1/offers': { status: 200, body: [dear, OFFER, pythonOnly] } }), maxHour: 10_000n };
+  assert.equal((await firstFitOffer(d, { python: { script: 'x' } })).offerId, 'host:dear');
+  assert.equal((await firstFitOffer(d, { urls: ['https://example.com'] })).offerId, 'host:dear');
+  await assert.rejects(firstFitOffer(d, { home: { sshKeys: ['k'], image: 'charter-hermes' } }), /no machine on sale runs charter-hermes/);
+  await assert.rejects(firstFitOffer({ ...fake({}), maxHour: 10_000n }, { urls: ['https://example.com'] }), /answered 404/);
 });
 
-test('rent pays one interval on the cheapest offer and books it against the day', async () => {
+test('I2: an offer over the hourly cap, funding waiting, or (for a home) with no free slot is skipped', async () => {
+  const dear = { ...OFFER, offerId: 'host:dear', tickPrice: '20000' };
+  const waiting = { ...OFFER, offerId: 'host:waiting', record: { funding: 'waiting' } };
+  const full = { ...OFFER, offerId: 'host:full', home: { slots: 1, free: 0 } };
+  const open = { ...OFFER, offerId: 'host:open', home: { slots: 1, free: 1 } };
+  const d = { ...fake({ '/v1/offers': { status: 200, body: [dear, waiting, full, open] } }), maxHour: 10_000n };
+  assert.equal((await firstFitOffer(d, { python: { script: 'x' } })).offerId, 'host:full');
+  assert.equal((await firstFitOffer(d, { home: { sshKeys: ['k'] } })).offerId, 'host:open');
+  // Only offers over the cap: the first is answered, so rent says what it costs.
+  const over = { ...fake({ '/v1/offers': { status: 200, body: [dear, waiting] } }), maxHour: 10_000n };
+  assert.equal((await firstFitOffer(over, { python: { script: 'x' } })).offerId, 'host:dear');
+});
+
+test('rent pays one interval on the first fitting offer and books it against the day', async () => {
   const d = fake({ '/v1/offers': offers }, rentOk);
   const r = await rent(d, { python: { script: 'print(1)' } });
   // The most the call may sign is the price read before it, not the hourly cap.

@@ -21,6 +21,8 @@ export interface DoorOffer {
   hiddenHost: boolean;
   expiresAt: number;
   home?: { diskGiB: number; retentionDays: number; slots: number; free?: number };
+  /** The host's record; `funding: 'waiting'` while the door cannot fund it. */
+  record?: { funding?: 'waiting' };
 }
 
 /** What runLease and continueLease need of an offer the door lists. */

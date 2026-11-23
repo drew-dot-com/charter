@@ -236,15 +236,22 @@ function jobOf(values: { urls?: string; python?: string; home?: string; image?: 
   return fetchJob(required(values.urls, '--urls').split(','));
 }
 
-/** The offer named, or the first one in the door's order (its ranking) that runs the job, whatever its price. */
-function pickOffer(offers: DoorOffer[], job: JobSpec, ref: string | undefined): DoorOffer {
+/**
+ * The offer named, or the first one in the door's order (its ranking) that runs the job and can be used: not over
+ * `cap`, not waiting for the door's funding, and for a home, with a free slot. When every offer that runs the job
+ * is over the cap, the first of those, so checkPrice says what it costs.
+ */
+function pickOffer(offers: DoorOffer[], job: JobSpec, ref: string | undefined, cap: Micro): DoorOffer {
   if (ref !== undefined) {
     const named = offers.find((o) => o.offerId === ref);
     if (!named) throw new Error(`the door lists no offer ${ref}`);
     if (!named.images.includes(job.image)) throw new Error(`offer ${ref} does not list the ${job.image} image`);
     return named;
   }
-  const first = offers.find((o) => o.images.includes(job.image));
+  const usable = offers.filter(
+    (o) => o.images.includes(job.image) && o.record?.funding !== 'waiting' && !(isHomeImage(job.image) && o.home?.free === 0),
+  );
+  const first = usable.find((o) => BigInt(o.tickPrice) <= cap) ?? usable[0];
   if (!first) throw new Error(`the door lists no offer that runs ${job.image}`);
   return first;
 }
@@ -270,7 +277,7 @@ async function rentCommand(rest: string[], env: Env, d: CliDeps): Promise<number
   const key = keyFrom(env);
   const c = await d.client({ doorUrl: doorUrl(values.door, env), key, maxTickMicro: cap });
 
-  const offer = pickOffer((await read(c, '/v1/offers')) as DoorOffer[], job, values.offer);
+  const offer = pickOffer((await read(c, '/v1/offers')) as DoorOffer[], job, values.offer, cap);
   checkPrice(offer, cap);
   const api = doorHostApi(c, offer.offerId);
   const opts: RunLeaseOpts = { maxIntervals, now: d.now, sleep: d.sleep, onEvent: leaseProgress(d, values.json) };

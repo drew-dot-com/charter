@@ -413,7 +413,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
   };
 
   const server = new McpServer({ name: 'charter', version: VERSION });
-  const cost = 'Costs one interval of the cheapest machine that runs it (hosts set their own price; 0.007 USDC an hour today; see charter_offers), paid from this server\'s own wallet in USDC on Base. Hosts are run by independent operators, not vetted by Charter.';
+  const cost = 'Costs one interval of the first machine in the door\'s ranking that runs it within this server\'s cap (hosts set their own price; 0.007 USDC an hour today; see charter_offers), paid from this server\'s own wallet in USDC on Base. Hosts are run by independent operators, not vetted by Charter.';
 
   server.registerTool(
     'charter_offers',

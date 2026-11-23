@@ -164,14 +164,24 @@ export type Job =
 const IMAGE_OF = (job: Job): string =>
   'python' in job ? 'charter-job-python' : 'urls' in job ? 'charter-job-fetch' : (job.home.image ?? 'charter-home');
 
-/** The cheapest live offer that runs the job, as the door itself would pick. */
-export async function cheapestOffer(d: Pick<Deps, 'get'>, job: Job): Promise<Offer> {
+/**
+ * The first offer in the door's order (GET /v1/offers lists them as the door ranks them: record, then price) that
+ * runs the job and this server can use: not over the hourly cap, not waiting for the door's funding, and for a
+ * home, with a free slot. When every offer that runs the job is over the cap, the first of those, so rent can say
+ * what it costs.
+ */
+export async function firstFitOffer(d: Pick<Deps, 'get' | 'maxHour'>, job: Job): Promise<Offer> {
   const r = await d.get('/v1/offers');
   if (r.status !== 200 || !Array.isArray(r.body)) throw new Error(`GET /v1/offers answered ${r.status}: cannot read the price, nothing paid`);
   const image = IMAGE_OF(job);
-  const fits = (r.body as Offer[]).filter((o) => Array.isArray(o?.images) && o.images.includes(image) && /^\d{1,12}$/.test(String(o.tickPrice)) && BigInt(o.tickPrice) > 0n);
-  if (fits.length === 0) throw new Error(`no machine on sale runs ${image} right now (GET /v1/offers lists ${r.body.length}). Try again later; nothing was paid.`);
-  return fits.reduce((a, b) => (BigInt(b.tickPrice) < BigInt(a.tickPrice) ? b : a));
+  const usable = (r.body as Offer[]).filter(
+    (o) =>
+      Array.isArray(o?.images) && o.images.includes(image) && /^\d{1,12}$/.test(String(o.tickPrice)) && BigInt(o.tickPrice) > 0n &&
+      (o.record as { funding?: unknown } | undefined)?.funding !== 'waiting' &&
+      !('home' in job && (o.home as { free?: unknown } | undefined)?.free === 0),
+  );
+  if (usable.length === 0) throw new Error(`no machine on sale runs ${image} right now (GET /v1/offers lists ${r.body.length}). Try again later; nothing was paid.`);
+  return usable.find((o) => BigInt(o.tickPrice) <= d.maxHour) ?? usable[0]!;
 }
 
 function needWallet(d: Deps): NonNullable<Deps['pay']> {
@@ -204,7 +214,7 @@ export interface Rented {
 /** Opens a lease and pays its first interval: one paid call. */
 export async function rent(d: Deps, job: Job): Promise<Rented> {
   const pay = needWallet(d);
-  const offer = await cheapestOffer(d, job);
+  const offer = await firstFitOffer(d, job);
   const cost = price(offer.tickPrice);
   if (cost > d.maxHour) {
     throw new CapError(`one interval costs ${microToUsdc(cost)} USDC, over this server's cap of ${microToUsdc(d.maxHour)} (CHARTER_MAX_USDC_PER_HOUR). Nothing was paid.`);

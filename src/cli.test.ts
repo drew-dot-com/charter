@@ -151,6 +151,37 @@ test('rent with no --offer opens on the door\'s first offer that runs the job, e
   assert.equal(door.built[0]!.doorUrl, 'https://door.example');
 });
 
+test('I2: rent takes the first offer in the door\'s order it can use: never one over CHARTER_MAX_TICK, funding waiting, or (for a home) with no free slot', async () => {
+  const keys = join(mkdtempSync(join(tmpdir(), 'charter-cli-')), 'keys.pub');
+  writeFileSync(keys, 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl a@b\n');
+  const offers = [
+    offer(`${OTHER}:dear`, { tickPrice: '20000' }),
+    offer(`${OTHER}:waiting`, { record: { funding: 'waiting' } }),
+    offer(`${OTHER}:full`, { home: { diskGiB: 2, retentionDays: 7, slots: 1, free: 0 } }),
+    offer(`${HOST}:o1`, { home: { diskGiB: 2, retentionDays: 7, slots: 1, free: 1 } }),
+  ];
+  const opened = async (args: string[]): Promise<string[]> => {
+    const clock = { t: 1_000_000 };
+    const door = fakeDoor({ clock, offers });
+    const r = await cli(['rent', ...args, '--max-intervals', '1', '--json'], { CHARTER_KEY_FILE: keyFile(), CHARTER_MAX_TICK: '10000' }, door, clock);
+    assert.equal(r.code, 0, r.err);
+    return door.calls.filter((c) => c.startsWith('POST /v1/leases'));
+  };
+  const fetchOpen = await opened(['--urls', 'https://e.com']);
+  assert.equal(fetchOpen.length, 1);
+  assert.match(fetchOpen[0]!, new RegExp(`"offerId":"${OTHER}:full"`), 'a full home slot does not matter to a fetch job');
+  const homeOpen = await opened(['--home', keys]);
+  assert.equal(homeOpen.length, 1);
+  assert.match(homeOpen[0]!, new RegExp(`"offerId":"${HOST}:o1"`));
+  // Every usable offer over the cap: refused by price, nothing opened.
+  const clock = { t: 1_000_000 };
+  const door = fakeDoor({ clock, offers: [offers[0]!, offers[1]!] });
+  const r = await cli(['rent', '--urls', 'https://e.com', '--max-intervals', '1'], { CHARTER_KEY_FILE: keyFile(), CHARTER_MAX_TICK: '10000' }, door, clock);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /above CHARTER_MAX_TICK/);
+  assert.ok(!door.calls.some((c) => c.startsWith('POST') || c.startsWith('PAY')));
+});
+
 test('rent refuses an offer dearer than CHARTER_MAX_TICK before opening anything', async () => {
   const clock = { t: 1_000_000 };
   const door = fakeDoor({ clock });
