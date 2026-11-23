@@ -1,10 +1,10 @@
-# systemd --user unit for charter-host, in the host's VM (toon2).
+# systemd --user unit for charter-host, as the host user (install-host.sh makes `charter`, with linger on).
 # Install: cp to ~/.config/systemd/user/, then
-#   loginctl enable-linger "$USER"
 #   systemctl --user daemon-reload && systemctl --user enable --now charter-host
-# The toon node must be up (`toon up`) and the three apps added (docs/demo.md).
+# Caddy (install-host.sh with HOST_NAME) must serve CHARTER_HOST_URL in front of CHARTER_HOST_PORT.
+# At start the host registers itself with CHARTER_DOOR_URL (README.md, "Run a host").
 [Unit]
-Description=Charter host: compute leases paid over TOON
+Description=Charter host: compute leases paid by the door over x402 on Base
 # A user unit cannot order against docker.service (a system unit): this After= is ignored.
 # The ExecStartPre below waits for dockerd instead, and reconcile waits again before judging leases.
 After=network-online.target docker.service

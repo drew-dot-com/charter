@@ -2,11 +2,13 @@
 
 An MCP server that lets an agent rent a machine on [Charter](https://charter.mainnet.toonprotocol.dev/agents) and pay for it itself. No account, no API key, no signup: the agent has a wallet, its operator funds it, and each paid tool call is one x402 payment in USDC on Base.
 
-What it rents, by the hour, at 0.007 USDC an hour on the live host:
+What it rents, by the hour, at the price each host sets (0.007 USDC an hour today). Hosts are run by independent operators, not vetted by Charter; each offer carries the host's record, and an operator can see what runs on its machine.
+
+What it rents:
 
 - **A Python sandbox.** Your script (up to 8 KiB, NumPy installed, no network) runs once; stdout, stderr and the exit code come back.
-- **A page fetcher.** Up to five pages loaded in a headless browser through a hidden exit on the Anyone network; the text of each comes back.
-- **A Linux home.** A Debian box of your own with 1 CPU, 1 GiB of memory, a 10 GiB disk kept 7 days after the lease ends, and SSH in.
+- **A page fetcher.** Up to five pages loaded in a headless browser (through a hidden exit on the Anyone network on an offer with `hiddenEgress`); the text of each comes back.
+- **A Linux home.** A Debian box of your own with 1 CPU, 1 GiB of memory, a disk (`home.diskGiB` in the offer) kept 7 days after the lease ends, and SSH in.
 
 ## Install
 
@@ -97,16 +99,17 @@ Other settings: `CHARTER_MCP_KEY_FILE`, `CHARTER_MCP_SPEND_FILE`, `CHARTER_MCP_N
 ## Read this before renting a home
 
 - SSH is plain: `ssh -p <port> tenant@<host>`, with the host and port from the lease's `access.ssh` (the port is fixed per home, 22000 to 22099; the same keys reopen the same home). A host may also publish `access.onion`, which needs an Anyone client.
-- All of the box's outbound traffic leaves through the host's Anyone client: slow, and some services refuse shared exits.
-- Log in as `root` (apt works) or `tenant`. 1 GiB of memory. Homes are limited (`home.slots` in the offer); an open answers `busy` when they are full.
-- The operator of the host can read the disk. Secrets go in over `scp`, never through Charter.
+- On a host that fences homes to Anyone (the reference setup), all of the box's outbound traffic leaves through the host's Anyone client: slow, and some services refuse shared exits.
+- Log in as `tenant`, and as `root` with apt on a host whose offer says `home.root`. 1 GiB of memory. Homes are limited (`home.slots` in the offer); an open answers `busy` when they are full.
+- The host's operator, an independent party, can read the disk. Secrets go in over `scp`, never through Charter.
+- A home lives on the host that holds its disk. If that host is gone the door answers `home_host_gone`; once the door has dropped the host, naming another offer opens a fresh, empty home.
 - A home that is not paid closes; its disk and port are kept 7 days and the same keys open it again.
 
 The full procedure is at [charter.mainnet.toonprotocol.dev/agents](https://charter.mainnet.toonprotocol.dev/agents).
 
 ## Status
 
-One host, run by the project, live on Base mainnet since 2026-10-17. No uptime figure. Charter runs on [TOON](https://toon.ar.io/): ILP routes each packet, x402 settles it. MIT.
+Live on Base mainnet since 2026-10-17. Anyone can run a host; the door lists a host once it passes a probe and ranks hosts by record, then price. No uptime figure. Payments are x402 in USDC on Base. MIT.
 
 ## Develop
 

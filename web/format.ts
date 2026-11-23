@@ -206,8 +206,48 @@ export interface PublicOffer {
   leases?: number;
   /** Epoch ms the newest of those opened. */
   lastLeaseAt?: number;
-  /** Set when the host runs homes. */
-  home?: { diskGiB: number; retentionDays: number; slots: number };
+  /** Set when the host runs homes. `tested`: a paid home on this host has reached running. */
+  home?: { diskGiB: number; retentionDays: number; slots: number; tested?: boolean };
+  /** Who runs the host: always an independent operator, when the door said. */
+  operator?: 'independent';
+  /** The host's track record at this door, when the door said. */
+  record?: HostRecord;
+}
+
+/** A host's track record as the door publishes it on each offer. */
+export interface HostRecord {
+  probesPassed: number;
+  leasesFinished: number;
+  /** finished / (finished + host failures), 0 to 1. */
+  successRate: number;
+  /** No real lease has ended on this host yet. */
+  new: boolean;
+  lastProbeFailedAt?: number;
+  /** Proven, but the door has no capital free for its channel yet: not picked. */
+  funding?: 'waiting';
+}
+
+function parseRecord(v: unknown): HostRecord | undefined {
+  const r = v as Partial<HostRecord> | null | undefined;
+  const count = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+  if (!r || !count(r.probesPassed) || !count(r.leasesFinished) || typeof r.new !== 'boolean') return undefined;
+  if (typeof r.successRate !== 'number' || !(r.successRate >= 0 && r.successRate <= 1)) return undefined;
+  return {
+    probesPassed: r.probesPassed,
+    leasesFinished: r.leasesFinished,
+    successRate: r.successRate,
+    new: r.new,
+    ...(count(r.lastProbeFailedAt) ? { lastProbeFailedAt: r.lastProbeFailedAt } : {}),
+    ...(r.funding === 'waiting' ? { funding: 'waiting' as const } : {}),
+  };
+}
+
+const plural = (n: number, one: string): string => `${n} ${one}${n === 1 ? '' : 's'}`;
+
+/** "12 leases finished, 92% success, 4 probes passed", or for a host with no finished lease, "New host: ...". */
+export function recordLabel(r: HostRecord): string {
+  if (r.new) return `New host: passed ${plural(r.probesPassed, 'probe')}, no finished leases yet`;
+  return `${plural(r.leasesFinished, 'lease')} finished, ${Math.round(r.successRate * 100)}% success, ${plural(r.probesPassed, 'probe')} passed`;
 }
 
 export function parseOffer(o: unknown): PublicOffer | undefined {
@@ -231,13 +271,18 @@ export function parseOffer(o: unknown): PublicOffer | undefined {
     const lastLeaseAt = num(x.lastLeaseAt);
     const h = x.home as Partial<NonNullable<PublicOffer['home']>> | undefined;
     const pos = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
-    const home = h && pos(h.diskGiB) && pos(h.retentionDays) && pos(h.slots) ? { diskGiB: h.diskGiB, retentionDays: h.retentionDays, slots: h.slots } : undefined;
+    const home = h && pos(h.diskGiB) && pos(h.retentionDays) && pos(h.slots)
+      ? { diskGiB: h.diskGiB, retentionDays: h.retentionDays, slots: h.slots, ...(typeof h.tested === 'boolean' ? { tested: h.tested } : {}) }
+      : undefined;
+    const record = parseRecord((x as { record?: unknown }).record);
     return {
       offerId, cpu, memoryMiB, intervalSeconds, tickPrice, hiddenHost, hiddenEgress: x.hiddenEgress === true, images,
       ...(expiresAt !== undefined ? { expiresAt } : {}),
       ...(leases !== undefined ? { leases } : {}),
       ...(lastLeaseAt !== undefined ? { lastLeaseAt } : {}),
       ...(home ? { home } : {}),
+      ...(x.operator === 'independent' ? { operator: 'independent' as const } : {}),
+      ...(record ? { record } : {}),
     };
   }
   return undefined;

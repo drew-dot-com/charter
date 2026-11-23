@@ -194,3 +194,23 @@ test('charter-hermes alone also needs CHARTER_MAX_HOMES', () => {
 test('more home slots than lease slots is an error', () => {
   assert.throws(() => loadConfig({ ...HOME_ENV, CHARTER_MAX_LEASES: '1', CHARTER_MAX_HOMES: '2' }), /CHARTER_MAX_HOMES/);
 });
+
+test('deploy/host/env.example loads as it stands once its placeholders are filled, and names only variables the host reads', async () => {
+  const { readFileSync } = await import('node:fs');
+  const text = readFileSync(new URL('../../deploy/host/env.example', import.meta.url), 'utf8')
+    .replaceAll('HOST_NAME', 'host.example.org')
+    .replaceAll('USER', 'charter');
+  const env: Record<string, string> = {};
+  for (const line of text.split('\n')) {
+    const m = /^([A-Z0-9_]+)=(.*)$/.exec(line);
+    if (m) env[m[1]!] = m[2]!;
+  }
+  const c = loadConfig(env);
+  assert.equal(c.hostUrl, 'https://host.example.org');
+  assert.ok(c.allowImages.includes('charter-job-python'), 'the probe is a python job');
+  assert.ok(c.offer.tickPrice <= 10_000n, 'priced within the probe cap');
+  const named = new Set([...text.matchAll(/^#? ?([A-Z][A-Z0-9_]+)=/gm)].map((m) => m[1]!));
+  const src = readFileSync(new URL('./config.ts', import.meta.url), 'utf8');
+  for (const n of named) assert.ok(src.includes(`'${n}'`) || src.includes(`.${n}`), `${n} is read by loadConfig`);
+  for (const gone of ['CHARTER_RELAY_URL', 'TOON_PASSPHRASE_FILE', 'CHARTER_ILP_BASE', 'CHARTER_SEAL_KEY', 'CHARTER_HOST_PUBKEY']) assert.ok(!named.has(gone), gone);
+});

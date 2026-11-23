@@ -1,5 +1,5 @@
 import type { Lease } from '../src/types.js';
-import { ago, clock, decodeOutput, duration, formatUsdc, landingLink, offerFreshness, parseOffer, perHourNote, shortHex, sizeLabel, type JobOutput, type PublicOffer, type PythonOutput } from './format.js';
+import { ago, clock, decodeOutput, duration, formatUsdc, landingLink, offerFreshness, parseOffer, perHourNote, recordLabel, shortHex, sizeLabel, type JobOutput, type PublicOffer, type PythonOutput } from './format.js';
 import { call, makePost, type Answer, type DoorInfo } from './pay.js';
 import { nextTickAt, pollMs } from './schedule.js';
 import { applyStatus, clearHalt, newTickState, runTick, shouldTick, type TickState } from './ticker.js';
@@ -273,7 +273,8 @@ async function showHome(token: number): Promise<void> {
   const recent = el('div');
   mount(
     el('h1', undefined, 'Machines for rent'),
-    el('p', 'lede', 'A container on a host\'s machine, paid in USDC on Base by the hour while it runs, 0.007 USDC an hour on the live host. Run your own Python script on it, or have it fetch pages and send back a screenshot and the text of each.'),
+    el('p', 'lede', 'A container on a host\'s machine, paid in USDC on Base by the hour while it runs, at the price each host sets. Run your own Python script on it, or have it fetch pages and send back a screenshot and the text of each.'),
+    el('p', 'note', 'Hosts are run by independent operators. Charter does not vet them, and an operator can see what runs on its machine. Each host shows its record at this door.'),
     list,
     el('p', 'note', 'No account. Your wallet signs once to put a deposit of at least 0.10 USDC into an x402 channel on Base. Each interval after that is a voucher this page signs silently, and what you do not use comes back about two hours after the lease goes quiet.'),
     dev ? el('p', 'note', 'Local test mode: payments are skipped.') : null,
@@ -302,7 +303,7 @@ async function loadOffers(list: HTMLUListElement, token: number): Promise<void> 
   if (token !== route) return;
   if (offers.length === 0) {
     list.replaceChildren(
-      el('li', 'empty', 'No machines are listed right now. A host republishes its offer every 20 minutes, and this page looks again every 30 seconds.'),
+      el('li', 'empty', 'No machines are listed right now. A host is listed once it passes the door\'s probe, and this page looks again every 30 seconds.'),
     );
     homeTimer = window.setTimeout(() => void loadOffers(list, token), EMPTY_RETRY_MS);
     return;
@@ -318,6 +319,9 @@ function offerRow(o: PublicOffer, now: number): HTMLElement {
   if (o.hiddenHost) chips.append(chip('hidden host'));
   if (o.hiddenEgress) chips.append(chip('hidden egress'));
   for (const i of o.images) if (JOB_NAME[i]) chips.append(chip(JOB_NAME[i]!));
+  if (o.home && o.home.tested === false) chips.append(chip('home untested'));
+  if (o.record?.new) chips.append(chip('new host'));
+  if (o.record?.funding === 'waiting') chips.append(chip('waiting for funding'));
   if (o.images.length === 0) chips.append(chip(JOB_NAME[FETCH_IMAGE]!));
 
   const head = el('div', 'card-head', el('span', 'size', sizeLabel(o.cpu, o.memoryMiB)), chips);
@@ -335,7 +339,8 @@ function offerRow(o: PublicOffer, now: number): HTMLElement {
 
   const meta = el('div', 'card-meta');
   const [hostKey] = o.offerId.split(':');
-  if (hostKey) meta.append(el('span', undefined, 'Host ', el('span', 'mono', shortHex(hostKey, 8, 4))));
+  if (hostKey) meta.append(el('span', undefined, `${o.operator === 'independent' ? 'Independent host' : 'Host'} `, el('span', 'mono', shortHex(hostKey, 8, 4))));
+  if (o.record) meta.append(el('span', undefined, recordLabel(o.record)));
   if (o.leases !== undefined) {
     meta.append(el('span', undefined, o.leases === 0 ? 'No leases served through this door yet' : `${o.leases} ${o.leases === 1 ? 'lease' : 'leases'} served${o.lastLeaseAt ? `, last ${ago(o.lastLeaseAt, now)}` : ''}`));
   }
@@ -433,7 +438,7 @@ function rentForm(o: PublicOffer, close: () => void): HTMLElement {
   label.htmlFor = area.id;
   const homeNotes = el('div', undefined,
     el('p', 'note', 'The same keys open the same disk later. Anyone with your public keys can open your home and hold it, though not enter it.'),
-    el('p', 'note', 'The operator can read your disk. Keep secrets elsewhere or encrypt them.'));
+    el('p', 'note', 'The host\'s operator can read your disk. Keep secrets elsewhere or encrypt them.'));
   const show = (m: JobMode) => {
     drafts[mode] = area.value;
     mode = m;

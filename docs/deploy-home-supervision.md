@@ -1,5 +1,10 @@
 # Rolling the supervised home images onto Edison's home
 
+TOON era (2026-11-06), kept as history. Since the open-hosts change the default boot runs no payer service:
+it makes `~/.charter/payer.key` and runs `charter renew` to the door from `CHARTER_KEY_FILE`, one `exact`
+payment a tick (`jobs/hermes/boot-default.sh`). The verify lines in step 5 that name the payer describe the
+11-06 image.
+
 Branch `fix/home-image-supervision`. Built on toon2 under new tags only: `charter-home:supervise-1106` and
 `charter-hermes:supervise-1106` (BASE = the new home tag). `latest` is untouched until step 2.
 

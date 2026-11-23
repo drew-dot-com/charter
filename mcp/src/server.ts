@@ -411,14 +411,14 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
   };
 
   const server = new McpServer({ name: 'charter', version: VERSION });
-  const cost = 'Costs one interval of the cheapest machine: 0.007 USDC on the live host (see charter_offers), paid from this server\'s own wallet in USDC on Base.';
+  const cost = 'Costs one interval of the cheapest machine that runs it (hosts set their own price; 0.007 USDC an hour today; see charter_offers), paid from this server\'s own wallet in USDC on Base. Hosts are run by independent operators, not vetted by Charter.';
 
   server.registerTool(
     'charter_offers',
     {
       title: 'Charter machines on sale',
       description:
-        'Free. The machines for rent on Charter right now: price per interval in USDC (0.007 an hour on the live host), CPU, memory, the job images each runs, and how many home slots it has. Charter rents a sandboxed machine by the hour with no account: a Python job, a page-fetch job, or a Linux home with SSH. Call this first to see the price before any paid tool.',
+        'Free. The machines for rent on Charter right now: price per interval in USDC (hosts set their own; 0.007 an hour today), CPU, memory, the job images each runs, how many home slots it has and whether its home is tested, and the host\'s record (probes passed, leases finished, success rate). Hosts are run by independent operators, not vetted by Charter, and an operator can see what runs on its machine. Charter rents a sandboxed machine by the hour with no account: a Python job, a page-fetch job, or a Linux home with SSH. Call this first to see the price before any paid tool.',
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -454,8 +454,8 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
   server.registerTool(
     'charter_fetch_pages',
     {
-      title: 'Fetch pages in a headless browser through a hidden exit',
-      description: `PAID. ${cost} Loads up to five http or https pages in a headless browser on a rented machine, through an exit on the Anyone network so the site sees neither you nor the host, and returns each page's text. Useful when a page needs JavaScript or your own address is refused. Slow (a page can take a minute) and some sites refuse shared exits. If it is still running when the wait ends, charter_lease collects the output for free.`,
+      title: 'Fetch pages in a headless browser',
+      description: `PAID. ${cost} Loads up to five http or https pages in a headless browser on a rented machine and returns each page's text. On an offer with hiddenEgress the pages load through an exit on the Anyone network, so the site sees neither you nor the host. Useful when a page needs JavaScript or your own address is refused. Slow (a page can take a minute) and some sites refuse shared exits. If it is still running when the wait ends, charter_lease collects the output for free.`,
       inputSchema: {
         urls: z.array(z.string().url().regex(/^https?:\/\//i)).min(1).max(5).describe('one to five http or https URLs'),
         waitSeconds: z.number().int().min(10).max(240).optional().describe('how long to wait for the job before handing back the leaseId (default 40, under most clients\' 60 s tool timeout; pages often need longer, so expect to collect with charter_lease)'),
@@ -469,7 +469,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
     'charter_rent_home',
     {
       title: 'Rent a Linux home with SSH',
-      description: `PAID. ${cost} Opens a Linux box of your own (Debian, 1 CPU, 1 GiB memory, a 10 GiB disk kept 7 days after the lease ends, logins "root" (apt works) and "tenant") and pays its first interval. Pass 1 to 8 SSH PUBLIC keys; the key set is the home's identity, so the same keys open the same disk again. Read this before renting: SSH is plain: ssh -p <port> tenant@<host> to the public address the lease shows, no special client needed (some hosts publish an onion address on the Anyone network instead, which needs an Anyone client); outbound traffic may be slow; homes are limited (home.slots in the offer) and an open answers busy when they are full. After renting, call charter_lease about once a minute until it shows the SSH address, and charter_extend before the paid time runs out.`,
+      description: `PAID. ${cost} Opens a Linux box of your own (Debian, 1 CPU, 1 GiB memory, the offer's home.diskGiB of disk kept 7 days after the lease ends, login "tenant", and "root" with apt on a host whose offer says home.root) and pays its first interval. The host's operator can read its disk. Pass 1 to 8 SSH PUBLIC keys; the key set is the home's identity, so the same keys open the same disk again. Read this before renting: SSH is plain: ssh -p <port> tenant@<host> to the public address the lease shows, no special client needed (some hosts publish an onion address on the Anyone network instead, which needs an Anyone client); outbound traffic may be slow; homes are limited (home.slots in the offer) and an open answers busy when they are full. After renting, call charter_lease about once a minute until it shows the SSH address, and charter_extend before the paid time runs out.`,
       inputSchema: {
         sshKeys: z.array(z.string().max(1023)).min(1).max(8).describe('SSH public key lines (ssh-ed25519, ecdsa-sha2-nistp256/384/521 or ssh-rsa). Public keys only: never a private key.'),
         image: z.enum(['charter-home', 'charter-hermes']).optional().describe('charter-home (default) is a plain box; charter-hermes has Hermes Agent preinstalled'),
@@ -496,7 +496,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
     {
       title: 'Pay more time on a lease',
       description:
-        'PAID. Pays the next intervals of a running lease, one payment each (0.007 USDC an hour on the live host), from this server\'s wallet. Use it to keep a home running: pay before the paid time runs out, ideally half an hour early. Stops at the first refused payment and reports what was paid. A lease that has closed cannot be extended; a home opens again with the same keys.',
+        'PAID. Pays the next intervals of a running lease, one payment each at the lease\'s open-time price (0.007 USDC an hour today), from this server\'s wallet. Use it to keep a home running: pay before the paid time runs out, ideally half an hour early. Stops at the first refused payment and reports what was paid. A lease that has closed cannot be extended; a home opens again with the same keys.',
       inputSchema: {
         leaseId: z.string().regex(/^[0-9a-f]{32}$/).describe('the leaseId to pay for'),
         hours: z.number().int().min(1).max(24).describe('how many intervals to pay now, 1 to 24. The door refunds nothing, so pay only what you will use.'),
@@ -511,7 +511,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
     {
       title: 'Pitch the Charter grant fund',
       description:
-        'Free. Pitches the Charter grant fund for a home paid by the fund: no payment is ever made and this server\'s wallet is not used. Ask your operator before you apply. A model judges the pitch, and every decision and its reason is public at /grants on the door. A grant is 30 days of a home paid by the fund. Homes are reached by plain SSH (ssh -p <port> tenant@<host>); some hosts publish an onion address instead, which needs an Anyone client. Keep the grantToken the answer returns: it is the only way to read your lease id (charter_grant_status). The operator can read the home\'s disk, so keep secrets off it. Pass 1 to 8 SSH PUBLIC keys; the key set is the home\'s identity.',
+        'Free. Pitches the Charter grant fund for a home paid by the fund: no payment is ever made and this server\'s wallet is not used. Ask your operator before you apply. A model judges the pitch, and every decision and its reason is public at /grants on the door. A grant is 30 days of a home paid by the fund. Homes are reached by plain SSH (ssh -p <port> tenant@<host>); some hosts publish an onion address instead, which needs an Anyone client. Keep the grantToken the answer returns: it is the only way to read your lease id (charter_grant_status). The host is run by an independent operator; the operator can read the home\'s disk, so keep secrets off it. Pass 1 to 8 SSH PUBLIC keys; the key set is the home\'s identity.',
       inputSchema: {
         name: z.string().min(1).max(80).describe('who is asking, at most 80 characters'),
         pitch: z.string().min(1).max(2000).describe('what you will run and why it deserves a home, at most 2000 characters. It is judged by a model and the decision is public.'),

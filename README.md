@@ -2,43 +2,63 @@
 
 [![CI](https://github.com/drew-dot-com/charter/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/drew-dot-com/charter/actions/workflows/ci.yml)
 
-Compute leases on the TOON payment network. A host posts an offer for a machine, a renter pays per
-interval, and a container runs the renter's job for as long as the payments keep arriving. There is
-no account on either side, and the host can be a home machine with no domain and no open port (a
-hidden host, reached over Anyone). A home is reached with plain SSH at the host's public address.
+Compute leases paid over x402 in USDC on Base. Anyone can run a host: it registers its HTTPS address
+with the door, the door probes it, and once it passes it is listed. A renter pays the door per interval,
+the door pays the host per interval, and a container runs the renter's job for as long as the payments
+keep arriving. There is no account on either side. A home is reached with plain SSH at the host's public
+address.
+
+**Hosts are run by independent operators.** Charter does not vet them. An operator can see what runs on
+its machine and read a home's disk. Each offer carries the host's record at the door, so a renter can see
+what it has done.
 
 **Grants.** A fund pays 30 days of a home to agents that pitch a use for one. Pitching is free and needs
 only an SSH public key: `POST https://charter.mainnet.toonprotocol.dev/v1/grants`, or `npx -y charter-mcp@latest pitch`.
 The balance, the grants left and every decision are public at https://charter.mainnet.toonprotocol.dev/grants.
+A grant opens only on a host with a record (at least 5 finished paid leases and no failed probe in 7 days).
 
-**Status: v1, first-party.** Every lease so far has Drew Pierson on both sides: he runs the one host,
-the door and the edge node, and both renters. There are no outside users yet. Four job images:
+**Status: v1.** Every lease so far has Drew Pierson on both sides: he runs the door, the first host and
+both renters. There are no outside hosts or renters yet. Four job images:
 `charter-job-python` runs the renter's own Python script (up to 8 KiB, NumPy included) with no
 network at all and returns its stdout, stderr and exit code; `charter-job-fetch` fetches up to five
 pages in a headless browser and returns a screenshot and the text of each; `charter-home` is a box
-the renter lives in: a 10 GiB disk kept between leases, plain SSH in at the host's public
-address (`ssh -p <port> tenant@<host>`), and network out only through the Anyone network, with `charter-x402` in it to pay the rent
-from a Base wallet by plain x402 (`jobs/home/x402-rent.mjs`); `charter-hermes` is the same home with
-Hermes Agent and the `charter` CLI preinstalled and a default boot that runs them (the boot pays
-the box's own rent). Why the python job is safe enough for a
-home host: `docs/superpowers/specs/2026-10-17-python-job-design.md`. The home's design:
+the renter lives in: a disk kept between leases, plain SSH in at the host's public
+address (`ssh -p <port> tenant@<host>`), network out only through the host's Anyone client on a host set
+up as `deploy/host/` does, and `charter-x402` in it to pay the rent from a Base wallet by plain x402
+(`jobs/home/x402-rent.mjs`); `charter-hermes` is the same home with Hermes Agent and the `charter` CLI
+preinstalled and a default boot that runs them (the boot pays the box's own rent). Why the python job is
+safe enough for a home host: `docs/superpowers/specs/2026-10-17-python-job-design.md`. The home's design:
 `docs/superpowers/specs/2026-11-04-home-image-design.md`.
 
 ## How it works
 
-- **Offer.** The host publishes a signed Nostr event, kind 31390, tag `["L","charter"]`: size,
-  prices, the host's ILP address, the key to seal packets to, and badges. It lives 45 minutes and is
-  republished every 20.
-- **Lease.** The host's `toon` node serves three priced apps: `charter-open` (start a lease),
-  `charter-tick` (pay one interval, an hour on the live host) and `charter-status` (read state and output). Each
-  answers only its own action. The container is created at open and started only once the first
-  interval is paid. A lease whose renter stops paying is closed at the end of the paid time.
-- **Paying.** Packets are routed by ILP and settled by x402 channels. A renter with a `toon` node
-  pays directly. A renter with only a browser wallet pays the door over x402 (USDC on Base), and the
-  door pays the host over TOON. The door is a paying hop that never holds more than one interval:
-  it pays the host each interval only after the renter's payment for it has verified.
+```
+renter --x402 (exact | batch)--> door --x402 batch voucher--> host (charter-host + Caddy)
+```
 
-Prices on the live host: open 0.001 USDC, one hour 0.007 USDC (about 5 USDC for 30 days), a status read 0.0001 USDC. Until 2026-11-04 the interval was 30 seconds at 0.005.
+- **Offer.** A host serves `GET /v1/offer` (free) at its public HTTPS address: size, interval, tick price,
+  images, home slots and its `payTo` on Base. Its URL is its identity: `hostId` is the sha256 of the
+  normalized URL, and an offer id is `<hostId>:<id>`.
+- **Joining.** At boot the host sends its URL to the door (`POST /v1/hosts`). The door reads the offer and
+  queues a probe: a paid `charter-job-python` lease that hashes a nonce the door picked. A host is listed
+  once a probe passes. Probes run at most once a day per host, and the door starts only a few first probes
+  a day. A probe pays at most 0.01 USDC for its tick; a host priced above that fails it.
+- **Record and ranking.** The door keeps each host's record: probes passed, leases finished, success rate.
+  Hosts under 80% success are skipped while a better one fits; then hosts with a record go before new ones;
+  then the lower price. For a home, a host whose homes have run a paid lease goes before an untested one.
+  Two failed leases in a row, or a failed probe, hide a host until a probe passes; three failed probes in a
+  row drop it, and it must register again.
+- **Paying.** The renter pays the door over x402 on Base (`exact`, or `batch-settlement` from a channel).
+  The door pays the host from its own key over one x402 `batch-settlement` channel per host: one voucher
+  per paid tick, at the tick price the lease opened with, and only after the renter's payment verified.
+  Opens and status reads between door and host are free. The host claims its vouchers through the
+  facilitator (PayAI by default). The door adds `CHARTER_DOOR_FEE` per tick (0 today).
+- **Lease.** The container is created at open and started only once the first interval is paid. A lease
+  whose renter stops paying is closed at the end of the paid time. A home stays on the host that holds its
+  disk.
+
+Prices: each host sets its own. The first host charges 0.007 USDC an hour (about 5 USDC for 30 days);
+opens and status reads are free. Until 2026-11-04 the interval was 30 seconds at 0.005.
 
 ## Rent
 
@@ -48,31 +68,36 @@ channel. Each interval after that is signed by the page, silently. What you do n
 when the lease ends.
 
 From an agent over HTTP, with an x402 client and USDC on Base: https://charter.mainnet.toonprotocol.dev/agents
+walks through every call and every price; https://charter.mainnet.toonprotocol.dev/llms.txt is the
+summary a model reads first. `scripts/bazaar-tick.mjs` is a worked example: one python lease, one tick
+paid with `@x402/fetch` from a key file, so a facilitator with a catalog lists the route (`--dry-run`
+pays nothing).
 
 From any MCP client (Claude Code, Claude Desktop, Cursor and others): `claude mcp add charter -- npx -y charter-mcp`. The server keeps its own wallet in a key file, pays one x402 payment a tool call within an hourly and a daily cap, and needs no account. Source and the full tool list: [mcp/](mcp/).
-walks through every call and every price; https://charter.mainnet.toonprotocol.dev/llms.txt is the
-summary a model reads first. Only the tick is paid over x402; the door pays the host for the open and
-the reads. `scripts/bazaar-tick.mjs` is a worked example: one python lease, one tick paid with
-`@x402/fetch` from a key file, so a facilitator with a catalog lists the route (`--dry-run` pays nothing).
 
-From a `toon` node:
+From a shell, with the `charter` CLI (`npm ci && npm run build && npm install -g --prefix ~/.local .`):
 
 ```sh
-charter offers --relay wss://relay.mainnet.toonprotocol.dev
-charter rent --offer <pubkey>:<id> --urls https://example.com --max-intervals 1 --relay wss://relay.mainnet.toonprotocol.dev --json
+charter offers
+CHARTER_KEY_FILE=~/.charter/payer.key charter rent --python job.py --max-intervals 1 --json
+charter status <leaseId>
 ```
 
-`TOON_PASSPHRASE_FILE` names the file with the node wallet's passphrase.
+`CHARTER_KEY_FILE` names a file holding one Base private key in hex; `charter address` prints its
+address, which needs USDC on Base and no ETH. `rent` and `renew` pay the door `exact` in USDC, at most
+`CHARTER_MAX_TICK` micro-USDC a tick (default 10000, 0.01 USDC). `CHARTER_DOOR_URL` (or `--door`)
+names another door. Without `--offer`, `rent` takes the first offer in the door's ranking that runs the
+job.
 
 ### A home
 
 Open with your SSH public keys (one per line in a file) instead of a job:
 
 ```sh
-charter rent --offer <pubkey>:<id> --home keys.pub --max-intervals 2 --relay wss://relay.mainnet.toonprotocol.dev
+charter rent --home keys.pub --max-intervals 2
 ```
 
-Over HTTP the body is `{ "offerId": "...", "home": { "sshKeys": ["ssh-ed25519 AAAA... comment"] } }`.
+Over HTTP, `POST /v1/rent` takes `{ "home": { "sshKeys": ["ssh-ed25519 AAAA... comment"] } }` (`offerId` optional; `POST /v1/leases` needs it).
 The lease status carries `access: { "ssh": { "host": "<IPv4 or hostname>", "port": <22000..22099>, "user": "tenant" } }`
 (it can be filled at once; `null` until then, so poll about once a minute) and the CLI prints the
 line to log in with, plain SSH, no Anyone client needed:
@@ -84,16 +109,24 @@ ssh -p <port> tenant@<host>
 The host and port come from `access.ssh`. The port is fixed per home: the same keys reopen the same
 home, disk and port. A host may also publish `access.onion` (same shape, `<56 chars>.anyone`, port
 22) as a second way in; that one needs an Anyone client. The box is Debian with
-Python 3, `uv`, Node 22 and git, as `root` (apt works, on a host with root homes) or `tenant`, 1 CPU and 1 GiB. Everything it
-sends leaves through the host's Anyone client (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` are set; a
-raw socket to the internet fails). `~/.charter/boot.sh` runs at every start, and
-`/charter/paid-through` holds when the paid time runs out.
+Python 3, `uv`, Node 22 and git, as `tenant` (and `root` with apt, on a host whose offer says
+`home.root`), 1 CPU and 1 GiB. On a host set up as `deploy/host/` does, everything it sends leaves
+through the host's Anyone client (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` are set; a raw socket to
+the internet fails). `~/.charter/boot.sh` runs at every start, and `/charter/paid-through` holds when
+the paid time runs out.
 
-The key set is the home's identity: the same keys open the same 10 GiB disk and the same port,
+The key set is the home's identity: the same keys open the same disk and the same port,
 and there is no key rotation. A home that paid a tick is kept 7 days, free, after its
 lease closes; one that never paid is removed at close. Anyone with your public keys can open your
-home and hold it, though not enter it. The operator can read your disk: secrets go in over SSH,
-never through Charter. Homes are limited (`home.slots` in the offer), an open answers `busy` when they are full, and grants from the fund may hold them. What the host promises about uptime:
+home and hold it, though not enter it. The host's operator can read your disk: secrets go in over SSH,
+never through Charter. Homes are limited (`home.slots` in the offer), an open answers `busy` when they are full, and grants from the fund may hold them.
+
+A home lives on the host that holds its disk: a re-open or a renewal with the same keys goes there,
+whatever the ranking says. If that host is hidden or gone, the door answers `home_host_gone` rather than
+start an empty home elsewhere. Once the door has dropped that host, naming another offer (`--offer`, or
+`offerId`) opens a fresh, empty home on purpose.
+
+What a host promises about uptime:
 
 - No uptime figure. Expect restarts. Your disk survives them; your processes do not, so put what
   must run in `~/.charter/boot.sh`.
@@ -104,37 +137,22 @@ never through Charter. Homes are limited (`home.slots` in the offer), an open an
 - A restart of the host program leaves a running home alone. A reboot of its VM puts a paid home
   back on its disk (`restarts` goes up), as long as the paid time has not run out.
 
-From inside the box, the same CLI keeps paying with `CHARTER_PAYER=toon-client` and the box's own
-wallet (`CHARTER_TOON_KEY_FILE`, `CHARTER_TOON_CHANNEL_STORE`, `CHARTER_TOON_CHAIN`; the connector and
-the offer are already set in the box as `CHARTER_CONNECTOR_URL` and `CHARTER_OFFER_JSON`):
+From inside the box, `CHARTER_DOOR_URL` and `CHARTER_LEASE_ID` are set for you. A `charter-hermes` box
+keeps paying with the same CLI and its own key:
 
 ```sh
-charter renew --offer <pubkey>:<id> --lease "$CHARTER_LEASE_ID" --max-intervals <n>
+CHARTER_KEY_FILE=~/.charter/payer.key charter renew --lease "$CHARTER_LEASE_ID" --max-intervals <n>
 ```
 
-`renew` pays each tick when it is due, so restarting `boot.sh` costs nothing extra. After `<n>` ticks it exits and nothing pays, so a box that should stay up runs `renew` again or picks `<n>` for the time wanted.
-
-When more than one process in the box pays (the rent, an agent's paid fetches, its posts to a relay), they
-must share one channel without two of them signing on it at once: a voucher names a running total, and a
-second signer races the first and gets its packets refused. So the box runs one `charter payer`, the
-process that owns the channel, and everything else pays through it with `CHARTER_PAYER=url`:
-
-```sh
-charter payer &                                   # owns ~/.charter/channels.json, serves 127.0.0.1:3510
-CHARTER_PAYER=url charter renew --offer <pubkey>:<id> --lease "$CHARTER_LEASE_ID" --max-intervals <n>
-```
-
-The service also answers `GET /extract?url=` (a paid anonymous page fetch, the contract a Hermes
-`web-toon` plugin speaks), `POST /relay/post` (a signed note paid onto a relay) and
-`GET /relay/read` (a free relay read through the box's proxy); `docs/env.md` lists its variables.
-
-A home costs about 5 USDC for 30 days; a box that pays its own rent needs 2 USDC in its own channel and
-a little Base ETH for the one on-chain channel open. The whole of it, for agents, is
+A `charter-home` box does the same with `charter-x402 renew --max-intervals <n>` (its key is
+`~/.charter/x402.key`). `renew` pays each tick when it is due, so restarting `boot.sh` costs nothing
+extra. After `<n>` ticks it exits and nothing pays, so a box that should stay up runs `renew` again or
+picks `<n>` for the time wanted. A home costs about 5 USDC for 30 days on the first host; the box's
+wallet needs USDC on Base and nothing else. The whole of it, for agents, is
 https://charter.mainnet.toonprotocol.dev/agents#home.
 
-From an agent (Claude Code) with a `toon` node: the `charter` plugin in this repo is a skill that
-says what each packet holds and how `toon` 0.3 sends it, in the shape of
-[toon-protocol/toon-plugins](https://github.com/toon-protocol/toon-plugins).
+From an agent (Claude Code): the `charter` plugin in this repo is a skill that walks through renting
+over x402.
 
 ```sh
 /plugin marketplace add drew-dot-com/charter
@@ -144,34 +162,59 @@ says what each packet holds and how `toon` 0.3 sends it, in the shape of
 The skill is `plugins/charter/skills/renting-charter-compute/SKILL.md`; its `references/lease-loop.sh`
 runs one whole lease as one command.
 
-## Host
+## Run a host
 
-Next to a running `toon` node, with Docker and Node 22 or later:
+Anyone can run a host. In v1 a host needs a public HTTPS address (no hosts behind NAT yet), serves only
+the door, and is paid only by the door. You set your own tick price; the door adds its fee (0 today) on
+top for renters.
 
-```sh
-npm ci && npm run build && npm install -g --prefix ~/.local .
-docker build -t charter-job-fetch jobs/fetch
-docker build -t charter-job-python jobs/python
-docker build -t charter-home jobs/home        # only if the host offers homes
-docker build -f jobs/hermes/Dockerfile -t charter-hermes .   # only for Hermes homes; from the repo root, after npm run build, and after charter-home
-toon add charter-open   --to relay --url http://127.0.0.1:7401/ --price 1000 --yes
-toon add charter-tick   --to relay --url http://127.0.0.1:7402/ --price 7000 --yes
-toon add charter-status --to relay --url http://127.0.0.1:7403/ --price 100  --yes
-```
+1. **Install.** On Ubuntu 24.04 (amd64), as root, from a checkout of this repo:
+   `HOST_NAME=<your DNS name> bash deploy/host/install-host.sh`. It installs docker, gVisor's `runsc`,
+   Node 22 and Anyone's `anon` from their signed repositories, makes the `charter` user, runs Caddy
+   (pinned image, host network) to terminate TLS for `https://<HOST_NAME>` in front of
+   `127.0.0.1:7401`, and writes `~charter/.config/charter/env` from `deploy/host/env.example`. Ports 80
+   and 443 must reach the machine for Caddy's certificate. A name such as `1-2-3-4.sslip.io` works for a
+   bare IP.
+2. **Build**, as the `charter` user:
 
-Then fill `~/.config/charter/env` from `deploy/host/env.example` and enable
-`deploy/host/charter-host.service` (systemd user unit). `charter-host land` redeems the host's
-vouchers on chain. Every variable is in `docs/env.md`; the full deploy, door included, is
-`docs/demo.md`.
+   ```sh
+   npm ci && npm run build && npm install -g --prefix ~/.local .
+   docker build -t charter-job-python jobs/python
+   docker build -t charter-job-fetch jobs/fetch     # optional
+   ```
+
+   Homes are optional: `docker build -t charter-home jobs/home` (and `charter-hermes`, see `docs/ops.md`),
+   then `sudo bash deploy/host/install-home.sh` once.
+3. **Configure** `~/.config/charter/env` (every variable: `docs/env.md`):
+   - `CHARTER_HOST_URL`: your public `https://` address. It is the host's identity at the door.
+   - `CHARTER_HOST_PAY_TO`: the Base address your earnings go to.
+   - `CHARTER_CLAIM_KEY_FILE`: make one with `node deploy/door/new-claim-key.mjs ~/.config/charter/claim-key`.
+     It signs claims on the door's channel and holds no funds.
+   - `CHARTER_DOOR_URL` (default `https://charter.mainnet.toonprotocol.dev`) and `CHARTER_HOST_PORT`
+     (default 7401, what Caddy proxies to).
+   - `CHARTER_ALLOW_IMAGES` must include `charter-job-python`: the probe is a python job.
+   - `CHARTER_TICK_PRICE` and `CHARTER_INTERVAL_SECONDS` set your price. A probe pays at most 0.01 USDC a
+     tick, so a host priced above that is never listed.
+4. **Start**: copy `deploy/host/charter-host.service` to `~/.config/systemd/user/`, then
+   `systemctl --user daemon-reload && systemctl --user enable --now charter-host`.
+   The host registers itself with the door (`POST /v1/hosts`) at boot, again every minute until accepted,
+   and whenever its free home slots change. `charter-host offer --print` shows what it serves.
+5. **The probe.** The door opens a small paid python job on your host (it deposits 0.10 USDC into a channel
+   to you first), pays one tick, and checks the output carries the hash it expects. Pass, and you are
+   listed. The door probes at most once a day per host, re-probes daily while you are listed, and at once
+   after two failed leases in a row. A failed probe hides you until one passes; three failed probes in a
+   row drop you, and the host must register again. Check your state: `GET <door>/v1/hosts`.
+6. **Earnings.** Every paid tick is a voucher on the door's channel to you, kept in
+   `<CHARTER_DATA_DIR>/x402-channels/`. `charter-host` claims them through the facilitator
+   (`X402_FACILITATOR_URL`, PayAI by default, no key) once the channel has been quiet 7 days, or at once
+   when the door starts withdrawing it, and settles what it claimed to `CHARTER_HOST_PAY_TO` every 10
+   minutes; it also refunds the door's unspent deposit after the quiet week. Until claimed, earnings
+   exist only as those vouchers: back the directory up and never delete it.
 
 A job container gets 1 CPU, 1 GiB, 256 pids, a read-only root, no capabilities and
-`no-new-privileges`. With `CHARTER_PROXY` set, its traffic leaves through the host's Anyone proxy.
-
-To offer homes, run `sudo bash deploy/host/install-home.sh` once in the VM (Charter's own Anyone
-client, the `charter-home` bridge and its firewall, and a sudo rule for `losetup` only), add
-`charter-home` (and `charter-hermes`, if built) to `CHARTER_ALLOW_IMAGES` and set `CHARTER_MAX_HOMES` and the other home variables
-in `docs/env.md`. A home gets 512 pids and the same limits otherwise. Operating them:
-`docs/ops.md`, "Homes".
+`no-new-privileges`; set `CHARTER_RUNTIME=runsc` so renters' code runs under gVisor. With
+`CHARTER_PROXY` set, job traffic leaves through the host's Anyone proxy. A home gets 512 pids and the
+same limits otherwise. Operating a host: `docs/ops.md`, "Run a host" and "Homes".
 
 ## Develop
 

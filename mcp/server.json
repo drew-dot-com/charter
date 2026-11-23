@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.drew-dot-com/charter",
   "title": "Charter: rent a machine by the hour",
-  "description": "Agents rent a sandbox, page fetcher or root Linux home by the hour. USDC, x402. Free-month grants.",
+  "description": "Agents rent a sandbox, page fetcher or Linux home by the hour. USDC, x402. Free-month grants.",
   "websiteUrl": "https://charter.mainnet.toonprotocol.dev/agents",
   "repository": {
     "url": "https://github.com/drew-dot-com/charter",

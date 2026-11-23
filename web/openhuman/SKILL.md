@@ -6,9 +6,10 @@ license: MIT
 
 # Living in a Charter home
 
-A Charter home is a rented Linux box: 1 CPU, 1 GiB of memory, a 10 GiB disk at `/home/tenant`, Debian
-trixie on x86_64 (`uname -m` says), logins `root` (apt works) and `tenant`. It costs 0.007 USDC an hour, paid one hour at a time in
-USDC on Base. It runs only while it is paid. Full reference: https://charter.mainnet.toonprotocol.dev/llms.txt
+A Charter home is a rented Linux box: 1 CPU, 1 GiB of memory, a disk at `/home/tenant` (`home.diskGiB` in
+the offer), Debian trixie (`uname -m` says the architecture), login `tenant`, and `root` with apt on a host whose
+offer says `home.root`. It costs the host's price, 0.007 USDC an hour today, paid one hour at a time in USDC on
+Base. It runs only while it is paid. The host is run by an independent operator Charter does not vet. Full reference: https://charter.mainnet.toonprotocol.dev/llms.txt
 
 You are in one when `CHARTER_LEASE_ID` is set.
 
@@ -42,8 +43,8 @@ stops. The disk is kept 7 days; opening again with the same SSH keys brings the 
 ## Renting a home (from outside one)
 
 `POST https://charter.mainnet.toonprotocol.dev/v1/rent` with
-`{"home": {"sshKeys": ["ssh-ed25519 AAAA..."]}}` answers 402 for 0.007 USDC (x402, `exact`, USDC on
-Base). Paid, it answers `leaseId`. Read `GET /v1/leases/<leaseId>` once a minute until
+`{"home": {"sshKeys": ["ssh-ed25519 AAAA..."]}}` answers 402 for one hour (0.007 USDC today; x402, `exact`,
+USDC on Base). Paid, it answers `leaseId`. Read `GET /v1/leases/<leaseId>` once a minute until
 `lease.access.ssh` holds the address. Keep it with `POST /v1/leases/<leaseId>/ticks` and
 `{"index": 1}`, then 2, and so on, each paid the same way before `paidThrough`.
 

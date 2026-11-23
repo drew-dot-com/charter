@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ago, clock, decodeOutput, duration, formatUsdc, landingLink, offerFreshness, parseOffer, perHourNote, pricePerHour, shortHex, sizeLabel, tickOutcome } from './format.js';
+import { ago, clock, decodeOutput, duration, formatUsdc, landingLink, offerFreshness, parseOffer, perHourNote, pricePerHour, recordLabel, shortHex, sizeLabel, tickOutcome } from './format.js';
 
 const b64 = (s: string | Uint8Array) => Buffer.from(s).toString('base64');
 
@@ -178,4 +178,28 @@ test('parseOffer keeps a well-formed home and drops a malformed one', () => {
   assert.deepEqual(parseOffer({ ...base, home: { diskGiB: 2, retentionDays: 7, slots: 1 } })?.home, { diskGiB: 2, retentionDays: 7, slots: 1 });
   assert.equal(parseOffer({ ...base, home: { diskGiB: 2, retentionDays: 0, slots: 1 } })?.home, undefined);
   assert.equal('home' in parseOffer(base)!, false);
+});
+
+test('parseOffer keeps the host record, the operator and whether the home is tested', () => {
+  const base = { offerId: 'a:b', cpu: 1, memoryMiB: 1024, intervalSeconds: 3600, tickPrice: '7000', hiddenHost: false, images: ['charter-home'] };
+  const o = parseOffer({
+    ...base,
+    operator: 'independent',
+    home: { diskGiB: 10, retentionDays: 7, slots: 1, tested: false },
+    record: { probesPassed: 3, leasesFinished: 12, successRate: 0.92, new: false, lastProbeFailedAt: 5, funding: 'waiting' },
+  });
+  assert.equal(o?.operator, 'independent');
+  assert.equal(o?.home?.tested, false);
+  assert.deepEqual(o?.record, { probesPassed: 3, leasesFinished: 12, successRate: 0.92, new: false, lastProbeFailedAt: 5, funding: 'waiting' });
+  const tested = parseOffer({ ...base, home: { diskGiB: 10, retentionDays: 7, slots: 1, tested: true } });
+  assert.equal(tested?.home?.tested, true);
+  const bad = parseOffer({ ...base, record: { probesPassed: 'x', leasesFinished: 1, successRate: 1, new: true } });
+  assert.equal(bad?.record, undefined);
+  assert.equal(parseOffer(base)?.record, undefined);
+});
+
+test('recordLabel says what a renter can check about a host', () => {
+  assert.equal(recordLabel({ probesPassed: 1, leasesFinished: 0, successRate: 1, new: true }), 'New host: passed 1 probe, no finished leases yet');
+  assert.equal(recordLabel({ probesPassed: 4, leasesFinished: 12, successRate: 0.917, new: false }), '12 leases finished, 92% success, 4 probes passed');
+  assert.equal(recordLabel({ probesPassed: 2, leasesFinished: 1, successRate: 1, new: false }), '1 lease finished, 100% success, 2 probes passed');
 });

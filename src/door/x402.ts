@@ -5,7 +5,7 @@ import type { Micro } from '../types.js';
 import { MAX_TIMEOUT_SECONDS, buildSchemes, microToUsdc, type Gate, type Schemes, type TestHooks, type X402Config } from '../x402/seller.js';
 
 /** The tick's catalog tags, most important first: PayAI's catalog keeps only the first five (seen 2026-11-06). */
-export const BAZAAR_TAGS = ['compute', 'agent-hosting', 'hermes', 'sandbox', 'python', 'fetch', 'toon'] as const;
+export const BAZAAR_TAGS = ['compute', 'agent-hosting', 'hermes', 'sandbox', 'python', 'fetch'] as const;
 export const CATALOG_KEPT_TAGS = 5;
 
 /** The lease id out of `/v1/leases/<id>/ticks`. */
@@ -24,10 +24,10 @@ export const RENT_INPUT_SCHEMA = {
       properties: { script: { type: 'string', maxLength: 8192 } },
       required: ['script'],
     },
-    urls: { type: 'array', minItems: 1, maxItems: 5, items: { type: 'string', description: 'An http or https URL.' }, description: 'A fetch job: each page loaded in a headless browser through a hidden exit.' },
+    urls: { type: 'array', minItems: 1, maxItems: 5, items: { type: 'string', description: 'An http or https URL.' }, description: 'A fetch job: each page loaded in a headless browser (through a hidden exit on an offer with hiddenEgress).' },
     home: {
       type: 'object',
-      description: 'A home: a box with a 10 GiB disk kept 7 days, reached by plain SSH with these keys (ssh -p <port> tenant@<host>, from the lease\'s access.ssh).',
+      description: 'A home: a box with its own disk (home.diskGiB in the offer) kept 7 days, reached by plain SSH with these keys (ssh -p <port> tenant@<host>, from the lease\'s access.ssh).',
       properties: {
         sshKeys: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string' } },
         image: { type: 'string', enum: ['charter-home', 'charter-hermes'] },
@@ -54,9 +54,9 @@ export type RentPriceOf = (body: unknown) => Promise<Micro | undefined>;
  */
 export const DESCRIPTION_MAX = 500;
 export const TICK_DESCRIPTION =
-  'One paid hour of sandboxed compute on Charter (0.007 USDC on the live host). A lease is a job (Python with NumPy, or a headless-browser fetch) or a home an agent can live in: a box with a 10 GiB disk kept 7 days, plain SSH at the address in access.ssh, network out through Anyone, optionally with Hermes Agent (image charter-hermes). No account, only a wallet. Open a lease first, free: POST /v1/leases. Procedure: https://charter.mainnet.toonprotocol.dev/agents';
+  'One paid interval of sandboxed compute on Charter at the lease\'s open-time price (hosts set their own; 0.007 USDC an hour today). A lease is a job (Python with NumPy, or a headless-browser fetch) or a home: a box with a disk kept 7 days, plain SSH at access.ssh, optionally Hermes Agent (image charter-hermes). Hosts are run by independent operators. No account, only a wallet. Open a lease first, free: POST /v1/leases. Procedure: https://charter.mainnet.toonprotocol.dev/agents';
 export const RENT_DESCRIPTION =
-  'Rent sandboxed compute on Charter in one call: opens a lease and pays its first hour (0.007 USDC on the live host). Send a job (python: a script up to 8 KiB with NumPy; urls: up to five pages in a headless browser) or a home (sshKeys: a box with a 10 GiB disk kept 7 days, plain SSH at the address in access.ssh; image charter-hermes has Hermes Agent). No account, only a wallet. Extend with POST /v1/leases/{leaseId}/ticks. Procedure: https://charter.mainnet.toonprotocol.dev/agents';
+  'Rent sandboxed compute on Charter: a call opens a lease and pays its first interval (hosts set prices; 0.007 USDC an hour today). Send a job (python: a script up to 8 KiB with NumPy; urls: up to 5 pages in a headless browser) or a home (sshKeys: a box with a disk kept 7 days, SSH at access.ssh; image charter-hermes: Hermes Agent). Hosts are run by independent operators. No account, just a wallet. Extend: POST /v1/leases/{leaseId}/ticks. Procedure: https://charter.mainnet.toonprotocol.dev/agents';
 
 export function realGate(
   cfg: X402Config,

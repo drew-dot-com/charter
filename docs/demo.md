@@ -1,5 +1,11 @@
 # Charter demo runbook
 
+**History.** Every section below (0 to 17, "Operating the door" included) records Charter before the
+open-hosts change of 2026-11-23, when the door paid hosts over TOON and hosts published offers to a relay.
+Nothing in today's path is TOON: renters pay the door over x402 on Base, the door pays each host over its
+own x402 `batch-settlement` channel on Base, and hosts register themselves (README.md, "How it works" and
+"Run a host"; `docs/ops.md`). The commands below are kept as the record, not as instructions.
+
 Status: first-party. Drew is on both sides of every lease below: he runs the host (`toon2`), the
 door, the edge, and both renters (Edison and his own browser wallet). Charter has no outside users.
 
@@ -155,7 +161,7 @@ and Drew's Telegram id on Discord, refused every one before the bridge (a tripwi
 never fired, and the VM has no `~/.charter-bridge`). Drew's two ids reached the bridge. Not yet done:
 a real rent through Edison from chat, and a refusal from a second real account.
 
-## Operating the door
+## Operating the door (TOON era)
 
 **Headroom alert.** The door refuses an open (503 `capacity`) while its channel cannot pay the open,
 the first tick and 10000 more, and a tick (503 `retry_later`) while it cannot pay the tick and 10000

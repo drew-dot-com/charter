@@ -1,5 +1,8 @@
 # Rolling the trixie home (OpenHuman, `charter-x402`) onto the live host and door
 
+TOON era (2026-11-16), kept as history: toon2 was the host and leases could be opened over TOON. Since the
+open-hosts change every lease goes through the door over x402 on Base.
+
 Branch `feat/openhuman-home`. Built on toon2 under new tags only, from the staged tree
 `~/src/charter-trixie-build`: `charter-home:trixie-1116` (`940bf7093299`, 842 MB) and
 `charter-hermes:trixie-1116` (`5cac2d5fffec`, 1.94 GB, BASE = the new home tag). `latest` is untouched

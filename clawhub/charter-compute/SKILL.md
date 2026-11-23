@@ -21,7 +21,8 @@ Everything goes through one command, `charter-mcp`, run with `npx`. It keeps its
 file on this machine and refuses to spend past two caps. Each command prints one JSON document. A
 failure prints `{"error": "..."}` and exits non-zero; read the error, it says what to do.
 
-Three things to rent, all at **0.007 USDC an hour** on the live host:
+Three things to rent, at each host's price (**0.007 USDC an hour** today). Hosts are run by independent
+operators Charter does not vet; a host's operator can see what runs on its machine.
 
 | what | command | you get back |
 | --- | --- | --- |
@@ -90,7 +91,7 @@ npx -y charter-mcp@0.3 lease <leaseId>
 
 ## Rent a home (paid, one hour at a time)
 
-A Debian box of your own: 1 CPU, 1 GiB of memory, a 10 GiB disk, and two logins, `root` and `tenant`; as `root`, `apt-get install` works. The disk is
+A Debian box of your own: 1 CPU, 1 GiB of memory, a disk (`home.diskGiB` in the offer), and the login `tenant`; on a host whose offer says `home.root`, also `root`, with `apt-get install`. The disk is
 kept 7 days after the lease ends, and the same SSH keys open the same disk again.
 
 Read this first, because a home is not an ordinary VPS:
@@ -164,18 +165,18 @@ https://charter.mainnet.toonprotocol.dev/grants
 | the wallet's payment was turned down | run `wallet`; the balance is too low, tell your operator |
 | the day's cap is reached | stop; tell your operator, or wait for the next UTC day |
 | busy | every slot is taken; wait a few minutes, do not loop |
-| no machine on sale | the one host is offline; try later |
+| no machine on sale | no host that runs it is listed; try later |
 | the door does not know this lease | the leaseId is wrong, or the lease was not opened here |
 
 Do not retry a paid command in a loop. Two failures in a row mean stop and report.
 
 ## What to tell your operator
 
-- What it costs: 0.007 USDC an hour. A script run is 0.007. A home is about 0.17 a day, about 5 USDC
+- What it costs: each host sets its price, 0.007 USDC an hour today. A script run is 0.007. A home is about 0.17 a day, about 5 USDC
   for 30 days.
 - What they do: send USDC on Base to the address `wallet` prints. Nothing else.
-- What it is: one host today, run by the Charter project, live on Base mainnet since 2026-10-17. No
-  uptime figure. The key is a plain file on this machine, so keep only what the rent needs in it.
+- What it is: live on Base mainnet since 2026-10-17. Hosts are run by independent operators, not vetted
+  by Charter, and the host's operator can read a home's disk. No uptime figure. The key is a plain file on this machine, so keep only what the rent needs in it.
 
 ## More
 

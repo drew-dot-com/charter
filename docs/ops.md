@@ -3,13 +3,18 @@
 What watches the door, what backs it up, and what to do when something fires. Scripts live in
 `deploy/ops/`. Amounts are micro-USDC (`1000` is 0.001 USDC). Installed 2026-10-27.
 
+Since the open-hosts change (2026-11-23) nothing in Charter's path is TOON: renters pay the door over x402
+on Base, and the door pays each host over its own x402 `batch-settlement` channel on Base. Hosts register
+themselves and are run by independent operators. Sections marked "TOON era" describe the setup before that
+change (the toon2 host, the door's Solana channel, the payer service) and stay as history.
+
 ## What runs where
 
 | what | where | schedule | alerts |
 | --- | --- | --- | --- |
 | door canary + door headroom + daily spend + host channel + grant fund + homes' outside SSH (`charter-ops-check.sh`) | the Hetzner box, `charter-ops.timer` | every 5 min | Telegram DM to Drew from the Edison bot, once down, once back |
 | door data backup (`charter-backup-pull.sh`) | the Air, launchd `com.drew.charter-backup` | nightly 03:40 Air local | none yet: `~/charter-backups/pull.log` records each run |
-| the host (`charter-host`, `CHARTER_MAX_LEASES=2`) | the `toon2` VM on the Air | always on | the canary sees its offer vanish |
+| the first host (`charter-host`) | hel1 since the open-hosts cut-over, registered like any host (the `toon2` VM on the Air before) | always on | the canary sees its offer vanish |
 | the grant fund (`charter-fund`, container) | the Hetzner box, beside `charter-door` | loop, one cycle every 60 s | `charter-fund-check.sh`, in the 5 minute check |
 | outside usage (`charter-usage-check.sh`) | the Hetzner box, in `charter-ops.timer` | every 5 min | Telegram DM to Drew, one per event |
 | home watch (`charter-home-watch.sh`) | the `toon2` VM, user timer `charter-home-watch.timer` | every 5 min | Telegram DM to Drew: a late tick, a lapse, a recovery |
@@ -49,15 +54,13 @@ When "Charter door down" arrives:
 - `GET /v1/door answered 000` or a 5xx: the door container or Caddy. On the box `docker ps`, `docker logs
   --since 10m charter-door`. A crashloop with "could not reach the connector client edge" means the box's
   connector is down (see the Helius notes in memory: never restart the connectors while the Solana RPC 429s).
-- `no machines listed`: the host's relay offer is gone. Is the Air up and `toon2` running? `ssh air`, then
-  `~/.local/lima/bin/limactl list` and `limactl shell toon2 -- systemctl --user status charter-host`. The host
-  logs `offer published <id>` every 20 minutes; a paid write that fails shows there too. The Air is set not to
-  sleep (`pmset -g` says `SleepDisabled 1`, held by caffeinate), so a missing offer is a crash or a network
-  change, not a nap.
-- `the only offer expires in N min`: same as above, caught a few minutes earlier. On 2026-10-28 this was the
-  host's channel to the edge spent to its collateral (see "Host channel"); `charter-host` was up and logging
-  `offer publish failed: ToonCliError` on every publish. The journal truncates the toon error, so check
-  `toon channel list` in toon2 first.
+- `no machines listed`: no host is listed. `GET /v1/hosts` on the door says each host's state (`probing`,
+  `listed`, `hidden`, `dropped`) and record. A host the door cannot fetch stays listed 10 minutes, then is
+  hidden until it answers; a failed probe, or two failed leases in a row, hide it until a probe passes. On
+  the host: `systemctl --user status charter-host` and `curl -sS <CHARTER_HOST_URL>/v1/offer`.
+- `the only offer expires in N min`: same as above, caught a few minutes earlier: the door has not read a
+  fresh offer from the host for a while. (TOON era: on 2026-10-28 this was the host's channel to the edge
+  spent to its collateral, see "Host channel".)
 
 ## Who reaches the door
 
@@ -74,7 +77,11 @@ jq -r '.ua // "(none)"' /root/charter-door/data/requests.jsonl | sort | uniq -c 
 jq -r 'select(.paid or .p == "/v1/rent" or .p == "/openapi.json" or .p == "/llms.txt") | [.t,.m,.p,.s,.paid,.ua] | @tsv' /root/charter-door/data/requests.jsonl | tail -40
 ```
 
-## Headroom and daily spend
+## Headroom and daily spend (TOON era)
+
+The headroom half reads the door's Solana channel, which the open-hosts change retired: the door now pays
+hosts from Base channels it funds itself ("The door's wallet" below). The daily spend half still holds.
+
 
 `charter-headroom.sh` reads the same files the door reads, with no TOON client and no chain read:
 `channels.peers.json` (the open x402 channel and its `depositTotal`), `channels.json` (`signedCeiling`, what
@@ -94,7 +101,11 @@ status read before each tick, losses). `jq` the ledger for the day's leases and 
 loss is already blocked by the door. At 500000 the door answers 503 `capacity` until 00:00 UTC. Nothing to
 do unless it is abuse; the cap resets.
 
-## Host channel
+## Host channel (TOON era)
+
+The toon2 host's Solana channel to the edge, for its relay writes. A host no longer writes to a relay and
+holds no channel of its own; the door funds a channel to it.
+
 
 The host pays the box's edge connector 1000 for every relay write, one every 20 minutes while it is up
 (about 72000 a day, so 1 USDC is about two weeks), out of its outbound Solana channel
@@ -127,6 +138,25 @@ The burn is the republish cadence: a 45 minute offer rewritten every 20 minutes 
 and 10 until then, 1 USDC a week). The 45 minutes lets one failed write pass without the storefront going
 empty. Stopping the host between demos stops the burn.
 
+## The door's wallet
+
+The door's payer key (`CHARTER_DOOR_PAYER_KEY_FILE`, mode 0400) is one Base key. Its address is the renters'
+`payTo` and what funds every host channel. It must hold:
+
+- USDC on Base for host deposits: an unproven host's probe channel gets `CHARTER_PROBE_DEPOSIT` (0.10 USDC),
+  all of them together at most `CHARTER_PROBE_CAPITAL_CAP` (1 USDC); a proven host's channel is topped up to
+  `CHARTER_HOST_DEPOSIT` (0.50 USDC) when it is first picked for a lease, all of them together at most
+  `CHARTER_HOST_CAPITAL_CAP` (10 USDC). Past the cap a proven host shows `funding: "waiting"` and is not
+  picked. So keep at least the two caps plus a margin.
+- A little ETH on Base: the sweep's transfer and the reaper's channel withdrawals pay gas from it.
+
+The door starts at most `CHARTER_PROBES_PER_DAY` (10) first probes a UTC day, and a probe pays at most
+`CHARTER_PROBE_MAX_TICK` (10000) for its tick. It withdraws a channel idle 7 days, and at once for a dropped
+host (after its live leases end). `CHARTER_DOOR_SELF_ADDRS` lists the box's own IPs so a registered URL
+cannot point the door at itself; loopback and private addresses are refused anyway. `BASE_RPC_URL` is
+where it reads channels and sends withdrawals. Capital in use: `capital.json` in the data dir; hosts and
+their records: `hosts.json`, or `GET /v1/hosts`.
+
 ## Daily sweep
 
 The door's payer wallet is the renters' payTo and funds host channels. Once a day (and at boot) the door sends
@@ -140,7 +170,8 @@ the transaction hash, never the key.
 
 Nightly at 03:40 Air local, `charter-backup-pull.sh` on the Air pulls `/root/charter-door/data` from the box as
 `~/charter-backups/door-data-<UTC stamp>.tgz` (the ledger and its `.payments`, `.unpaid`, `.unblocks`
-sidecars, `channels.json`, `channels.peers.json`, `x402-channels/`, `output/`; never `secrets/`), checks that
+sidecars, `hosts.json`, `capital.json`, `host-channels/`, `x402-channels/`, `output/`, and from the TOON era
+`channels.json` and `channels.peers.json`; never `secrets/`), checks that
 the tarball lists `data/channels.json`, and deletes tarballs older than 30 days. Zero cost, no account.
 The same tarball carries the grant fund's `data/state.json` and `data/stops.json` (under
 `charter-fund/data/`, only when they exist; never the fund's `secrets/`), and `pull.log` says `fund state.json
@@ -165,9 +196,52 @@ To restore for real (the door's deposit lives in `channels.json`): stop the door
 says `channel ready, headroom N`. A restored store older than the last signed voucher under-reports what was
 signed, and the connector refuses a voucher below its watermark, so restore the newest tarball.
 
+The files under `host-channels/<host>/config/` matter most since the open-hosts change: they name each of
+the door's host channels on chain, cannot be rebuilt from chain, and the reaper needs them to withdraw the
+door's deposits. Restore them before the door's first withdrawal round after a data loss. The check for
+`data/channels.json` dates from the TOON era.
+
 Run by hand: `~/bin/charter-backup-pull.sh` (pull now), `--list`, `--restore <tgz> <file> [dest]`.
 Open question for Drew: an encrypted off-site copy (any S3-style bucket, or a second Mac) is a one-line
 addition to the pull script once there is an account for it.
+
+## Run a host
+
+Anyone can run a host; hel1 is set up the same way as a stranger's. The steps are in README.md, "Run a
+host"; every variable is in `docs/env.md`. In short:
+
+1. `sudo HOST_NAME=<name> bash deploy/host/install-host.sh` on Ubuntu 24.04 amd64: docker, gVisor, Node 22,
+   anon, the `charter` user, Caddy (pinned `caddy:2.10.2` image on the host network, unit
+   `charter-caddy.service`, config `/etc/charter-caddy/Caddyfile`) terminating TLS for `https://<name>` in
+   front of `127.0.0.1:7401`, and `~charter/.config/charter/env` from `deploy/host/env.example` when there is
+   none. Ports 80 and 443 must be open for the certificate.
+2. As `charter`: the claim key (`node deploy/door/new-claim-key.mjs ~/.config/charter/claim-key`), the env
+   (`CHARTER_HOST_URL`, `CHARTER_HOST_PAY_TO`, `CHARTER_CLAIM_KEY_FILE`, `CHARTER_DOOR_URL`,
+   `CHARTER_HOST_PORT`, and `charter-job-python` in `CHARTER_ALLOW_IMAGES`), the build, the images, then
+   `systemctl --user enable --now charter-host`.
+
+What happens next, and where to look:
+
+- **Register.** The host posts its URL to the door (`POST /v1/hosts`) at boot, every minute until accepted,
+  and when its free home slots change. The door fetches `GET <url>/v1/offer` (refusing a URL that resolves
+  to a loopback, private or the door's own address) and answers `202 { "state": "probing" }`. The host logs only
+  a refusal (`register with <door> answered <status>`, then a retry; `400 bad_url` or `bad_offer` names the
+  problem).
+- **Probe.** The door opens a `charter-job-python` lease whose script hashes a nonce, deposits the probe
+  channel (0.10 USDC) if there is none, pays tick 0, and passes the host when the output carries the hash
+  within one interval. At most one probe per host per day; first probes are limited per day across all
+  hosts, so a new host may wait a day. A probe tick above 0.01 USDC fails (`price_too_high`).
+- **Listed.** `GET <door>/v1/hosts` shows the state (`probing`, `listed`, `hidden`, `dropped`) and the
+  record. Listed hosts are re-probed daily. Two host-side lease failures in a row (`boot_failed`, refused,
+  unreachable) or a failed probe hide the host until a probe passes; three failed probes in a row drop it,
+  and it must register again (a restart of `charter-host` does).
+- **Earnings.** Vouchers land in `<CHARTER_DATA_DIR>/x402-channels/`; `charter-host` claims them through the
+  facilitator when the door's channel has been quiet 7 days or the door starts a withdrawal, and settles to
+  `CHARTER_HOST_PAY_TO` every 10 minutes (log lines `x402 claimed`, `x402 settled`). Back that directory up.
+- **Limits in v1.** The door is the only payer: the host refuses any request not signed by the door's payer
+  address, which it reads from `GET <door>/v1/door`. A host needs a public HTTPS address; hosts behind NAT
+  come later. Homes stay on the host that holds their disks, so a host that goes away strands its tenants'
+  homes (`home_host_gone`) until the door drops it.
 
 ## Lease limit
 
@@ -192,7 +266,11 @@ Proven 2026-10-27 20:51Z: two `POST /v1/leases` 16 seconds apart (`{"offerId": "
 `missed_tick` after the 90 second grace. Cost to the door: 2500 (two opens at 1000, five status reads at
 100), visible as the day's unpaid spend. A third open would have answered `closedReason: busy`.
 
-## A second host on the box? (investigation only, nothing installed)
+## A second host on the box? (TOON era, investigation only, nothing installed)
+
+Since the open-hosts change a host needs no toon node: any machine with a public HTTPS address runs one
+("Run a host" below). The measurements stay as history.
+
 
 Measured 2026-10-27 on the Hetzner box (`ubuntu-4gb-fsn1-1`): 2 vCPUs (x86_64), 3809 MB RAM with 1762 MB
 available and no swap, load 0.33, 24 GB free of 75 GB, Docker 29.9.2 with `runc` only (no `runsc`), 14
@@ -216,7 +294,14 @@ his `max_packet_amount` raised past one tick. Neither is started; Drew picks.
 
 ## Changing a price
 
-The tick price lives in three places, and all three must agree or one hop pays the difference: the host's
+A host's price is its own env: set `CHARTER_TICK_PRICE` (and `CHARTER_INTERVAL_SECONDS` beside it) and
+restart `charter-host`, after checking no lease is only created, not started ("Lease limit"). The door reads
+the new offer within a minute or two; leases already open keep the price they opened with for both renter and
+host, and new leases take the new one. A price above the door's probe cap (0.01 USDC a tick) fails the next
+probe. Then read `/v1/offers` on the door, and rerun `scripts/bazaar-tick.mjs` once (a paid tick) so PayAI's
+catalog shows the new price.
+
+TOON era, kept as history: the tick price lived in three places, and all three must agree or one hop pays the difference: the host's
 env (`CHARTER_TICK_PRICE`, with `CHARTER_INTERVAL_SECONDS` beside it), the `charter-tick` app on toon2's
 `toon` node (what the edge pays toon2), and the edge's route for `g.toon.69b2a212547e7a9c.charter-tick`
 (what the door, or any toon-node renter, pays the edge). The door needs no change: it snapshots each
@@ -227,7 +312,7 @@ containers, jobs and homes, are left alone), then toon2 env and app, then the ed
 `scripts/bazaar-tick.mjs` once (a paid tick) so PayAI's catalog shows the new price; its entry only changes
 on a payment.
 
-Done 2026-11-04, 30 s at 5000 to one hour at 7000, no live lease, in this order:
+Done 2026-11-04 (TOON era), 30 s at 5000 to one hour at 7000, no live lease, in this order:
 
 1. toon2 (`ssh air`, `~/.local/lima/bin/limactl shell toon2`): back up `~/.config/charter/env`, set
    `CHARTER_INTERVAL_SECONDS=3600` and `CHARTER_TICK_PRICE=7000`. `toon change` has no `--price`, so the app is
@@ -261,7 +346,7 @@ plain SSH in at the host's public address (`access.ssh`; an onion is optional). 
 
 **The base, and `charter-x402`.** Since the 2026-11-16 build `charter-home` is Debian trixie (glibc 2.41, Python 3.13, OpenSSH 10), 842 MB; it was bookworm (glibc 2.36), on which a binary built on a current distribution does not start (`GLIBC_2.39 not found`, OpenHuman's aarch64 release). `--build-arg BASE=debian:bookworm-slim` builds the old box. A disk outlives the image, so what a tenant built against the old base can break at its next re-create: a venv made with Debian's `python3` (3.11 then, 3.13 now) must be made again; a `uv` Python, Node modules and static binaries are untouched. The image also carries `charter-x402` (`/opt/x402`, 93 MB; source `jobs/home/x402-rent.mjs`): a tenant with only a Base wallet opens and renews through the door with it, `exact` only. The sshd now answers the SFTP subsystem, so a plain `scp` works; before, only `scp -O` did.
 
-**A home paid through the door.** Each tick a tenant pays the door by x402, the door pays the host 7000 out of its own Solana channel: about 0.17 USDC a day for one home. On 2026-11-16 that channel had 1.82 USDC of headroom, so one x402 home brings "Charter door headroom low" (under 0.30) in about 9 days, and a second halves that. The door earns the same amount on Base meanwhile; the outbound side still has to be rotated by hand (docs/demo.md, "Channel rotation"), with the door stopped. Rotate before a long-lived tenant arrives, not when the alert fires.
+**A home paid through the door (TOON era).** Each tick a tenant pays the door by x402, the door pays the host 7000 out of its own Solana channel: about 0.17 USDC a day for one home. On 2026-11-16 that channel had 1.82 USDC of headroom, so one x402 home brings "Charter door headroom low" (under 0.30) in about 9 days, and a second halves that. The door earns the same amount on Base meanwhile; the outbound side still has to be rotated by hand (docs/demo.md, "Channel rotation"), with the door stopped. Rotate before a long-lived tenant arrives, not when the alert fires.
 
 **Home watch.** `deploy/host/charter-home-watch.sh` reads the host's own `leases.json` and `homes.json` and says, for each home's newest paid lease: `fail` when it is running with under 20 minutes of paid time left (a tenant pays 30 minutes early, so the tick is at least 10 minutes late), `fail` once when it closed `missed_tick` with its disk still kept, `ok` otherwise. With `--alert` it sends through `charter-alert.sh` (keys `home-<homeId>` and `lapsed-<homeId>`): one message when a tick is late, one when the home lapses, one when a tick lands again. It runs in the host's VM, where the leases are, so it covers a home paid over TOON as well as one paid through the door. Run by hand: `charter-home-watch.sh` prints one line a home and changes nothing. To keep a test lease from paging, put its homeId (or the first 8 characters) in `HOME_WATCH_SKIP` in `ops.env`, space or comma separated; the watch then prints `skip` for it and drops its alert state without a "recovered". Installed on toon2 2026-11-16 18:19Z with the box's alert bot token (`~/.config/charter/telegram.token`, a third copy of the Edison bot token: see "Still open for Drew"). To install elsewhere: copy `charter-home-watch.sh` and `deploy/ops/charter-alert.sh` to `~/.local/bin/` in toon2, write `~/.config/charter/ops.env` from `deploy/host/ops.env.example` (a bot token file, or an `NTFY_URL`), copy the `.service` and `.timer` to `~/.config/systemd/user/` and `systemctl --user enable --now charter-home-watch.timer`. State and `alerts.log` are in `~/.local/state/charter-ops/`. Why: on 2026-11-16 Edison's home lapsed at 02:48Z and nobody knew for 14 hours. A tenant sees its own clock in the box: `/charter/paid-through`, or `charter-x402 status`.
 
@@ -269,14 +354,16 @@ A reload of Charter's anon (a new home's first publish, or a home's retire) rese
 
 The `charter-host` unit's `PATH` must include `/usr/sbin`, where `mkfs.ext4` for home disks lives; without it every home open answers `boot_failed` (the first deploy's failure), and the host log now says why.
 
-**Opening or renewing from Edison's node (the `toon` VM).** A paying `charter` command there needs the bridge env
+**Opening or renewing from Edison's node (the `toon` VM, TOON era).** A paying `charter` command there needs the bridge env
 first: `set -a; . ~/.config/charter/bridge.env; set +a` (`TOON_PASSPHRASE_FILE`, `CHARTER_OFFER_ID`,
 `CHARTER_RELAY_URL`); a login shell has none of it and the CLI refuses with its usage text before paying, which
 on 2026-11-05 left Edison's home closed for four hours. Dry-check a scripted open with a bogus offer id first
 (it fails at "no live offer" after the free relay read). To move a home between images, do it inside one lapse
 window: stop the box's `renew` right after a tick lands, and have the replacement open ready to run at the close.
 
-**One payer per box.** A tenant's channel store has exactly one writer: a voucher names a running total, so two processes signing on `~/.charter/channels.json` race it and the connector refuses the lower one. A box that pays for more than its rent (an agent's paid fetches, relay posts, its own Charter jobs) runs one `charter payer` (the service, `docs/env.md`) and every other payer in it uses `CHARTER_PAYER=url`. Edison's home does this since 2026-11-05: `~/.charter/boot.sh` starts the payer, then `renew` through it, then the Hermes gateway, whose plugins point at the same `http://127.0.0.1:3510`. To move a running `renew` onto the service without a missed tick: check `/charter/paid-through` (the next tick goes out 30 minutes before it), stop the old `renew`, start `charter payer`, start `renew` with `CHARTER_PAYER=url`, all inside a minute. Restart the payer only in that same window, and never `pkill -f` it from a command line that itself contains the pattern.
+**One payer per box (TOON era).** Since the open-hosts change a box pays the door with `charter renew` from
+`CHARTER_KEY_FILE` (or `charter-x402 renew`), one `exact` payment a tick, so there is no channel to share and
+no payer service. Before it: a tenant's channel store has exactly one writer: a voucher names a running total, so two processes signing on `~/.charter/channels.json` race it and the connector refuses the lower one. A box that pays for more than its rent (an agent's paid fetches, relay posts, its own Charter jobs) runs one `charter payer` (the service, `docs/env.md`) and every other payer in it uses `CHARTER_PAYER=url`. Edison's home does this since 2026-11-05: `~/.charter/boot.sh` starts the payer, then `renew` through it, then the Hermes gateway, whose plugins point at the same `http://127.0.0.1:3510`. To move a running `renew` onto the service without a missed tick: check `/charter/paid-through` (the next tick goes out 30 minutes before it), stop the old `renew`, start `charter payer`, start `renew` with `CHARTER_PAYER=url`, all inside a minute. Restart the payer only in that same window, and never `pkill -f` it from a command line that itself contains the pattern.
 
 **What install-home.sh adds to a host (toon2, hel1).** Run from `deploy/host/` with sudo, as the
 host user: `sudo ./install-home.sh` (or as root, `SUDO_USER=<host user> ./install-home.sh`). Where anon
