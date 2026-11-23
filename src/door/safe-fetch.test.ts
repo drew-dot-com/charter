@@ -37,9 +37,15 @@ test('normalizeHostUrl refuses http, userinfo, query, fragment and inward IP lit
   }
 });
 
+test('M3: normalizeHostUrl refuses a URL with a path: the door calls /v1/... at the host\'s root', () => {
+  for (const u of ['https://host.example.com/charter', 'https://host.example.com:8443/charter/', 'https://host.example.com/v1/offer', 'https://host.example.com/a/b']) {
+    assert.equal(normalizeHostUrl(u), null, u);
+  }
+});
+
 test('normalizeHostUrl lowercases the host and drops a trailing slash', () => {
   assert.equal(normalizeHostUrl('https://Host.Example.COM/'), 'https://host.example.com');
-  assert.equal(normalizeHostUrl('https://host.example.com:8443/charter//'), 'https://host.example.com:8443/charter');
+  assert.equal(normalizeHostUrl('https://host.example.com:8443//'), 'https://host.example.com:8443');
   assert.equal(normalizeHostUrl('https://host.example.com:443'), 'https://host.example.com');
   assert.equal(normalizeHostUrl('https://8.8.8.8'), 'https://8.8.8.8');
   assert.equal(normalizeHostUrl('https://172.32.0.1'), 'https://172.32.0.1');

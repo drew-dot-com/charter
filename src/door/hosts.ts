@@ -28,7 +28,8 @@ export const HIDE_AFTER_HOST_FAILURES = 2;
 
 /**
  * The canonical form of a host URL, or null when the door will not take it: `https:` only, no userinfo,
- * query or fragment; lowercase host without a trailing dot; no trailing slash. A host named by an IP literal
+ * query, fragment or path (the door calls `/v1/...` at the host's root); lowercase host without a trailing dot;
+ * no trailing slash. A host named by an IP literal
  * must be a public address (see blockedAddress); a name must have a dot and not be `localhost`. A name that
  * resolves inward is caught when fetched (safeFetch).
  */
@@ -42,13 +43,14 @@ export function normalizeHostUrl(u: string): string | null {
   }
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) return null;
   if (u.includes('?') || u.includes('#')) return null;
+  if (!/^\/*$/.test(url.pathname)) return null;
   const host = url.hostname.replace(/\.$/, '');
   const bare = host.replace(/^\[|\]$/g, '');
   if (isIP(bare)) {
     if (blockedAddress(bare)) return null;
   } else if (!host.includes('.') || host.endsWith('.localhost')) return null;
   const port = url.port ? `:${url.port}` : '';
-  return `https://${host}${port}${url.pathname.replace(/\/+$/, '')}`;
+  return `https://${host}${port}`;
 }
 
 /** sha256 hex (64 chars) of a normalized host URL: the host's id, and the 64 hex of its `offerId`s. */
