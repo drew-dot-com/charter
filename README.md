@@ -201,9 +201,9 @@ top for renters.
    and whenever its free home slots change. `charter-host offer --print` shows what it serves.
 5. **The probe.** The door opens a small paid python job on your host (it deposits 0.10 USDC into a channel
    to you first), pays one tick, and checks the output carries the hash it expects. Pass, and you are
-   listed. The door probes at most once a day per host, re-probes daily while you are listed, and at once
-   after two failed leases in a row. A failed probe hides you until one passes; three failed probes in a
-   row drop you, and the host must register again. Check your state: `GET <door>/v1/hosts`.
+   listed. The door probes at most once a day per host and re-probes daily while you are listed. Two failed
+   leases in a row, or a failed probe, hide you until a probe passes; a hidden host is re-probed at its next
+   daily probe. Three failed probes in a row drop you, and the host must register again. Check your state: `GET <door>/v1/hosts`.
 6. **Earnings.** Every paid tick is a voucher on the door's channel to you, kept in
    `<CHARTER_DATA_DIR>/x402-channels/`. `charter-host` claims them through the facilitator
    (`X402_FACILITATOR_URL`, PayAI by default, no key) once the channel has been quiet 7 days, or at once

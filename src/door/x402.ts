@@ -17,7 +17,7 @@ function leaseIdOfPath(path: string): string {
 export const RENT_INPUT_SCHEMA = {
   type: 'object',
   properties: {
-    offerId: { type: 'string', description: 'An offerId from GET /v1/offers. Left out: the cheapest listed offer that runs the job.' },
+    offerId: { type: 'string', description: 'An offerId from GET /v1/offers. Left out: the first listed offer in the door\'s ranking (host record, then price) that runs the job.' },
     python: {
       type: 'object',
       description: 'A python job: the script runs once with NumPy and no network; stdout, stderr and the exit code come back.',

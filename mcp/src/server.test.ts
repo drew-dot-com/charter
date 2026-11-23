@@ -246,6 +246,15 @@ test('with no key and key making off, the free tools work and the paid ones refu
   assert.deepEqual(d.seen.unpaidPosts, []);
 });
 
+test('charter_offers passes each host\'s operator and record through', async () => {
+  const record = { probesPassed: 3, leasesFinished: 12, successRate: 0.92, new: false };
+  const d = door({ '/v1/offers': [{ ...OFFER, operator: 'independent', record }] });
+  const { call } = await connect(options({ makeKey: false }), d.fetchFn);
+  const offers = JSON.parse((await call('charter_offers')).text);
+  assert.equal(offers.offers[0].operator, 'independent');
+  assert.deepEqual(offers.offers[0].record, record);
+});
+
 test('a private key handed to charter_rent_home is refused before anything is sent', async () => {
   const d = door({ '/v1/offers': [OFFER] });
   const { call } = await connect(options(), d.fetchFn);

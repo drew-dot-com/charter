@@ -340,6 +340,8 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
           memoryMiB: x.memoryMiB,
           images: x.images,
           home: x.home ?? null,
+          operator: x.operator ?? null,
+          record: x.record ?? null,
         })),
         docs: `${o.door}/agents`,
         ...caps(),
