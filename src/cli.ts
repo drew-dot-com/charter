@@ -23,7 +23,7 @@ const USAGE = `usage:
 the door is --door, else CHARTER_DOOR_URL, else ${DEFAULT_DOOR}
 rent and renew pay the door over x402 (exact USDC on Base) from the hex key in the file CHARTER_KEY_FILE, at most
   CHARTER_MAX_TICK micro-USDC a tick (default ${DEFAULT_MAX_TICK} = 0.01 USDC); address prints that key's address
-rent without --offer takes the cheapest listed offer that runs the job; a home always opens on the host that holds it
+rent without --offer takes the first offer in the door's ranking that runs the job; a home always opens on the host that holds it
 --home takes one SSH public key per line, --image picks the home image (charter-home by default, or charter-hermes)
 renew pays an open lease from the host's paid count on (--from, when given, must equal that count, or nothing is paid)`;
 
@@ -236,7 +236,7 @@ function jobOf(values: { urls?: string; python?: string; home?: string; image?: 
   return fetchJob(required(values.urls, '--urls').split(','));
 }
 
-/** The offer named, or the cheapest listed one that runs the job (the door's order breaks a tie). */
+/** The offer named, or the first one in the door's order (its ranking) that runs the job, whatever its price. */
 function pickOffer(offers: DoorOffer[], job: JobSpec, ref: string | undefined): DoorOffer {
   if (ref !== undefined) {
     const named = offers.find((o) => o.offerId === ref);
@@ -244,9 +244,9 @@ function pickOffer(offers: DoorOffer[], job: JobSpec, ref: string | undefined): 
     if (!named.images.includes(job.image)) throw new Error(`offer ${ref} does not list the ${job.image} image`);
     return named;
   }
-  const fits = offers.filter((o) => o.images.includes(job.image));
-  if (fits.length === 0) throw new Error(`the door lists no offer that runs ${job.image}`);
-  return fits.reduce((best, o) => (BigInt(o.tickPrice) < BigInt(best.tickPrice) ? o : best));
+  const first = offers.find((o) => o.images.includes(job.image));
+  if (!first) throw new Error(`the door lists no offer that runs ${job.image}`);
+  return first;
 }
 
 async function rentCommand(rest: string[], env: Env, d: CliDeps): Promise<number> {

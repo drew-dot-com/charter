@@ -515,6 +515,22 @@ export function doorApp(deps: DoorDeps): express.Express {
     return { leases, ...(lastLeaseAt === undefined ? {} : { lastLeaseAt }) };
   };
 
+  /**
+   * Offers in the order the door picks from: what rankOffers picks first, then, tier by tier, what it passed
+   * over (a host below the success floor), and hosts waiting for funding last, ranked the same way.
+   */
+  const doorOrder = (shown: Offer[]): Offer[] => {
+    const out: Offer[] = [];
+    let left = shown;
+    for (const opts of [{ waiting }, {}]) {
+      for (let tier = rankOffers(left, registry, opts); tier.length > 0; tier = rankOffers(left, registry, opts)) {
+        out.push(...tier);
+        left = left.filter((x) => !tier.includes(x));
+      }
+    }
+    return [...out, ...left];
+  };
+
   app.get('/v1/offers', async (_req, res) => {
     let list: Offer[];
     try {
@@ -523,8 +539,7 @@ export function doorApp(deps: DoorDeps): express.Express {
       return void res.status(502).json({ error: 'offers_unavailable' });
     }
     res.json(
-      list
-        .filter((o) => trusted(o) && o.images.some((i) => JOB_IMAGES.includes(i)) && o.expiresAt > now() && listed(o.hostId))
+      doorOrder(list.filter((o) => trusted(o) && o.images.some((i) => JOB_IMAGES.includes(i)) && o.expiresAt > now() && listed(o.hostId)))
         .map((o) => ({ ...publicOffer(o, registry.get(o.hostId), fee, waiting(o.hostId)), ...hostStats(o.hostId) })),
     );
   });

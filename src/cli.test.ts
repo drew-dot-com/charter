@@ -137,11 +137,11 @@ test('renew --from that is not the host\'s count pays nothing and exits 2', asyn
   assert.deepEqual(door.paid, []);
 });
 
-test('rent with no --offer opens on the cheapest listed offer that runs the job, and pays from tick 0', async () => {
+test('rent with no --offer opens on the door\'s first offer that runs the job, even when a later one is cheaper, and pays from tick 0', async () => {
   const clock = { t: 1_000_000 };
   const door = fakeDoor({
     clock,
-    offers: [offer(`${OTHER}:dear`, { tickPrice: '9000' }), offer(`${OTHER}:python`, { tickPrice: '1000', images: ['charter-job-python'] }), offer(`${HOST}:o1`)],
+    offers: [offer(`${OTHER}:python`, { tickPrice: '1000', images: ['charter-job-python'] }), offer(`${HOST}:o1`), offer(`${OTHER}:cheap`, { tickPrice: '2000' })],
   });
   const r = await cli(['rent', '--urls', 'https://e.com/a,https://e.com/b', '--max-intervals', '2', '--json'], { CHARTER_KEY_FILE: keyFile(), CHARTER_DOOR_URL: 'https://door.example' }, door, clock);
   assert.equal(r.code, 0, r.err);

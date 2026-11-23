@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { HostError, type HostApi, type OpenResult, type OutputPart, type TickResult } from '../tenant/host-api.js';
 import { listedRegistry, OFFER } from '../tenant/test-host.js';
+import { HOSTS_FILE, HostRegistry } from './hosts.js';
 import type { Lease, Micro, Offer } from '../types.js';
 import { DoorLedger, offerOfSnapshot, snapshotOffer } from './ledger.js';
 import { doorApp, readBudget, type DoorDeps } from './server.js';
@@ -278,6 +279,33 @@ test('a home body naming charter-hermes reaches the host as that image; an offer
     const b = await d.post('/v1/leases', { offerId: `${OFFER.hostId}:bare`, home: { sshKeys: [key], image: 'charter-hermes' } });
     assert.equal(b.status, 400);
     assert.deepEqual(await b.json(), { error: 'image_not_offered' });
+  } finally {
+    d.close();
+  }
+});
+
+test('GET /v1/offers lists in the door\'s ranking: a proven 0.95 host before a cheaper new host, a host below the floor next, one waiting for funding last', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'door-rank-'));
+  const record = (hostId: string, finished: number, hostFailed: number) => ({
+    hostId, url: `https://${hostId.slice(0, 8)}.example`, state: 'listed', registeredAt: 0,
+    probes: { passed: 1, failed: 0, consecutiveFailed: 0, lastAt: 0 },
+    leases: { opened: finished + hostFailed, finished, hostFailed, consecutiveHostFailed: 0 },
+    intervalsPaid: finished, homeTested: false,
+  });
+  const [proven, fresh, flaky, waiting] = ['1', '2', '3', '4'].map((c) => c.repeat(64));
+  writeFileSync(join(dir, HOSTS_FILE), JSON.stringify({
+    hosts: [record(proven!, 19, 1), record(fresh!, 0, 0), record(flaky!, 1, 1), record(waiting!, 5, 0)],
+    homes: {}, firstProbes: { day: '', count: 0 },
+  }));
+  const on = (hostId: string, tickPrice: bigint): Offer => ({ ...OFFER, hostId, url: `https://${hostId.slice(0, 8)}.example`, tickPrice });
+  const d = await start(fakeHost(), {
+    registry: new HostRegistry(join(dir, HOSTS_FILE)),
+    offers: async () => [on(waiting!, 500n), on(flaky!, 800n), on(fresh!, 1000n), on(proven!, 9000n)],
+    fundingWaiting: (id) => id === waiting,
+  });
+  try {
+    const list = (await (await d.get('/v1/offers')).json()) as Array<{ offerId: string }>;
+    assert.deepEqual(list.map((o) => o.offerId.split(':')[0]), [proven, fresh, flaky, waiting]);
   } finally {
     d.close();
   }
@@ -2298,7 +2326,8 @@ test('a proven host over the capital cap shows funding waiting and is never pick
   const d = await start(m.host, { offers, api: m.api, registry, fundingWaiting: (id) => id === OFFER.hostId });
   try {
     const list = (await (await d.get('/v1/offers')).json()) as Array<{ offerId: string; record: { funding?: string } }>;
-    assert.deepEqual(list.map((o) => [o.offerId.slice(0, 4), o.record.funding]), [['abab', 'waiting'], ['cdcd', undefined]]);
+    // Listed in the door's order: the host waiting for funding comes after the one it would pick.
+    assert.deepEqual(list.map((o) => [o.offerId.slice(0, 4), o.record.funding]), [['cdcd', undefined], ['abab', 'waiting']]);
     assert.equal((await d.post('/v1/rent', { urls: URLS })).status, 200);
     assert.equal(m.built.at(-1)!.hostId, H2, 'the cheaper host waits for funding');
   } finally {
