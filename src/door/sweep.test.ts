@@ -51,3 +51,17 @@ test('a failed balance read alerts and returns null', async () => {
   assert.equal(await sweepOnce(t.d), null);
   assert.equal(t.alerts.length, 1);
 });
+
+test('an alert never carries a URL from the error', async () => {
+  const t = deps(40_000_000n, async () => {
+    const e = new Error('HTTP request failed.\n\nURL: https://example.invalid/v2/SECRETKEY\nDetails: boom');
+    (e as { shortMessage?: string }).shortMessage = 'HTTP request failed. URL: https://example.invalid/v2/SECRETKEY';
+    throw e;
+  });
+  await sweepOnce(t.d);
+  assert.equal(t.alerts.length, 1);
+  assert.ok(!t.alerts[0]!.includes('SECRETKEY'));
+  const t2 = deps(40_000_000n, async () => { throw new Error('bad\nURL: https://example.invalid/v2/SECRETKEY'); });
+  await sweepOnce(t2.d);
+  assert.ok(!t2.alerts[0]!.includes('SECRETKEY'));
+});

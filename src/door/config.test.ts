@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { doorFunding, parseCdpKey, parsePayerKey, parseTrustProxy } from './config.js';
+import { doorFunding, parseSweepKeep, parseCdpKey, parsePayerKey, parseTrustProxy } from './config.js';
 import { claimSigner, parseClaimKey } from '../x402/seller.js';
 
 test('F-I5: CHARTER_DOOR_TRUST_PROXY accepts 1, true, or a hop count, and nothing else', () => {
@@ -84,4 +84,11 @@ test('parseCdpKey: the JSON the CDP portal downloads, {id} or legacy {name}, wit
   for (const bad of ['not json SECRETVALUE', '{}', JSON.stringify({ id: 'k' }), JSON.stringify({ privateKey: 'SECRETVALUE' }), JSON.stringify({ id: '', privateKey: 'SECRETVALUE' })]) {
     assert.throws(() => parseCdpKey(bad), (e: Error) => /CHARTER_CDP_KEY_FILE/.test(e.message) && !e.message.includes('SECRETVALUE'), bad);
   }
+});
+
+test('CHARTER_SWEEP_KEEP is a non-negative integer, default 15 USDC', () => {
+  assert.equal(parseSweepKeep(undefined), 15_000_000n);
+  assert.equal(parseSweepKeep(' 0 '), 0n);
+  assert.equal(parseSweepKeep('20000000'), 20_000_000n);
+  for (const bad of ['-1', '15.5', '1e7', 'abc']) assert.throws(() => parseSweepKeep(bad), /non-negative integer/);
 });

@@ -2,7 +2,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { BatchSettlementChannelManager } from '@x402/evm/batch-settlement/server';
-import { createPublicClient, http } from 'viem';
+import { createPublicClient, http, isAddress } from 'viem';
 import { base } from 'viem/chains';
 import { idleMsFor, startClaims, x402Command } from '../x402/claims.js';
 import { createFacilitatorConfig } from '@coinbase/x402';
@@ -12,7 +12,7 @@ import type { HostApi } from '../tenant/host-api.js';
 import type { Offer } from '../types.js';
 import { CAPITAL_FILE, CapitalBook, capitalAtRisk } from './capital.js';
 import { baseChannelChain } from './channel-chain.js';
-import { doorFunding, parseCdpKey, parsePayerKey, parseTrustProxy } from './config.js';
+import { doorFunding, parseSweepKeep, parseCdpKey, parsePayerKey, parseTrustProxy } from './config.js';
 import { fetchHostOffer, listedOffers } from './host-offers.js';
 import { HOST_TIMEOUT_MS, doorPayer, httpHostApi, type DoorPayer, type ReadContract } from './host-http.js';
 import { HostQueue } from './host-queue.js';
@@ -224,8 +224,8 @@ async function main(): Promise<void> {
   // Daily: everything the wallet holds above CHARTER_SWEEP_KEEP goes to CHARTER_SWEEP_TO. A failure is logged
   // at error level with a stable prefix the ops check greps for.
   const sweepTo = need(env, 'CHARTER_SWEEP_TO');
-  if (!/^0x[0-9a-fA-F]{40}$/.test(sweepTo)) throw new Error('CHARTER_SWEEP_TO must be a 0x address (40 hex characters)');
-  const sweepKeep = BigInt(env.CHARTER_SWEEP_KEEP?.trim() || '15000000');
+  if (!isAddress(sweepTo)) throw new Error('CHARTER_SWEEP_TO must be a valid 0x address (a mixed-case one must match its checksum)');
+  const sweepKeep = parseSweepKeep(env.CHARTER_SWEEP_KEEP);
   const stopSweep = startSweep({
     ...baseUsdcWallet(baseRpcUrl(env), key),
     keep: sweepKeep,

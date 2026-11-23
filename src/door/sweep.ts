@@ -15,6 +15,12 @@ export interface SweepDeps {
   alert: (s: string) => Promise<void>;
 }
 
+/** The error as one short line with every URL removed: an RPC URL may carry an API key. */
+function reason(e: unknown): string {
+  const raw = e instanceof Error ? ((e as { shortMessage?: string }).shortMessage ?? e.message) : String(e);
+  return raw.replace(/https?:\/\/\S+/gi, '<url>').replace(/\s+/g, ' ').slice(0, 200);
+}
+
 /** Sends `balance - keep` when that is positive. Returns the transaction hash, or null when nothing was sent or the sweep failed (after an alert). */
 export async function sweepOnce(d: SweepDeps): Promise<`0x${string}` | null> {
   try {
@@ -24,7 +30,7 @@ export async function sweepOnce(d: SweepDeps): Promise<`0x${string}` | null> {
     d.log(`sweep: ${amount} micro-USDC to ${d.to}, tx ${hash}`);
     return hash;
   } catch (e) {
-    await d.alert(`sweep failed: ${String(e instanceof Error ? e.message : e).slice(0, 200)}`).catch(() => undefined);
+    await d.alert(`sweep failed: ${reason(e)}`).catch(() => undefined);
     return null;
   }
 }

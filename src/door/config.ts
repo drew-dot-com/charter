@@ -75,3 +75,11 @@ export function parseCdpKey(fileText: string): { id: string; secret: string } {
   if (!id || typeof o.privateKey !== 'string' || !o.privateKey) throw bad;
   return { id, secret: o.privateKey };
 }
+
+/** CHARTER_SWEEP_KEEP in micro-USDC: a non-negative integer, default 15000000. */
+export function parseSweepKeep(v: string | undefined): bigint {
+  const t = v?.trim();
+  if (!t) return 15_000_000n;
+  if (!/^\d+$/.test(t)) throw new Error('CHARTER_SWEEP_KEEP must be a non-negative integer (micro-USDC)');
+  return BigInt(t);
+}
