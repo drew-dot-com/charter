@@ -4,11 +4,13 @@ import { createPublicClient, createWalletClient, http } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
 
-/** One of the door's channels to a host: its id, the config that names it on chain, and the balance the door's record holds. */
+/** One of the door's channels to a host: its id, the config that names it on chain, and what the door's record holds. */
 export interface DoorChannel {
   channelId: `0x${string}`;
   config: ChannelConfig;
   balance: bigint;
+  /** The cumulative amount the door's vouchers owe the host: claimed on chain or not, it is the host's. */
+  charged: bigint;
 }
 
 /** A channel as the x402BatchSettlement contract holds it. */

@@ -211,8 +211,11 @@ async function main(): Promise<void> {
     }
     return last;
   };
+  // A renter still paying a dropped host: its channel is left until that lease stops ticking.
+  const ticking = (hostId: string): boolean =>
+    ledger.all().some((l) => l.offer.hostId === hostId && !l.stopped && l.lastTickAt !== undefined && Date.now() - l.lastTickAt < l.offer.intervalSeconds * 1000);
   const stopReaper = startChannelReaper({
-    registry, payer, chain: baseChannelChain(baseRpcUrl(env), key), lastLeaseAt,
+    registry, payer, chain: baseChannelChain(baseRpcUrl(env), key), lastLeaseAt, ticking,
     // Releasing what is at risk leaves the book equal to what the host charged: nothing counted once channels are empty.
     capital: { locked, withdrawn: (hostId, amount) => capital.withdrawn(hostId, amount) },
     now: Date.now, log: (m) => console.log(`charter-door: ${m}`),

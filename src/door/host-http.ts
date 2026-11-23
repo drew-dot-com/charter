@@ -171,6 +171,9 @@ async function channelKeys(dir: string): Promise<string[]> {
 
 const amountOf = (v: string | undefined): bigint => (v !== undefined && /^\d+$/.test(v) ? BigInt(v) : 0n);
 
+/** The salt of the door's channel to a host: its hostId, so two hosts sharing a payTo never share a channel. */
+export const channelSalt = (hostId: string): `0x${string}` => `0x${hostId}`;
+
 /** Where the door keeps each channel's config (`config/<channelId>.json` in the host's dir): what a withdrawal names on chain. */
 const configDir = (dir: string): string => join(dir, 'config');
 
@@ -301,7 +304,8 @@ export function doorPayer(o: {
       for (const f of files.sort()) {
         const channelId = f.slice(0, -'.json'.length) as `0x${string}`;
         const config = JSON.parse(await readFile(join(configDir(dir), f), 'utf8')) as ChannelConfig;
-        out.push({ channelId, config, balance: amountOf((await storage.get(channelId))?.balance) });
+        const rec = await storage.get(channelId);
+        out.push({ channelId, config, balance: amountOf(rec?.balance), charged: amountOf(rec?.chargedCumulativeAmount) });
       }
       return out;
     },
@@ -344,6 +348,8 @@ export function doorPayer(o: {
         // The x402 fetch wraps every error in a plain one, so the reason is noted here and rethrown typed.
         const refused = { capped: false, unexpected: false, pending: false };
         const scheme = new BatchSettlementEvmScheme(signer, {
+          // One channel per host, even for hosts that share a payTo and receiver authorizer: the salt is the hostId.
+          salt: channelSalt(offer.hostId),
           storage,
           depositStrategy: async ({ minimumDepositAmount }) => {
             if (await depositPending(offer.hostId)) {

@@ -22,9 +22,11 @@ import { HostError } from '../tenant/host-api.js';
 import type { JobSpec, Offer } from '../types.js';
 import { BASE_USDC, type Gate } from '../x402/seller.js';
 import { stubGate } from './x402.js';
-import { CapitalCapError, DepositPendingError, doorPayer, httpHostApi, MAX_OUTPUT_PARTS, PENDING_CHECK_MS, paysOnly, UnexpectedPaymentError, type DepositFor, type DoorPayer, type ReadContract } from './host-http.js';
+import { CapitalCapError, channelSalt, DepositPendingError, doorPayer, httpHostApi, MAX_OUTPUT_PARTS, PENDING_CHECK_MS, paysOnly, UnexpectedPaymentError, type DepositFor, type DoorPayer, type ReadContract } from './host-http.js';
 import { CapitalBook } from './capital.js';
 import { HostQueue } from './host-queue.js';
+import { reapChannels } from './hosts.js';
+import { listedRegistry } from '../tenant/test-host.js';
 
 const T0 = 1_700_000_000_000;
 const KEY = ('0x' + '11'.repeat(32)) as `0x${string}`;
@@ -96,9 +98,9 @@ function challengeGate(asks: PaymentRequirements[], o: { settle?: 'on2xx' | 'alw
   return { gate, seen, paid };
 }
 
-/** The channel id the door's client derives from ASK. */
-function askChannelId(): string {
-  const config = new BatchSettlementEvmScheme({ address: DOOR.address, signTypedData: async () => '0x' }).buildChannelConfig(ASK);
+/** The channel id the door's client derives from ASK for a host (its salt is the hostId). */
+function askChannelId(hostId = HOST_ID): string {
+  const config = new BatchSettlementEvmScheme({ address: DOOR.address, signTypedData: async () => '0x' }, { salt: channelSalt(hostId) }).buildChannelConfig(ASK);
   return computeChannelId(config, ASK.network).toLowerCase();
 }
 
@@ -364,13 +366,54 @@ test('a paid tick keeps its channel config on disk, so the door can withdraw the
     await api.tick(leaseId, 0);
     await api.tick(leaseId, 1);
     const sent = g.paid[0]!.payload.channelConfig as Record<string, unknown>;
-    const want = [{ channelId: askChannelId(), config: sent, balance: 500_000n }];
+    const want = [{ channelId: askChannelId(), config: sent, balance: 500_000n, charged: 2n * PRICE }];
     assert.equal((sent.receiver as string).toLowerCase(), PAY_TO.toLowerCase());
     assert.deepEqual(await payer.channels(HOST_ID), want);
     assert.deepEqual(await t.payerFor().channels(HOST_ID), want, 'a restarted door reads it back');
     assert.equal(payer.chargedNow(HOST_ID), 2n * PRICE, 'the synchronous read the allocator uses');
     assert.equal(payer.chargedNow(HOST_ID), await payer.charged(HOST_ID));
     assert.equal(t.payerFor().chargedNow('cd'.repeat(32)), 0n, 'a host with no channel has charged nothing');
+  } finally {
+    t.done();
+  }
+});
+
+test('R11: two hosts sharing one payTo get different channels, and dropping one never touches the other\'s', async () => {
+  const g = challengeGate([ASK], { settle: 'on2xx' });
+  const t = await setup(g.gate);
+  try {
+    const payer = t.payerFor();
+    const B = 'cd'.repeat(32);
+    const apiA = t.apiFor({ payer });
+    const apiB = httpHostApi({ ...t.offer, hostId: B }, { payer, queue: new HostQueue(), now: () => T0 });
+    // The host app serves one lease at a time: B's payment pays the next tick of the same lease.
+    const { leaseId } = await apiA.open(JOB);
+    await apiA.tick(leaseId, 0);
+    await apiB.tick(leaseId, 1);
+    const sent = g.paid.map((p) => (p.payload.voucher as { channelId: string }).channelId.toLowerCase());
+    assert.deepEqual(sent, [askChannelId(HOST_ID), askChannelId(B)]);
+    assert.notEqual(sent[0], sent[1], 'same payTo, receiver authorizer and delay: still two channels');
+    assert.equal((g.paid[1]!.payload.channelConfig as { salt: string }).salt, `0x${B}`);
+    const [a] = await payer.channels(HOST_ID);
+    const [b] = await payer.channels(B);
+    assert.equal(a!.channelId, sent[0]);
+    assert.equal(b!.channelId, sent[1]);
+
+    // B is dropped: the reaper withdraws B's channel and never writes to A's.
+    const registry = listedRegistry(mkdtempSync(join(tmpdir(), 'reg-')), [HOST_ID, B]);
+    for (let i = 1; i <= 3; i++) registry.probeResult(B, false, T0 + i);
+    const writes: string[] = [];
+    await reapChannels({
+      registry, payer,
+      chain: {
+        state: async () => ({ balance: 500_000n, totalClaimed: 0n, withdrawInitiatedAt: 0 }),
+        initiateWithdraw: async (c) => void writes.push(c.channelId),
+        finalizeWithdraw: async (c) => void writes.push(`finalize ${c.channelId}`),
+      },
+      capital: { locked: () => 0n, withdrawn: () => undefined },
+      lastLeaseAt: () => T0, ticking: () => false, now: () => T0 + 60_000, log: () => undefined,
+    });
+    assert.deepEqual(writes, [sent[1]]);
   } finally {
     t.done();
   }

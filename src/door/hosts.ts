@@ -373,25 +373,45 @@ export interface ReaperDeps {
   capital: Pick<CapitalBook, 'locked' | 'withdrawn'>;
   /** Epoch ms of the host's newest lease or probe; undefined when it never had one. */
   lastLeaseAt: (hostId: string) => number | undefined;
+  /** An unstopped lease on the host had a host tick within its last interval: a dropped host is not withdrawn under it. */
+  ticking: (hostId: string) => boolean;
   now: () => number;
   log: (msg: string) => void;
 }
 
+const bigMax = (a: bigint, b: bigint): bigint => (a > b ? a : b);
+
 /**
- * One round of the channel reaper. A host is due when it is dropped or its last lease is IDLE_WITHDRAW_MS old.
- * Every channel: a withdrawal past its delay is finalized, whatever the host's state. A due host's channel with
- * unclaimed funds and no withdrawal pending gets one asked for all of it. Once every channel of a due host holds
- * nothing of the door's (withdrawn, or refunded by the host itself), what the door had locked there is released:
- * the rest was paid to the host. The door's record of a channel follows the chain after its balance moved.
+ * One round of the channel reaper. A host is due when it is dropped with no lease still ticking on it, or its last
+ * lease is IDLE_WITHDRAW_MS old. Every channel: a withdrawal past its delay is finalized, whatever the host's
+ * state. A due host's channel with funds the door does not owe the host (balance less the larger of claimed and
+ * the door's own charged amount) and no withdrawal pending gets one asked for those funds. Once every channel of a
+ * due host holds nothing of the door's (withdrawn, or refunded by the host itself), what `capital.locked` counts
+ * for it is released. The door's record of a channel follows the chain after its balance moved. A channel id kept
+ * under more than one host is never touched: whose it is cannot be told.
  */
 export async function reapChannels(d: ReaperDeps): Promise<void> {
-  for (const r of d.registry.all()) {
+  const hosts = d.registry.all();
+  const byHost = new Map<string, DoorChannel[]>();
+  const owners = new Map<string, number>();
+  for (const r of hosts) {
     const channels = await d.payer.channels(r.hostId);
+    byHost.set(r.hostId, channels);
+    for (const c of channels) owners.set(c.channelId, (owners.get(c.channelId) ?? 0) + 1);
+  }
+  for (const r of hosts) {
+    const channels = byHost.get(r.hostId)!;
     if (channels.length === 0) continue;
     const last = d.lastLeaseAt(r.hostId);
-    const due = r.state === 'dropped' || last === undefined || d.now() - last >= IDLE_WITHDRAW_MS;
+    const idle = last === undefined || d.now() - last >= IDLE_WITHDRAW_MS;
+    const due = (r.state === 'dropped' && !d.ticking(r.hostId)) || idle;
     let empty = true;
     for (const c of channels) {
+      if (owners.get(c.channelId)! > 1) {
+        empty = false;
+        d.log(`channel ${c.channelId} is kept under more than one host; left alone`);
+        continue;
+      }
       try {
         let s = await d.chain.state(c.channelId);
         let finalized = false;
@@ -404,12 +424,13 @@ export async function reapChannels(d: ReaperDeps): Promise<void> {
         }
         // Only on a quiet channel: a busy one's record may be ahead of the chain by a deposit still landing.
         if (s.balance !== c.balance && (due || finalized)) await d.payer.resync(r.hostId, c.channelId);
-        const free = s.balance - s.totalClaimed;
+        // What the door's vouchers already owe the host stays in the channel for it to claim.
+        const free = s.balance - bigMax(s.totalClaimed, c.charged);
         if (free <= 0n && s.withdrawInitiatedAt === 0) continue;
         empty = false;
         if (due && s.withdrawInitiatedAt === 0) {
           await d.chain.initiateWithdraw(c, free);
-          d.log(`channel ${c.channelId} of host ${r.url}: withdrawal of ${free} micro-USDC asked (${r.state === 'dropped' ? 'dropped' : 'idle'})`);
+          d.log(`channel ${c.channelId} of host ${r.url}: withdrawal of ${free} micro-USDC asked (${idle ? 'idle' : 'dropped'})`);
         }
       } catch (e) {
         empty = false;

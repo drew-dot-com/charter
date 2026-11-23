@@ -10,7 +10,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import express from 'express';
 import { privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts';
-import { computeChannelId } from '@x402/evm/batch-settlement/client';
+import { BatchSettlementEvmScheme, computeChannelId } from '@x402/evm/batch-settlement/client';
+import { FileClientChannelStorage } from '@x402/evm/batch-settlement/client/file-storage';
+import type { PaymentRequirements } from '@x402/core/types';
+import { channelSalt, doorPayer } from '../door/host-http.js';
+import type { Offer } from '../types.js';
 import { BATCH_SETTLEMENT_ADDRESS, voucherTypes } from '@x402/evm';
 import { BASE_USDC, MAX_TIMEOUT_SECONDS, WITHDRAW_DELAY_SECONDS, buildSchemes, type X402Config } from '../x402/seller.js';
 import { hostTickGate } from './x402.js';
@@ -80,6 +84,7 @@ async function gated(facilitatorUrl: string) {
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return {
     schemes, handled,
+    url: `${base}/v1/leases/${LEASE}/ticks`,
     tick: (headers: Record<string, string> = {}) =>
       fetch(`${base}/v1/leases/${LEASE}/ticks`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: '{"index":0}' }),
     close: () => void server.close(),
@@ -156,3 +161,29 @@ test('a payer other than the door is 403 not_door and never settled', async () =
     fac.close();
   }
 });
+
+test('R11: the door\'s channel salted with the hostId is accepted by a host\'s real batch-settlement gate', async () => {
+  const fac = await facilitator();
+  const g = await gated(fac.url);
+  try {
+    const hostId = 'ab'.repeat(32);
+    const required = unb64<Required>((await g.tick()).headers.get('payment-required')!);
+    const accepted = required.accepts[0]! as unknown as PaymentRequirements;
+    // A channel the door already funded, so this tick is a plain voucher (no deposit, no chain).
+    const config = new BatchSettlementEvmScheme({ address: door.address, signTypedData: async () => '0x' }, { salt: channelSalt(hostId) }).buildChannelConfig(accepted);
+    assert.equal(config.salt, `0x${hostId}`);
+    const channelId = computeChannelId(config, NETWORK).toLowerCase();
+    const channelDir = mkdtempSync(join(tmpdir(), 'door-salt-'));
+    await new FileClientChannelStorage({ directory: join(channelDir, hostId) }).set(channelId, { balance: '100000', chargedCumulativeAmount: '0' });
+    const payer = doorPayer({ key: ('0x' + 'cd'.repeat(32)) as `0x${string}`, channelDir, depositFor: () => 'over_cap' });
+    const offer = { hostId, payTo: PAY_TO } as Offer;
+    const res = await payer.paidFetch(offer, PRICE)(g.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"index":0}' });
+    assert.equal(res.status, 200, await res.clone().text());
+    assert.deepEqual(g.handled, [door.address.toLowerCase()]);
+    assert.equal((await g.schemes.batch.getStorage().get(channelId))?.chargedCumulativeAmount, PRICE.toString(), 'the host charged the salted channel');
+  } finally {
+    g.close();
+    fac.close();
+  }
+});
+

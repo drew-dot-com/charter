@@ -210,17 +210,20 @@ export function doorApp(deps: DoorDeps): express.Express {
 
   /**
    * A home whose disk is on a listed host opens there, whatever the ranking or a named offer says: the named
-   * offer when it is that host's, else that host's best offer for the image. When that host is not listed, a
-   * named offer opens a fresh home on purpose (and the open pins the home to its host); without one,
-   * 'home_host_gone'. Also 'home_host_gone' when a listed holder lists nothing open. Undefined for a home no
-   * host holds yet, or a job that is not a home.
+   * offer when it is that host's, else that host's best offer for the image. While that host is hidden or
+   * probing, every request for the home is 'home_host_gone': its disk may come back. Once it is dropped, a named
+   * offer opens a fresh home on purpose (its first paid tick pins the home there); without one, 'home_host_gone'.
+   * Also 'home_host_gone' when a listed holder lists nothing open. Undefined for a home no host holds yet, or a
+   * job that is not a home.
    */
   const pinnedOffer = (open: Offer[], job: JobSpec | null, named?: Offer): Offer | 'home_host_gone' | 'image_not_offered' | undefined => {
     const homeId = homeOf(job);
     const hostId = homeId === undefined ? undefined : registry.homeHost(homeId);
     if (!job || hostId === undefined) return undefined;
     if (named?.hostId === hostId) return named;
-    if (!listed(hostId)) return named ?? 'home_host_gone';
+    const holder = registry.get(hostId)?.state;
+    if (holder === undefined || holder === 'dropped') return named ?? 'home_host_gone';
+    if (holder !== 'listed') return 'home_host_gone';
     const its = open.filter((o) => o.hostId === hostId);
     if (its.length === 0) return 'home_host_gone';
     return rankOffers(its.filter((o) => o.images.includes(job.image)), registry, { home: true })[0] ?? 'image_not_offered';
@@ -298,10 +301,9 @@ export function doorApp(deps: DoorDeps): express.Express {
     // A paid home lease running with its access published: the host's homes work.
     if (host && !host.homeTested && rec!.homeId && rec!.ticksPaidToHost > 0 && lease.state === 'running' && lease.access) registry.markHomeTested(host.hostId);
   };
-  /** A lease the door just opened on a host: counted, its home pinned there, a host that could not boot it told. */
-  const opened = (r: OpenResult, offer: Offer, homeId: string | undefined): void => {
+  /** A lease the door just opened on a host: counted, and a host that could not boot it told. */
+  const opened = (r: OpenResult, offer: Offer): void => {
     if (registry.get(offer.hostId)) registry.leaseOpened(offer.hostId);
-    if (homeId !== undefined && r.state !== 'closed') registry.setHomeHost(homeId, offer.hostId);
     if (r.state === 'closed' && r.closedReason === 'boot_failed') outcome(r.leaseId, 'host_failed');
   };
 
@@ -577,7 +579,7 @@ export function doorApp(deps: DoorDeps): express.Express {
       if (!LEASE_ID.test(r.leaseId) || ledger.get(r.leaseId)) return void res.status(502).json({ error: 'bad_host_answer' });
       const homeId = homeOf(job);
       ledger.open({ leaseId: r.leaseId, offerId: offerIdOf(offer), createdAt: now(), offer: snapshotOffer(offer), fee: fee.toString(), ...(homeId ? { homeId } : {}) });
-      opened(r, offer, homeId);
+      opened(r, offer);
       res.json({
         leaseId: r.leaseId,
         state: r.state,
@@ -751,6 +753,9 @@ export function doorApp(deps: DoorDeps): express.Express {
         return void res.status(409).json({ error: 'duplicate', ...extra });
       }
       ledger.hostTick(id, now());
+      // A home's disk is on the host its first paid tick reached: renewals and re-opens go there.
+      const rec = ledger.get(id)!;
+      if (rec.homeId && rec.ticksPaidToHost === 1 && registry.homeHost(rec.homeId) !== offer.hostId) registry.setHomeHost(rec.homeId, offer.hostId);
       res.locals.hostPaid = { leaseId: id, price: offer.tickPrice };
       res.status(200).json(answer(t));
     } catch (e) {
@@ -865,7 +870,7 @@ export function doorApp(deps: DoorDeps): express.Express {
     const leaseId = r.leaseId;
     const homeId = homeOf(job);
     ledger.open({ leaseId, offerId: offerIdOf(offer), createdAt: now(), offer: snapshotOffer(offer), fee: fee.toString(), ...(homeId ? { homeId } : {}) });
-    opened(r, offer, homeId);
+    opened(r, offer);
     res.locals.leaseId = leaseId;
     // The tick route waits for this one: the lease is the rent's until it answers.
     ticking.add(leaseId);

@@ -2161,7 +2161,7 @@ function multiHost(over: Partial<HostApi> = {}, tickFailure?: Error | ((n: numbe
   return { host, ids, built, api: (o: Offer) => (built.push(o), host.api) };
 }
 
-test('a home re-open goes to the host that holds the home; home_host_gone when that host is hidden and no offer is named', async () => {
+test('a home re-open goes to the host that holds the home; home_host_gone while it is hidden; a named offer re-pins once it is dropped', async () => {
   const m = multiHost();
   const registry = listedRegistry(mkdtempSync(join(tmpdir(), 'reg-')), [OFFER.hostId, H2]);
   let prices = { h1: 9000n, h2: 5000n };
@@ -2191,8 +2191,19 @@ test('a home re-open goes to the host that holds the home; home_host_gone when t
     const gone = await d.post('/v1/rent', { home: { sshKeys: [KEY_A] } });
     assert.equal(gone.status, 409);
     assert.deepEqual(await gone.json(), { error: 'home_host_gone' });
-    // R9: naming an offer on another host opens a fresh home there on purpose, and the home follows it.
+    // R11: while the holder is only hidden its disk may come back: a named offer is home_host_gone too.
+    const hiddenNamed = await d.post('/v1/rent', { offerId: OFFER_ID, home: { sshKeys: [KEY_A] } });
+    assert.equal(hiddenNamed.status, 409);
+    assert.deepEqual(await hiddenNamed.json(), { error: 'home_host_gone' });
+    const hiddenOpen = await d.post('/v1/leases', { offerId: OFFER_ID, home: { sshKeys: [KEY_A] } });
+    assert.equal(hiddenOpen.status, 409);
+
+    // Once the holder is dropped, naming an offer opens a fresh home there on purpose, and the home follows it.
+    registry.probeResult(H2, false, d.clock.t + 1);
+    registry.probeResult(H2, false, d.clock.t + 2);
+    assert.equal(registry.get(H2)!.state, 'dropped');
     const homeId = homeIdOf(normalizeSshKeys([KEY_A])!);
+    assert.equal((await d.post('/v1/rent', { home: { sshKeys: [KEY_A] } })).status, 409, 'unnamed, still home_host_gone');
     const fresh = await d.post('/v1/rent', { offerId: OFFER_ID, home: { sshKeys: [KEY_A] } });
     assert.equal(fresh.status, 200);
     assert.equal(m.built.at(-1)!.hostId, OFFER.hostId);
@@ -2349,3 +2360,20 @@ test('a tick the door cannot fund answers 503 capacity and is no host failure', 
     d.close();
   }
 });
+
+test('R11: a home is pinned at its first paid host tick, not at an unpaid open', async () => {
+  const m = multiHost();
+  const registry = listedRegistry(mkdtempSync(join(tmpdir(), 'reg-')));
+  const d = await start(m.host, { offers: async () => [{ ...OFFER, images: ['charter-home'], home: HOME_TERMS }], api: m.api, registry });
+  try {
+    const homeId = homeIdOf(normalizeSshKeys([KEY_A])!);
+    const open = await d.post('/v1/leases', { offerId: OFFER_ID, home: { sshKeys: [KEY_A] } });
+    assert.equal(open.status, 200);
+    assert.equal(registry.homeHost(homeId), undefined, 'an open nobody paid for pins nothing');
+    assert.equal((await d.post(`/v1/leases/${m.ids[0]}/ticks`, { index: 0 })).status, 200);
+    assert.equal(registry.homeHost(homeId), OFFER.hostId);
+  } finally {
+    d.close();
+  }
+});
+
