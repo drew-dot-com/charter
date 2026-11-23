@@ -149,6 +149,7 @@ test('startProbes probes due hosts at once: a pass lists, a bad offer fails, a c
     log: (m) => logs.push(m),
     sleep: async () => undefined,
     depositFor: () => 100_000n,
+    locked: () => 0n,
     probeMaxTick: DEFAULT_PROBE_MAX_TICK,
     fetchOffer: async (url) => (url.includes('bad') ? 'bad_offer' : { ...OFFER, id: url }),
     apiOf: (o) => {
@@ -222,6 +223,7 @@ test('a round probes one host at a time: two hosts at 0.90 locked do not both ge
   const stop = startProbes({
     registry: reg, perDay: 10, now: () => NOW, log: (m) => logs.push(m), sleep: async () => undefined,
     depositFor: capitalAllocator({ registry: reg, locked: (id) => locked.get(id) ?? 0n, ...CAPS }),
+    locked: (id) => locked.get(id) ?? 0n,
     probeMaxTick: DEFAULT_PROBE_MAX_TICK,
     fetchOffer: async (url) => ({ ...OFFER, id: url }),
     // a fails, so it stays unproven and its 0.10 stays in the probe tier.
@@ -250,6 +252,7 @@ test('a round while capital is refused counts nothing and opens nothing, round a
     const stop = startProbes({
       registry: reg, perDay: 10, now: () => NOW, log: (m) => logs.push(m), sleep: async () => undefined,
       depositFor: capitalAllocator({ registry: reg, locked: (h) => locked.get(h) ?? 0n, ...CAPS }),
+      locked: (h) => locked.get(h) ?? 0n,
       probeMaxTick: DEFAULT_PROBE_MAX_TICK,
       fetchOffer: async () => assert.fail('no offer fetch for a host the door cannot fund'),
       apiOf: (o) => honestHost(locked, hostIdOf(o.id), opens),
@@ -274,6 +277,7 @@ test('startProbes records price_too_high as a failed probe and pays nothing', as
   const stop = startProbes({
     registry: reg, perDay: 10, now: () => NOW, log: (m) => logs.push(m), sleep: async () => undefined,
     depositFor: () => 100_000n,
+    locked: () => 0n,
     probeMaxTick: DEFAULT_PROBE_MAX_TICK,
     fetchOffer: async (url) => ({ ...OFFER, id: url, tickPrice: 1_000_000n }),
     apiOf: (o) => honestHost(new Map(), hostIdOf(o.id), opens),
@@ -283,6 +287,51 @@ test('startProbes records price_too_high as a failed probe and pays nothing', as
     assert.deepEqual(opens, []);
     assert.equal(reg.get(id)!.probes.failed, 1);
     assert.ok(logs.some((l) => l.includes('price_too_high')));
+  } finally {
+    stop();
+  }
+});
+
+test('with the proven tier full, a hidden proven host with funds locked is still re-probed; one with nothing locked waits', async () => {
+  const reg = newRegistry();
+  const locked = new Map<string, bigint>();
+  const T = NOW + 2 * 86_400_000;
+  // 20 proven hosts at 0.50 fill the 10 USDC tier; probed just before T, so not due.
+  for (let i = 0; i < 20; i++) {
+    const id = (reg.register(`https://full${i}.example`, 1) as { hostId: string }).hostId;
+    reg.probeResult(id, true, T - 1);
+    locked.set(id, 500_000n);
+  }
+  const funded = (reg.register('https://funded.example', 2) as { hostId: string }).hostId;
+  const empty = (reg.register('https://empty.example', 3) as { hostId: string }).hostId;
+  for (const id of [funded, empty]) {
+    reg.probeResult(id, true, NOW);
+    reg.leaseHostFailed(id, NOW + 1);
+    reg.leaseHostFailed(id, NOW + 2);
+    assert.equal(reg.get(id)!.state, 'hidden');
+  }
+  locked.set(funded, 100_000n);
+  const depositFor = capitalAllocator({ registry: reg, locked: (h) => locked.get(h) ?? 0n, ...CAPS });
+  assert.equal(depositFor(funded), 'over_cap');
+  assert.equal(depositFor(empty), 'over_cap');
+  const opens: string[] = [];
+  const logs: string[] = [];
+  const stop = startProbes({
+    registry: reg, perDay: 10, now: () => T, log: (m) => logs.push(m), sleep: async () => undefined,
+    depositFor,
+    locked: (h) => locked.get(h) ?? 0n,
+    probeMaxTick: DEFAULT_PROBE_MAX_TICK,
+    fetchOffer: async (url) => ({ ...OFFER, id: url }),
+    apiOf: (o) => honestHost(locked, hostIdOf(o.id), opens),
+  });
+  try {
+    await until(() => logs.length >= 2);
+    assert.deepEqual(opens, [funded]);
+    assert.equal(reg.get(funded)!.state, 'listed');
+    assert.equal(reg.get(funded)!.leases.consecutiveHostFailed, 0);
+    assert.equal(reg.get(empty)!.state, 'hidden');
+    assert.equal(reg.get(empty)!.probes.lastAt, NOW);
+    assert.ok(logs.some((l) => l.includes('empty.example') && l.includes('waits for door capital')));
   } finally {
     stop();
   }

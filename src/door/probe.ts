@@ -68,8 +68,9 @@ export async function probeHost(
 
 /**
  * Probes due hosts (HostRegistry.dueProbes) now and every PROBE_ROUND_MS, one after another, so each sees the
- * capital the one before it locked. A round skips a host `depositFor` answers 'over_cap' for before anything
- * else: no first probe counted, no lease opened, nothing recorded. Otherwise it fetches the host's offer afresh
+ * capital the one before it locked. A round skips a host with nothing `locked` that `depositFor` answers
+ * 'over_cap' for, before anything else: no first probe counted, no lease opened, nothing recorded. A host whose
+ * channel already holds funds needs no deposit and is never skipped for capital. Otherwise it fetches the host's offer afresh
  * (a bad one fails the probe), then runs probeHost and records the result. A probe the door's capital still
  * refuses mid-way is logged and records nothing. A round still running when the next is due is not doubled.
  * Returns a stop function.
@@ -79,6 +80,8 @@ export function startProbes(d: {
   apiOf: (o: Offer) => HostApi;
   fetchOffer: (url: string) => Promise<Offer | 'bad_offer'>;
   depositFor: DepositFor;
+  /** What the door has put into the host's channels and not withdrawn (as for capitalAllocator). */
+  locked: (hostId: string) => bigint;
   probeMaxTick: Micro;
   perDay: number;
   now: () => number;
@@ -92,7 +95,8 @@ export function startProbes(d: {
   const probe = async (hostId: string): Promise<void> => {
     const r = d.registry.get(hostId);
     if (!r) return;
-    if (d.depositFor(hostId) === 'over_cap') {
+    // A host whose channel already holds funds needs no new deposit, so a full tier does not hold it back.
+    if (d.locked(hostId) === 0n && d.depositFor(hostId) === 'over_cap') {
       d.log(`probe ${r.url}: waits for door capital`);
       return;
     }
