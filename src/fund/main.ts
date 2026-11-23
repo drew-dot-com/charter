@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { privateKeyToAccount } from 'viem/accounts';
 import { doorClient, usdcBalance, type DoorClient } from './door-client.js';
 import { judge, JUDGE_API_VERSION, JUDGE_TIMEOUT_MS, uncountedJudgeError } from './judge.js';
-import { cycle, GRANT_HOURS, makeJudgeOne, MAX_TICK_MICRO, type CycleDeps } from './paymaster.js';
+import { cycle, DEFAULT_GRANT_MIN_LEASES, GRANT_HOURS, makeJudgeOne, MAX_TICK_MICRO, type CycleDeps } from './paymaster.js';
 import { emptyState, loadState, saveState, type FundState } from './state.js';
 
 export const CYCLE_MS = 60_000;
@@ -118,6 +118,14 @@ async function readOffers(door: DoorClient): Promise<{ slots: number; tick: bigi
   return tick > 0n ? { slots, tick } : undefined;
 }
 
+/** CHARTER_GRANT_MIN_LEASES: finished leases a host needs before a new grant opens on it; default 5. */
+export function minLeases(env: NodeJS.ProcessEnv): number {
+  const raw = env.CHARTER_GRANT_MIN_LEASES?.trim();
+  if (!raw) return DEFAULT_GRANT_MIN_LEASES;
+  if (!/^\d{1,6}$/.test(raw)) throw new Error('CHARTER_GRANT_MIN_LEASES must be a whole number');
+  return Number(raw);
+}
+
 // ---- one iteration ----
 
 export interface OnceDeps {
@@ -129,6 +137,8 @@ export interface OnceDeps {
   now: () => number;
   judgeOne: () => Promise<void>;
   runCycle?: (d: CycleDeps) => Promise<void>;
+  /** Finished leases a host needs before a new grant opens on it. */
+  minLeases?: number;
 }
 
 /**
@@ -154,7 +164,7 @@ export async function runOnce(d: OnceDeps): Promise<void> {
         await (d.runCycle ?? cycle)({
           door: d.door, address: d.address, balance: d.balance, now: d.now, state: d.state,
           save: () => saveState(join(d.dir, 'state.json'), d.state), problem, judgeOne: d.judgeOne,
-          lastBalanceMicro: () => lastBalance(d.dir),
+          lastBalanceMicro: () => lastBalance(d.dir), ...(d.minLeases !== undefined ? { minLeases: d.minLeases } : {}),
         });
       } catch (e) {
         problem('cycle', errText(e));
@@ -336,9 +346,10 @@ async function run(env: NodeJS.ProcessEnv): Promise<void> {
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
   console.log(`charter-fund up: address ${address}, data ${dir}`);
+  const grantMinLeases = minLeases(env);
   await runLoop({
     signal,
-    once: () => runOnce({ dir, state, door, address, balance: () => usdcBalance(address, rpcUrl), now: Date.now, judgeOne }),
+    once: () => runOnce({ dir, state, door, address, balance: () => usdcBalance(address, rpcUrl), now: Date.now, judgeOne, minLeases: grantMinLeases }),
     sleep: (ms) => new Promise<void>((r) => {
       const t = setTimeout(r, ms);
       wake = () => {

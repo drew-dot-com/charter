@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { ALLOWED_MOVES, type GrantState } from '../door/grants.js';
 import type { Answer, DoorClient } from './door-client.js';
 import type { PitchIn, Verdict } from './judge.js';
-import { commitmentOk, cycle, dayCapOk, HOME_USED_REASON, makeJudgeOne, MAX_JUDGE_TRIES, tickDue } from './paymaster.js';
+import { commitmentOk, cycle, dayCapOk, grantEligible, HOME_USED_REASON, makeJudgeOne, MAX_JUDGE_TRIES, tickDue } from './paymaster.js';
 import { writeFileSync } from 'node:fs';
 import { emptyState, loadState, saveState, type FundState } from './state.js';
 
@@ -32,6 +32,7 @@ function offer(o: Record<string, unknown> = {}) {
     hiddenEgress: true,
     expiresAt: T0 + 365 * DAY,
     home: { diskGiB: 2, retentionDays: 7, slots: 2, free: 1 },
+    record: { probesPassed: 3, leasesFinished: 5, successRate: 1, new: false },
     ...o,
   };
 }
@@ -937,6 +938,101 @@ test('a re-open waits for a free slot rather than ending', async () => {
   await r.run();
   assert.equal(r.state.grants[id]!.reopened, true);
   assert.equal(r.state.grants[id]!.fundTicks, 2);
+});
+
+// ---- grants open only on hosts with a record ----
+
+const rec = (leasesFinished: number, more: Record<string, unknown> = {}) => ({ probesPassed: 3, leasesFinished, successRate: 1, new: false, ...more });
+
+test('grantEligible: 5 leases and no probe failure in 7 days', () => {
+  assert.equal(grantEligible({}, T0, 5), false, 'no record');
+  assert.equal(grantEligible({ record: { leasesFinished: 4 } }, T0, 5), false);
+  assert.equal(grantEligible({ record: { leasesFinished: 5 } }, T0, 5), true);
+  assert.equal(grantEligible({ record: { leasesFinished: 5, lastProbeFailedAt: T0 - 7 * DAY + 1 } }, T0, 5), false);
+  assert.equal(grantEligible({ record: { leasesFinished: 5, lastProbeFailedAt: T0 - 7 * DAY } }, T0, 5), true);
+});
+
+test('a host with 4 finished leases is skipped', async () => {
+  const r = rig();
+  r.door.offers = [offer({ offerId: 'hostpub:thin', record: rec(4) }), offer({ offerId: 'hostpub:proven', record: rec(5) })];
+  const id = r.door.grant();
+  await r.run();
+  assert.equal(r.door.paid().find((p) => p.path === '/v1/rent')!.json.offerId, 'hostpub:proven');
+  assert.equal(r.door.g(id).state, 'active');
+});
+
+test('5 finished and a failed probe 3 days ago is skipped', async () => {
+  const r = rig();
+  r.door.offers = [offer({ offerId: 'hostpub:flaky', record: rec(9, { lastProbeFailedAt: T0 - 3 * DAY }) }), offer({ offerId: 'hostpub:ok', record: rec(5, { lastProbeFailedAt: T0 - 8 * DAY }) })];
+  r.door.grant();
+  await r.run();
+  assert.equal(r.door.paid().find((p) => p.path === '/v1/rent')!.json.offerId, 'hostpub:ok');
+});
+
+test('5 finished, no recent failure, is picked', async () => {
+  const r = rig();
+  r.door.offers = [offer({ record: rec(5) })];
+  const id = r.door.grant();
+  await r.run();
+  assert.equal(r.door.g(id).state, 'active');
+});
+
+test('a host waiting for funding is skipped for new grants', async () => {
+  const r = rig();
+  r.door.offers = [offer({ offerId: 'hostpub:wait', record: rec(9, { funding: 'waiting' }) })];
+  r.door.grant();
+  await r.run();
+  assert.equal(r.door.paid().length, 0);
+});
+
+test('none eligible waits and opens nothing', async () => {
+  const r = rig();
+  r.door.offers = [offer({ record: rec(4) }), offer({ offerId: 'hostpub:none', record: undefined })];
+  const id = r.door.grant();
+  await r.run();
+  assert.equal(r.door.paid().length, 0);
+  assert.equal(r.door.g(id).state, 'approved_waiting');
+  assert.ok(r.problems.some((p) => p.msg.includes('no host with a record has a free home slot; waiting')), JSON.stringify(r.problems));
+});
+
+test('a re-open without a pin picks only a proven host; none waits', async () => {
+  const r = rig();
+  const { id, leaseId } = await opened(r);
+  r.door.close(leaseId);
+  r.door.offers = [offer({ record: rec(1) })];
+  r.clock.t += 2 * HOUR;
+  await r.run();
+  assert.equal(r.door.paid().filter((p) => p.path === '/v1/rent').length, 1);
+  assert.equal(r.state.grants[id]!.reopened, false);
+  assert.ok(r.problems.some((p) => p.msg.includes('no host with a record has a free home slot; waiting')));
+});
+
+test('a pinned re-open keeps going to its offer whatever its record', async () => {
+  const r = rig();
+  const { id, leaseId } = await opened(r);
+  r.door.close(leaseId);
+  r.state.grants[id]!.opening = { offerId: 'hostpub:offer1', at: T0 };
+  r.door.offers = [offer({ record: rec(0) })];
+  r.clock.t += 2 * HOUR;
+  await r.run();
+  assert.equal(r.door.paid().filter((p) => p.path === '/v1/rent').length, 2);
+});
+
+test('home_host_gone on a re-open waits; the grant is not ended', async () => {
+  const r = rig();
+  const { id, leaseId } = await opened(r);
+  r.door.close(leaseId);
+  r.clock.t += 2 * HOUR;
+  r.door.onPay = (path) => (path === '/v1/rent' ? { status: 409, body: { error: 'home_host_gone' } } : undefined);
+  await r.run();
+  assert.equal(r.door.g(id).state, 'active');
+  assert.equal(r.state.grants[id]!.reopened, false);
+  assert.equal(r.state.grants[id]!.opening, undefined);
+  assert.ok(r.problems.some((p) => p.msg.includes('home_host_gone')));
+  r.door.onPay = undefined;
+  r.clock.t += 6 * 60_000;
+  await r.run();
+  assert.equal(r.state.grants[id]!.reopened, true);
 });
 
 // ---- stops ----

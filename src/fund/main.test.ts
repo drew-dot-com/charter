@@ -288,3 +288,10 @@ test('redact strips registered secrets from any problem text, even one that slip
   });
   assert.doesNotMatch(readFileSync(join(d, 'health.json'), 'utf8'), /SECRETAPIKEY123/);
 });
+
+test('CHARTER_GRANT_MIN_LEASES: default 5, a whole number overrides, junk is refused', async () => {
+  const { minLeases } = await import('./main.js');
+  assert.equal(minLeases({}), 5);
+  assert.equal(minLeases({ CHARTER_GRANT_MIN_LEASES: '12' }), 12);
+  assert.throws(() => minLeases({ CHARTER_GRANT_MIN_LEASES: 'many' }));
+});

@@ -75,7 +75,33 @@ function mayHaveHostPaid(a: Answer): boolean {
   return a.status === 409 && isObj(a.body) && (a.body.error === 'lease_done' || a.body.error === 'not_running');
 }
 
-interface Offer { offerId: string; images: string[]; intervalSeconds: number; tick: bigint; free: number }
+interface Offer {
+  offerId: string;
+  images: string[];
+  intervalSeconds: number;
+  tick: bigint;
+  free: number;
+  /** The door's public record of the host (`/v1/offers`); absent when the door sent none. */
+  record?: { leasesFinished: number; lastProbeFailedAt?: number; funding?: string };
+}
+
+/** A failed probe this recent keeps a host out of new grants. */
+export const GRANT_PROBE_FAIL_MS = 7 * 86_400_000;
+/** Finished paid leases a host needs before a new grant opens on it (CHARTER_GRANT_MIN_LEASES overrides). */
+export const DEFAULT_GRANT_MIN_LEASES = 5;
+export const NO_PROVEN_HOST = 'no host with a record has a free home slot; waiting';
+
+/** A host a new grant may open on: at least `minLeases` finished leases and no failed probe in the last 7 days. */
+export function grantEligible(
+  o: { record?: { leasesFinished: number; lastProbeFailedAt?: number } },
+  now: number,
+  minLeases: number,
+): boolean {
+  const r = o.record;
+  if (!r || !isCount(r.leasesFinished) || r.leasesFinished < minLeases) return false;
+  if (typeof r.lastProbeFailedAt === 'number' && now - r.lastProbeFailedAt < GRANT_PROBE_FAIL_MS) return false;
+  return true;
+}
 
 /** A tick price the fund will pay: a decimal string, more than 0, at most MAX_TICK_MICRO. */
 function priceOf(x: unknown): bigint | undefined {
@@ -90,7 +116,16 @@ function readOffer(o: unknown): Offer | undefined {
   const tick = priceOf(o.tickPrice);
   if (tick === undefined) return undefined;
   const free = isObj(o.home) && Number.isSafeInteger(o.home.free) ? (o.home.free as number) : 0;
-  return { offerId: o.offerId, images: o.images.filter((i: unknown) => typeof i === 'string'), intervalSeconds: o.intervalSeconds, tick, free };
+  const out: Offer = { offerId: o.offerId, images: o.images.filter((i: unknown) => typeof i === 'string'), intervalSeconds: o.intervalSeconds, tick, free };
+  const r = o.record;
+  if (isObj(r) && isCount(r.leasesFinished)) {
+    out.record = {
+      leasesFinished: r.leasesFinished,
+      ...(typeof r.lastProbeFailedAt === 'number' && Number.isFinite(r.lastProbeFailedAt) ? { lastProbeFailedAt: r.lastProbeFailedAt } : {}),
+      ...(typeof r.funding === 'string' ? { funding: r.funding } : {}),
+    };
+  }
+  return out;
 }
 
 /**
@@ -214,6 +249,8 @@ export interface CycleDeps {
   judgeOne: () => Promise<void>;
   /** The balance last reported (decimal micro-USDC), for closing intake while the RPC is down. */
   lastBalanceMicro?: () => string | undefined;
+  /** Finished leases a host needs before a new grant opens on it. Default 5. */
+  minLeases?: number;
 }
 
 /** One pass. Never throws: every failure is a `problem` and the pass goes on with the next grant. */
@@ -404,6 +441,12 @@ class Pass {
     return this.balanceP;
   }
 
+  /** The offers a new grant may open on: free slot, the image, a proven host, not waiting for funding. */
+  private proven(offers: Offer[], image: string): Offer[] {
+    const min = this.d.minLeases ?? DEFAULT_GRANT_MIN_LEASES;
+    return offers.filter((o) => o.free > 0 && o.images.includes(image) && o.record?.funding !== 'waiting' && grantEligible(o, this.t, min));
+  }
+
   private offers(): Promise<Offer[] | undefined> {
     this.offersP ??= (async () => {
       let a: Answer;
@@ -534,9 +577,10 @@ class Pass {
     const pinned = rec0?.opening;
     const offer = pinned
       ? offers.find((o) => o.offerId === pinned.offerId && o.images.includes(home.image))
-      : offers.find((o) => o.free > 0 && o.images.includes(home.image));
+      : this.proven(offers, home.image)[0];
     if (!offer) {
       if (pinned) this.problem('open', `grant ${short(w.grantId)}: an earlier open on offer ${pinned.offerId} got no answer and that offer is not listed now; waiting for it, not opening anywhere else`);
+      else this.problem('open', `grant ${short(w.grantId)}: ${NO_PROVEN_HOST}`);
       return;
     }
     const bal = await this.balance();
@@ -699,7 +743,7 @@ class Pass {
     if (pinned) {
       offer = offers.find((o) => o.offerId === pinned.offerId && o.images.includes(home.image));
     } else {
-      const fits = offers.filter((o) => o.free > 0 && o.images.includes(home.image));
+      const fits = this.proven(offers, home.image);
       const same = isObj(leaseOffer) ? leaseOffer.offerId : undefined;
       offer = fits.find((o) => o.offerId === same) ?? fits[0];
     }
@@ -709,7 +753,7 @@ class Pass {
         'open',
         pinned
           ? `grant ${short(g.grantId)}: an earlier re-open on offer ${pinned.offerId} got no answer and that offer is not listed now; waiting for it, not opening anywhere else`
-          : `grant ${short(g.grantId)}: its lease closed and no offer has a free home slot; waiting to re-open`,
+          : `grant ${short(g.grantId)}: its lease closed and ${NO_PROVEN_HOST}`,
       );
     }
     if (!dayCapOk(this.spent(g), 1, offer.tick, offer.tick)) {
@@ -717,6 +761,7 @@ class Pass {
       return this.problem('daycap', `grant ${short(g.grantId)}: its day cap leaves no room to re-open today`);
     }
     // Saved before the request: a crash or a lost answer can never lead to a re-open somewhere else.
+    const wasReopened = g.reopened;
     g.reopened = true;
     g.opening = { offerId: offer.offerId, at: pinned?.at ?? this.t };
     this.d.save();
@@ -747,6 +792,13 @@ class Pass {
       case 'refused': {
         delete g.opening;
         const r = a as Answer;
+        if (r.status === 409 && errOf(r) === 'home_host_gone') {
+          // The host that holds the disk is not answering now, and nothing was paid: wait, as for "no offer now".
+          g.reopened = wasReopened;
+          g.nextReadAt = this.t + BACKOFF_MS;
+          this.d.save();
+          return this.problem('open', `grant ${short(g.grantId)}: the host that holds the home is gone for now (home_host_gone); waiting to re-open`);
+        }
         this.problem('open', `grant ${short(g.grantId)}: the re-open answered ${r.status} ${errOf(r)}; ending the grant`);
         return this.end(g, 'ended_early');
       }
