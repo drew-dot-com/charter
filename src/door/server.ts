@@ -9,7 +9,7 @@ import { ALLOWED_MOVES, BadMove, ownerView, publicView, readFundPublic, validate
 import type { JobSpec, Lease, Micro, Offer } from '../types.js';
 import { DeadlinePassedError, SendTimeoutError } from '../errors.js';
 import { offerOfSnapshot, snapshotOffer, type DoorLedger, type LeaseOutcome, type LossKind } from './ledger.js';
-import { CapitalCapError, DepositPendingError } from './host-http.js';
+import { CapitalCapError, DepositPendingError, DepositTimeoutError } from './host-http.js';
 import { publicRecord, rankOffers, type HostRecord, type HostRegistry } from './hosts.js';
 import { hostRoutes } from './hosts-routes.js';
 import { slidingLimit } from './limit.js';
@@ -794,8 +794,9 @@ export function doorApp(deps: DoorDeps): express.Express {
       // The door's own capital refused the deposit: nothing was sent, the host did nothing wrong, the renter may retry.
       if (e instanceof CapitalCapError || e instanceof DepositPendingError) return void res.status(503).json({ error: 'capacity', ...extra });
       const over = e instanceof HostError && e.status === 409 && (e.error === 'lease_done' || e.error === 'not_running');
-      // A refused, failed or unanswered tick (a 402 the door will not pay included) counts against the host.
-      if (!over) outcome(id, 'host_failed');
+      // A refused, failed or unanswered tick (a 402 the door will not pay included) counts against the host,
+      // except one that timed out while its deposit was landing on chain: that wait is the door's own.
+      if (!over && !(e instanceof DepositTimeoutError)) outcome(id, 'host_failed');
       // A host that answered, even with an error, took the door's money. It will not be paid again.
       // A send that timed out may have been paid, though nothing was counted.
       const lost = e instanceof SendTimeoutError ? offer.tickPrice : api.spent() - before;

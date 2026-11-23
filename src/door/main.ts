@@ -14,7 +14,7 @@ import { CAPITAL_FILE, CapitalBook, capitalAtRisk } from './capital.js';
 import { baseChannelChain } from './channel-chain.js';
 import { doorFunding, parseSweepKeep, parseCdpKey, parsePayerKey, parseTrustProxy } from './config.js';
 import { fetchHostOffer, listedOffers } from './host-offers.js';
-import { HOST_TIMEOUT_MS, doorPayer, httpHostApi, type DoorPayer, type ReadContract } from './host-http.js';
+import { DEPOSIT_TICK_TIMEOUT_MS, doorPayer, httpHostApi, type DoorPayer, type ReadContract } from './host-http.js';
 import { HostQueue } from './host-queue.js';
 import { capitalAllocator, hostFundingWaiting, HOSTS_FILE, HostRegistry, leasesTicking, startChannelReaper } from './hosts.js';
 import { DoorLedger, LEDGER_FILE } from './ledger.js';
@@ -78,8 +78,11 @@ function baseReader(env: NodeJS.ProcessEnv): ReadContract {
   return (args) => client.readContract(args as Parameters<typeof client.readContract>[0]);
 }
 
-/** fetch for every call to a host, free or paid: safeFetch, with room for an output part and the door's own time limit. */
-const hostFetch: typeof fetch = (input, init) => safeFetch(input as string | URL | Request, { ...init, maxBytes: HOST_MAX_BYTES, timeoutMs: HOST_TIMEOUT_MS });
+/**
+ * fetch for every call to a host, free or paid: safeFetch, with room for an output part. Its time limit is the
+ * longest a call may run (a tick carrying a deposit); httpHostApi holds every other call to HOST_TIMEOUT_MS.
+ */
+const hostFetch: typeof fetch = (input, init) => safeFetch(input as string | URL | Request, { ...init, maxBytes: HOST_MAX_BYTES, timeoutMs: DEPOSIT_TICK_TIMEOUT_MS });
 
 /**
  * One HostApi per host and payment terms (url, payTo, tick price), kept for the door's life: what a tick

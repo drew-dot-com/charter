@@ -22,7 +22,7 @@ import { HostError } from '../tenant/host-api.js';
 import type { JobSpec, Offer } from '../types.js';
 import { BASE_USDC, type Gate } from '../x402/seller.js';
 import { stubGate } from './x402.js';
-import { CapitalCapError, channelSalt, DepositPendingError, doorPayer, httpHostApi, MAX_OUTPUT_PARTS, PENDING_CHECK_MS, paysOnly, UnexpectedPaymentError, type DepositFor, type DoorPayer, type ReadContract } from './host-http.js';
+import { CapitalCapError, channelSalt, DepositPendingError, DepositTimeoutError, doorPayer, httpHostApi, MAX_OUTPUT_PARTS, PENDING_CHECK_MS, paysOnly, UnexpectedPaymentError, type DepositFor, type DoorPayer, type ReadContract } from './host-http.js';
 import { CapitalBook } from './capital.js';
 import { HostQueue } from './host-queue.js';
 import { reapChannels } from './hosts.js';
@@ -122,10 +122,11 @@ async function setup(tickGate: Gate = stubGate(() => PRICE), output?: Buffer) {
       key: KEY, channelDir, depositFor: o.depositFor ?? (() => 500_000n), atRisk: o.atRisk ?? (() => 0n),
       ...(o.onDeposit ? { onDeposit: o.onDeposit } : {}), ...(o.onDepositLapsed ? { onDepositLapsed: o.onDepositLapsed } : {}), ...(o.readContract ? { readContract: o.readContract } : {}), ...(o.now ? { now: o.now } : {}),
     });
-  const apiFor = (o: { depositFor?: DepositFor; timeoutMs?: number; payer?: DoorPayer } = {}) =>
+  const apiFor = (o: { depositFor?: DepositFor; timeoutMs?: number; depositTimeoutMs?: number; payer?: DoorPayer } = {}) =>
     httpHostApi(offer, {
       payer: o.payer ?? payerFor(o.depositFor ? { depositFor: o.depositFor } : {}),
       queue: new HostQueue(), now: () => T0, ...(o.timeoutMs === undefined ? {} : { timeoutMs: o.timeoutMs }),
+      ...(o.depositTimeoutMs === undefined ? {} : { depositTimeoutMs: o.depositTimeoutMs }),
     });
   const done = () => {
     server.closeAllConnections();
@@ -631,6 +632,53 @@ test('I4: a channel the reaper asked to withdraw is not paid through (CapitalCap
     await api.tick(leaseId, 1);
     assert.equal(g.paid.length, signed + 1);
   } finally {
+    t.done();
+  }
+});
+
+test('I5: a tick that carries a deposit gets the longer budget, and timing out says it carried one', async () => {
+  let release!: () => void;
+  const hung = new Promise<void>((r) => (release = r));
+  const g = challengeGate([ASK], { settle: 'on2xx' });
+  // The 402 is answered at once; the paid request hangs until released.
+  const gate: Gate = async (req, res, next) => {
+    if (req.get('payment-signature')) await hung;
+    return g.gate(req, res, next);
+  };
+  const t = await setup(gate);
+  try {
+    const api = t.apiFor({ timeoutMs: 100, depositTimeoutMs: 400 });
+    const { leaseId } = await api.open(JOB);
+    const start = Date.now();
+    await assert.rejects(api.tick(leaseId, 0), (e: unknown) => e instanceof DepositTimeoutError && e instanceof SendTimeoutError);
+    assert.ok(Date.now() - start >= 350, `waited ${Date.now() - start} ms, past the 100 ms budget`);
+    assert.equal(api.spent(), PRICE, 'it may have been paid');
+  } finally {
+    release();
+    t.done();
+  }
+});
+
+test('I5: a voucher tick keeps the short budget and times out as a plain SendTimeoutError', async () => {
+  let release!: () => void;
+  const hung = new Promise<void>((r) => (release = r));
+  let hang = false;
+  const g = challengeGate([ASK], { settle: 'on2xx' });
+  const gate: Gate = async (req, res, next) => {
+    if (hang && req.get('payment-signature')) await hung;
+    return g.gate(req, res, next);
+  };
+  const t = await setup(gate);
+  try {
+    const api = t.apiFor({ timeoutMs: 150, depositTimeoutMs: 2000 });
+    const { leaseId } = await api.open(JOB);
+    await api.tick(leaseId, 0);
+    hang = true;
+    const start = Date.now();
+    await assert.rejects(api.tick(leaseId, 1), (e: unknown) => e instanceof SendTimeoutError && !(e instanceof DepositTimeoutError));
+    assert.ok(Date.now() - start < 1000, `took ${Date.now() - start} ms`);
+  } finally {
+    release();
     t.done();
   }
 });

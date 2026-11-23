@@ -17,7 +17,7 @@ import { SendTimeoutError } from '../errors.js';
 import { hostHttpApp } from '../host/http.js';
 import type { Runner } from '../host/runner.js';
 import { LeaseStore } from '../host/store.js';
-import { CapitalCapError, doorPayer, httpHostApi, type DoorPayer } from './host-http.js';
+import { CapitalCapError, DepositTimeoutError, doorPayer, httpHostApi, type DoorPayer } from './host-http.js';
 import { homeIdOf, normalizeSshKeys } from '../jobs.js';
 import { HostQueue } from './host-queue.js';
 import { stubGate } from './x402.js';
@@ -1433,6 +1433,24 @@ test('I3: past the door-wide unpaid cap, host_refused losses alone never refuse 
     d.ledger.loss('b'.repeat(32), DAILY_UNPAID_CAP * 2n, 'host_refused', d.clock.t);
     assert.equal(d.ledger.unpaidToday(d.clock.t), 0n);
     assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 })).status, 200);
+  } finally {
+    d.close();
+  }
+});
+
+test('I5: a tick that timed out while carrying a deposit books the possible loss but is no host failure', async () => {
+  const host = fakeHost({ tick: async () => { throw new DepositTimeoutError(); } });
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    const r = await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' });
+    assert.equal(r.status, 502);
+    assert.deepEqual(await r.json(), { error: 'host_timeout' });
+    const rec = d.ledger.get(LEASE)!;
+    assert.equal(rec.losses, 5000n);
+    assert.equal(rec.stopped, true);
+    assert.equal(rec.outcome, undefined);
+    assert.equal(d.registry.get(OFFER.hostId)!.leases.hostFailed, 0);
   } finally {
     d.close();
   }

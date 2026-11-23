@@ -232,6 +232,8 @@ event code, `src/tenant/offers.ts`'s relay fetch, host `landAll` and `offerTick`
 - Host identity = its URL. One operator may run many hosts; nothing stops that.
 - v1 hosts need a public HTTPS address; hosts behind NAT come later.
 - `batch-settlement` only between door and host (no `exact`): the door is a repeat buyer.
+- Deviation (ruling R13 I5): the x402 client deposits on the tick that needs it, not at lease open; such a tick
+  gets 60 s instead of 30 s, and one that times out is not counted against the host.
 
 ## Left to the builder
 

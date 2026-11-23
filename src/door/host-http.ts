@@ -22,6 +22,8 @@ export const DOOR_NETWORK = 'eip155:8453' as const;
 export const MAX_WITHDRAW_DELAY_SECONDS = 86_400;
 /** A host call's default time limit. */
 export const HOST_TIMEOUT_MS = 30_000;
+/** A tick that carries a deposit: the facilitator puts the deposit on chain before the host answers. */
+export const DEPOSIT_TICK_TIMEOUT_MS = 60_000;
 /** The most output parts the door reads of one lease (64 parts of 48 KiB: 3 MiB). */
 export const MAX_OUTPUT_PARTS = 64;
 /** A pending deposit is checked against the chain at most this often per host. */
@@ -49,6 +51,17 @@ export class UnexpectedPaymentError extends Error {
 }
 
 /**
+ * A tick that carried a deposit got no answer in time. It may have been paid, like any SendTimeoutError, but the
+ * wait was the deposit landing on chain: the door does not count it against the host.
+ */
+export class DepositTimeoutError extends SendTimeoutError {
+  constructor() {
+    super();
+    this.name = 'DepositTimeoutError';
+  }
+}
+
+/**
  * A deposit the door signed for this host is not yet in its channel record (no settle confirmed it). Signing
  * another would deposit twice; nothing was sent. Cleared when the record shows it, or by `clearPendingDeposit`.
  */
@@ -63,8 +76,11 @@ export interface DoorPayer {
   address: `0x${string}`;
   /** Signs door requests (`signDoorRequest`) and, as the channel's payer, deposits and vouchers. */
   account: LocalAccount;
-  /** fetch that pays one host's 402 for one tick at `tickPrice`, from that host's channel, and nothing else. */
-  paidFetch(offer: Offer, tickPrice: Micro): typeof fetch;
+  /**
+   * fetch that pays one host's 402 for one tick at `tickPrice`, from that host's channel, and nothing else.
+   * `onDeposit` is called when a payment it signs carries a deposit.
+   */
+  paidFetch(offer: Offer, tickPrice: Micro, onDeposit?: () => void): typeof fetch;
   /** What the door's channel records say this host has charged so far, summed over its channels. */
   charged(hostId: string): Promise<bigint>;
   /** `charged`, read synchronously: for the capital allocator, which answers at once. */
@@ -404,7 +420,7 @@ export function doorPayer(o: {
       for (const key of await channelKeys(hostChannelDir(o.channelDir, hostId))) sum += amountOf((await storage.get(key))?.chargedCumulativeAmount);
       return sum;
     },
-    paidFetch(offer, tickPrice) {
+    paidFetch(offer, tickPrice, onDepositSigned) {
       const dir = hostChannelDir(o.channelDir, offer.hostId);
       const storage = storageOf(offer.hostId);
       const keep = paysOnly(offer, tickPrice);
@@ -494,6 +510,7 @@ export function doorPayer(o: {
             const validBefore = typeof vb === 'string' && /^\d{1,15}$/.test(vb) ? Number(vb) : undefined;
             pending.set(offer.hostId, { channelId, balanceAfter: before + amount, amount, ...(validBefore === undefined ? {} : { validBefore }) });
             o.onDeposit?.(offer.hostId, channelId, amount);
+            onDepositSigned?.();
           });
         // The 402 itself is read first: when it asks for nothing the door pays, the client never sees it.
         const asked: typeof fetch = async (req, reqInit) => {
@@ -519,16 +536,25 @@ export function doorPayer(o: {
   };
 }
 
-/** `fn` with `ms` to answer, else SendTimeoutError; its signal is aborted then, so nothing more is sent. */
-async function withTimeout<T>(ms: number, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+/**
+ * `fn` with `ms` to answer, else SendTimeoutError; its signal is aborted then, so nothing more is sent. With
+ * `longer`, `hook` receives a function that, once called, lets the call run `longer.ms` from its start instead.
+ */
+async function withTimeout<T>(ms: number, fn: (signal: AbortSignal) => Promise<T>, longer?: { ms: number; hook: (extend: () => void) => void }): Promise<T> {
   const ac = new AbortController();
+  const start = Date.now();
   let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_, reject) => {
+  let fail!: (e: Error) => void;
+  const timeout = new Promise<never>((_, reject) => (fail = reject));
+  const arm = (left: number): void => {
+    clearTimeout(timer);
     timer = setTimeout(() => {
-      reject(new SendTimeoutError());
+      fail(new SendTimeoutError());
       ac.abort();
-    }, ms);
-  });
+    }, left);
+  };
+  arm(ms);
+  longer?.hook(() => arm(Math.max(0, start + longer.ms - Date.now())));
   try {
     return await Promise.race([fn(ac.signal), timeout]);
   } finally {
@@ -556,18 +582,26 @@ const ok = (a: Answer): boolean => a.status >= 200 && a.status < 300;
  * `spent()` is measured from the door's channel record, not the status: a tick costs what the record's
  * charged amount moved during it (a host may settle and answer non-2xx), or its full price when it times out
  * (it may have been paid). A tick index that cost anything is never sent again. Non-2xx throws HostError; a 402 the door will not pay throws
- * HostError(402, 'unexpected_payment').
+ * HostError(402, 'unexpected_payment'). A tick that carries a deposit may run `depositTimeoutMs` (default
+ * DEPOSIT_TICK_TIMEOUT_MS) instead of `timeoutMs`, and times out as DepositTimeoutError.
  */
 export function httpHostApi(
   o: Offer,
-  d: { payer: DoorPayer; queue: HostQueue; tickPrice?: Micro; timeoutMs?: number; now?: () => number; fetch?: typeof fetch },
+  d: { payer: DoorPayer; queue: HostQueue; tickPrice?: Micro; timeoutMs?: number; depositTimeoutMs?: number; now?: () => number; fetch?: typeof fetch },
 ): HostApi {
   const now = d.now ?? Date.now;
   const timeoutMs = d.timeoutMs ?? HOST_TIMEOUT_MS;
+  const depositTimeoutMs = d.depositTimeoutMs ?? DEPOSIT_TICK_TIMEOUT_MS;
   const price = d.tickPrice ?? o.tickPrice;
   const base = o.url.replace(/\/+$/, '');
   const free = d.fetch ?? fetch;
-  const paid = d.payer.paidFetch(o, price);
+  // Ticks run one at a time per host (the queue), so one flag serves the tick in flight.
+  let depositing = false;
+  let extend: (() => void) | undefined;
+  const paid = d.payer.paidFetch(o, price, () => {
+    depositing = true;
+    extend?.();
+  });
   let spent: Micro = 0n;
   const counted = new Set<string>();
 
@@ -579,8 +613,9 @@ export function httpHostApi(
     return Math.min(timeoutMs, left);
   };
 
-  async function send(method: 'GET' | 'POST', path: string, body: unknown, f: typeof fetch, deadline?: number): Promise<Answer> {
+  async function send(method: 'GET' | 'POST', path: string, body: unknown, f: typeof fetch, deadline?: number, longer?: (extend: () => void) => void): Promise<Answer> {
     const ms = budget(deadline);
+    const longMs = deadline === undefined ? depositTimeoutMs : Math.min(depositTimeoutMs, deadline - now());
     const url = new URL(base + path);
     const text = body === undefined ? '' : JSON.stringify(body);
     const auth = await signDoorRequest(d.payer.account, url.origin, method, url.pathname + url.search, text, now());
@@ -595,7 +630,7 @@ export function httpHostApi(
         // Not JSON: kept as text.
       }
       return { status: res.status, body: parsed };
-    });
+    }, longer && { ms: longMs, hook: longer });
   }
 
   const call = async (method: 'GET' | 'POST', path: string, body?: unknown, deadline?: number): Promise<unknown> => {
@@ -627,13 +662,17 @@ export function httpHostApi(
           }
         };
         let a: Answer;
+        depositing = false;
         try {
-          a = await send('POST', `/v1/leases/${leaseId}/ticks`, { index }, paid, deadline);
+          a = await send('POST', `/v1/leases/${leaseId}/ticks`, { index }, paid, deadline, (x) => (extend = x));
+          extend = undefined;
         } catch (e) {
+          extend = undefined;
           if (e instanceof SendTimeoutError) {
             // No answer, so no record of a charge: it may have been paid.
             spent += price;
             counted.add(key);
+            if (depositing) throw new DepositTimeoutError();
           } else {
             await settle();
           }
