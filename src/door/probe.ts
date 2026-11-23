@@ -2,8 +2,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { pythonJob } from '../jobs.js';
 import { HostError, type HostApi } from '../tenant/host-api.js';
-import type { Offer } from '../types.js';
-import { CapitalCapError, DepositPendingError } from './host-http.js';
+import type { Micro, Offer } from '../types.js';
+import { CapitalCapError, DepositPendingError, type DepositFor } from './host-http.js';
 import type { HostRegistry } from './hosts.js';
 
 /** Gap between status reads while a probe job runs. */
@@ -12,6 +12,8 @@ export const PROBE_POLL_MS = 2000;
 export const PROBE_MAX_WAIT_MS = 3_600_000;
 /** How often startProbes looks for due probes. */
 export const PROBE_ROUND_MS = 10 * 60_000;
+/** The most a probe pays for its one tick (micro-USDC), unless the door sets CHARTER_PROBE_MAX_TICK. */
+export const DEFAULT_PROBE_MAX_TICK: Micro = 10_000n;
 
 /** The probe job's script. `nonce` is lowercase hex, so it is safe inside a Python bytes literal. */
 export function PROBE_SCRIPT(nonce: string): string {
@@ -21,20 +23,26 @@ export function PROBE_SCRIPT(nonce: string): string {
 
 export interface ProbeResult {
   passed: boolean;
-  /** wrong_output, timeout, host_error (a non-2xx answer), unreachable, or the lease's close reason. */
+  /** price_too_high, wrong_output, timeout, host_error (a non-2xx answer), unreachable, or the lease's close reason. */
   reason?: string;
 }
 
 /**
- * Opens the probe job on the host, pays tick 0, reads the lease every PROBE_POLL_MS until it is done or one
+ * Refuses an offer whose tick costs more than `probeMaxTick` (price_too_high) before opening anything. Else
+ * opens the probe job on the host, pays tick 0, reads the lease every PROBE_POLL_MS until it is done or one
  * interval (at most PROBE_MAX_WAIT_MS) has passed, then reads the first output part: it passes when that
  * carries sha256(nonce) in hex. A refusal from the door's own capital limits (CapitalCapError,
  * DepositPendingError) is thrown, not failed: the host did nothing wrong.
  */
-export async function probeHost(api: HostApi, offer: Offer, o: { nonce: string; now: () => number; sleep: (ms: number) => Promise<void> }): Promise<ProbeResult> {
+export async function probeHost(
+  api: HostApi,
+  offer: Offer,
+  o: { nonce: string; probeMaxTick: Micro; now: () => number; sleep: (ms: number) => Promise<void> },
+): Promise<ProbeResult> {
   const job = pythonJob(PROBE_SCRIPT(o.nonce));
   const want = createHash('sha256').update(o.nonce).digest('hex');
   const fail = (reason: string): ProbeResult => ({ passed: false, reason });
+  if (offer.tickPrice > o.probeMaxTick) return fail('price_too_high');
   try {
     const opened = await api.open(job);
     if (opened.state === 'closed') return fail(opened.closedReason ?? 'boot_failed');
@@ -59,26 +67,35 @@ export async function probeHost(api: HostApi, offer: Offer, o: { nonce: string; 
 }
 
 /**
- * Probes due hosts (HostRegistry.dueProbes) now and every PROBE_ROUND_MS: fetches each host's offer afresh
- * (a bad one fails the probe), then runs probeHost and records the result. A host already being probed is
- * left alone; a probe the door's capital cannot fund is logged and records nothing. Returns a stop function.
+ * Probes due hosts (HostRegistry.dueProbes) now and every PROBE_ROUND_MS, one after another, so each sees the
+ * capital the one before it locked. A round skips a host `depositFor` answers 'over_cap' for before anything
+ * else: no first probe counted, no lease opened, nothing recorded. Otherwise it fetches the host's offer afresh
+ * (a bad one fails the probe), then runs probeHost and records the result. A probe the door's capital still
+ * refuses mid-way is logged and records nothing. A round still running when the next is due is not doubled.
+ * Returns a stop function.
  */
 export function startProbes(d: {
   registry: HostRegistry;
   apiOf: (o: Offer) => HostApi;
   fetchOffer: (url: string) => Promise<Offer | 'bad_offer'>;
+  depositFor: DepositFor;
+  probeMaxTick: Micro;
   perDay: number;
   now: () => number;
   log: (msg: string) => void;
   sleep?: (ms: number) => Promise<void>;
 }): () => void {
   const sleep = d.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const running = new Set<string>();
+  let busy = false;
   let stopped = false;
 
   const probe = async (hostId: string): Promise<void> => {
     const r = d.registry.get(hostId);
     if (!r) return;
+    if (d.depositFor(hostId) === 'over_cap') {
+      d.log(`probe ${r.url}: waits for door capital`);
+      return;
+    }
     if (r.state === 'probing') d.registry.countFirstProbe(d.now());
     let offer: Offer | 'bad_offer';
     try {
@@ -93,7 +110,7 @@ export function startProbes(d: {
     }
     d.registry.setOffer(hostId, offer, d.now());
     try {
-      const res = await probeHost(d.apiOf(offer), offer, { nonce: randomBytes(16).toString('hex'), now: d.now, sleep });
+      const res = await probeHost(d.apiOf(offer), offer, { nonce: randomBytes(16).toString('hex'), probeMaxTick: d.probeMaxTick, now: d.now, sleep });
       d.registry.probeResult(hostId, res.passed, d.now());
       d.log(`probe ${r.url}: ${res.passed ? 'passed' : `failed, ${res.reason}`}`);
     } catch (e) {
@@ -101,21 +118,23 @@ export function startProbes(d: {
     }
   };
 
-  const round = (): void => {
-    if (stopped) return;
-    const now = d.now();
-    for (const id of d.registry.dueProbes(now, d.registry.firstProbesToday(now), d.perDay)) {
-      if (running.has(id)) continue;
-      running.add(id);
-      void probe(id)
-        .catch((e) => d.log(`probe ${id}: ${(e as Error).message}`))
-        .finally(() => running.delete(id));
+  const round = async (): Promise<void> => {
+    if (stopped || busy) return;
+    busy = true;
+    try {
+      const now = d.now();
+      for (const id of d.registry.dueProbes(now, d.registry.firstProbesToday(now), d.perDay)) {
+        if (stopped) return;
+        await probe(id).catch((e) => d.log(`probe ${id}: ${(e as Error).message}`));
+      }
+    } finally {
+      busy = false;
     }
   };
 
-  const timer = setInterval(round, PROBE_ROUND_MS);
+  const timer = setInterval(() => void round(), PROBE_ROUND_MS);
   timer.unref();
-  round();
+  void round();
   return () => {
     stopped = true;
     clearInterval(timer);

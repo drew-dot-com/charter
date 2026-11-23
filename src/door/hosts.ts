@@ -20,8 +20,8 @@ export const PROBE_EVERY_MS = 86_400_000;
 /** Probe failures in a row that drop a host. */
 export const DROP_AFTER_FAILED_PROBES = 3;
 
-/** Host-side lease failures in a row that make a host due for a probe. */
-export const PROBE_AFTER_HOST_FAILURES = 2;
+/** Host-side lease failures in a row that hide a listed host until its next probe passes. */
+export const HIDE_AFTER_HOST_FAILURES = 2;
 
 /**
  * The canonical form of a host URL, or null when the door will not take it: `https:` only, no userinfo,
@@ -53,7 +53,10 @@ export function hostIdOf(normalizedUrl: string): string {
   return createHash('sha256').update(normalizedUrl, 'utf8').digest('hex');
 }
 
-/** probing: registered, no probe since. listed: last probe passed. hidden: last probe failed. dropped: three failed in a row. */
+/**
+ * probing: registered, no probe since. listed: last probe passed. hidden: last probe failed, or two real leases
+ * in a row failed on the host's side. dropped: three failed probes in a row.
+ */
 export type HostState = 'probing' | 'listed' | 'hidden' | 'dropped';
 
 export interface HostRecord {
@@ -74,8 +77,6 @@ export interface HostRecord {
     /** Epoch ms of the last probe's result. */
     lastAt?: number;
     lastFailedAt?: number;
-    /** Epoch ms the host became due for a probe outside its daily round (host failures in a row). */
-    dueAt?: number;
   };
   leases: { opened: number; finished: number; hostFailed: number; consecutiveHostFailed: number };
   intervalsPaid: number;
@@ -126,7 +127,10 @@ export class HostRegistry {
     this.firstProbes = s.firstProbes;
   }
 
-  /** Adds a host, or answers the one already there; a dropped host comes back as `probing` with its record kept. */
+  /**
+   * Adds a host, or answers the one already there. A dropped host comes back as `probing` with every counter
+   * kept, its run of failed probes included: one more failed probe drops it again.
+   */
   register(url: string, now: number): { hostId: string; state: HostState } | 'bad_url' {
     const n = normalizeHostUrl(url);
     if (n === null) return 'bad_url';
@@ -135,8 +139,6 @@ export class HostRegistry {
     if (r) {
       if (r.state === 'dropped') {
         r.state = 'probing';
-        // A fresh run of three: one more failure must not drop it again at once.
-        r.probes.consecutiveFailed = 0;
         this.save();
       }
       return { hostId, state: r.state };
@@ -172,15 +174,15 @@ export class HostRegistry {
     });
   }
 
-  /** A pass lists the host; a fail hides it, and the third in a row drops it. */
+  /** A pass lists the host and clears its run of host failures; a fail hides it, and the third in a row drops it. */
   probeResult(hostId: string, passed: boolean, now: number): void {
     this.update(hostId, (r) => {
       const p = r.probes;
       p.lastAt = now;
-      delete p.dueAt;
       if (passed) {
         p.passed++;
         p.consecutiveFailed = 0;
+        r.leases.consecutiveHostFailed = 0;
         r.state = 'listed';
         r.lastSeenAt = now;
       } else {
@@ -205,12 +207,15 @@ export class HostRegistry {
     });
   }
 
-  /** A lease failed on the host's side; the second in a row makes the host due for a probe. */
-  leaseHostFailed(hostId: string, now: number): void {
+  /**
+   * A lease failed on the host's side. The second in a row hides a listed host: it is listed again only when
+   * its next probe, under the usual 24 h rule, passes.
+   */
+  leaseHostFailed(hostId: string, _now: number): void {
     this.update(hostId, (r) => {
       r.leases.hostFailed++;
       r.leases.consecutiveHostFailed++;
-      if (r.leases.consecutiveHostFailed >= PROBE_AFTER_HOST_FAILURES && r.probes.dueAt === undefined) r.probes.dueAt = now;
+      if (r.leases.consecutiveHostFailed >= HIDE_AFTER_HOST_FAILURES && r.state === 'listed') r.state = 'hidden';
     });
   }
 
@@ -240,15 +245,15 @@ export class HostRegistry {
 
   /**
    * Host ids to probe now, in order. No host is probed twice inside PROBE_EVERY_MS. Listed and hidden hosts
-   * come due daily; one with host failures in a row (`dueAt`) goes first, then the longest unprobed. First
-   * probes (`probing`) follow, oldest registration first, at most `perDay` a UTC day: the rest wait.
+   * come due daily, the longest unprobed first. First probes (`probing`) follow, oldest registration first,
+   * at most `perDay` a UTC day: the rest wait.
    */
   dueProbes(now: number, firstProbesToday: number, perDay: number): string[] {
     const ready = (r: HostRecord): boolean => r.probes.lastAt === undefined || now - r.probes.lastAt >= PROBE_EVERY_MS;
     const hosts = [...this.hosts.values()].filter(ready);
     const again = hosts
       .filter((r) => r.state === 'listed' || r.state === 'hidden')
-      .sort((a, b) => (a.probes.dueAt ?? Infinity) - (b.probes.dueAt ?? Infinity) || (a.probes.lastAt ?? 0) - (b.probes.lastAt ?? 0) || cmp(a.hostId, b.hostId));
+      .sort((a, b) => (a.probes.lastAt ?? 0) - (b.probes.lastAt ?? 0) || cmp(a.hostId, b.hostId));
     const first = hosts
       .filter((r) => r.state === 'probing')
       .sort((a, b) => a.registeredAt - b.registeredAt || cmp(a.hostId, b.hostId))

@@ -8,8 +8,8 @@ import { pythonJob } from '../jobs.js';
 import { HostError, type HostApi } from '../tenant/host-api.js';
 import type { JobSpec, Lease, Offer } from '../types.js';
 import { CapitalCapError } from './host-http.js';
-import { HostRegistry } from './hosts.js';
-import { PROBE_SCRIPT, probeHost, startProbes } from './probe.js';
+import { capitalAllocator, HostRegistry, hostIdOf } from './hosts.js';
+import { DEFAULT_PROBE_MAX_TICK, PROBE_SCRIPT, probeHost, startProbes } from './probe.js';
 
 const NONCE = '0123456789abcdef0123456789abcdef';
 const DIGEST = createHash('sha256').update(NONCE).digest('hex');
@@ -79,7 +79,7 @@ test('PROBE_SCRIPT hashes the nonce and refuses one that is not plain hex', () =
 test('a host that prints the right digest passes', async () => {
   const f = fakeHost({ doneAfter: 2 });
   const c = clock();
-  assert.deepEqual(await probeHost(f.api, OFFER, { nonce: NONCE, ...c }), { passed: true });
+  assert.deepEqual(await probeHost(f.api, OFFER, { nonce: NONCE, probeMaxTick: DEFAULT_PROBE_MAX_TICK, ...c }), { passed: true });
   assert.deepEqual(f.jobs, [pythonJob(PROBE_SCRIPT(NONCE))]);
   assert.deepEqual(f.calls, ['open', 'tick l1 0', 'status', 'status', 'status', 'part 0']);
   assert.deepEqual(c.sleeps, [2000, 2000]);
@@ -87,21 +87,21 @@ test('a host that prints the right digest passes', async () => {
 
 test('a wrong digest fails wrong_output', async () => {
   const f = fakeHost({ stdout: `${'0'.repeat(64)}\n` });
-  assert.deepEqual(await probeHost(f.api, OFFER, { nonce: NONCE, ...clock() }), { passed: false, reason: 'wrong_output' });
+  assert.deepEqual(await probeHost(f.api, OFFER, { nonce: NONCE, probeMaxTick: DEFAULT_PROBE_MAX_TICK, ...clock() }), { passed: false, reason: 'wrong_output' });
 });
 
 test('a lease closed with boot_failed fails boot_failed, at open or later', async () => {
   const atOpen = fakeHost({ openClosed: true });
-  assert.deepEqual(await probeHost(atOpen.api, OFFER, { nonce: NONCE, ...clock() }), { passed: false, reason: 'boot_failed' });
+  assert.deepEqual(await probeHost(atOpen.api, OFFER, { nonce: NONCE, probeMaxTick: DEFAULT_PROBE_MAX_TICK, ...clock() }), { passed: false, reason: 'boot_failed' });
   assert.deepEqual(atOpen.calls, ['open'], 'no tick for a lease that never booted');
   const later = fakeHost({ closeWith: 'boot_failed' });
-  assert.deepEqual(await probeHost(later.api, OFFER, { nonce: NONCE, ...clock() }), { passed: false, reason: 'boot_failed' });
+  assert.deepEqual(await probeHost(later.api, OFFER, { nonce: NONCE, probeMaxTick: DEFAULT_PROBE_MAX_TICK, ...clock() }), { passed: false, reason: 'boot_failed' });
 });
 
 test('no done within one interval fails timeout, polling every 2 s', async () => {
   const f = fakeHost({ never: true });
   const c = clock();
-  assert.deepEqual(await probeHost(f.api, OFFER, { nonce: NONCE, ...c }), { passed: false, reason: 'timeout' });
+  assert.deepEqual(await probeHost(f.api, OFFER, { nonce: NONCE, probeMaxTick: DEFAULT_PROBE_MAX_TICK, ...c }), { passed: false, reason: 'timeout' });
   assert.ok(c.sleeps.every((ms) => ms === 2000));
   assert.equal(c.sleeps.length, 30);
   assert.equal(f.calls.filter((x) => x === 'status').length, 31);
@@ -109,11 +109,21 @@ test('no done within one interval fails timeout, polling every 2 s', async () =>
 
 test('a host error fails host_error; a door capital refusal is not the host failing', async () => {
   const refused = fakeHost({ tickError: new HostError(402, 'unexpected_payment') });
-  assert.deepEqual(await probeHost(refused.api, OFFER, { nonce: NONCE, ...clock() }), { passed: false, reason: 'host_error' });
+  assert.deepEqual(await probeHost(refused.api, OFFER, { nonce: NONCE, probeMaxTick: DEFAULT_PROBE_MAX_TICK, ...clock() }), { passed: false, reason: 'host_error' });
   const down = fakeHost({ tickError: new TypeError('fetch failed') });
-  assert.deepEqual(await probeHost(down.api, OFFER, { nonce: NONCE, ...clock() }), { passed: false, reason: 'unreachable' });
+  assert.deepEqual(await probeHost(down.api, OFFER, { nonce: NONCE, probeMaxTick: DEFAULT_PROBE_MAX_TICK, ...clock() }), { passed: false, reason: 'unreachable' });
   const broke = fakeHost({ tickError: new CapitalCapError('h') });
-  await assert.rejects(probeHost(broke.api, OFFER, { nonce: NONCE, ...clock() }), CapitalCapError);
+  await assert.rejects(probeHost(broke.api, OFFER, { nonce: NONCE, probeMaxTick: DEFAULT_PROBE_MAX_TICK, ...clock() }), CapitalCapError);
+});
+
+test('an offer whose tick costs more than probeMaxTick fails price_too_high with nothing opened or paid', async () => {
+  const f = fakeHost();
+  const dear = { ...OFFER, tickPrice: 10n ** 12n };
+  assert.deepEqual(await probeHost(f.api, dear, { nonce: NONCE, probeMaxTick: DEFAULT_PROBE_MAX_TICK, ...clock() }), { passed: false, reason: 'price_too_high' });
+  assert.deepEqual(f.calls, []);
+  assert.equal(DEFAULT_PROBE_MAX_TICK, 10_000n);
+  const atCap = fakeHost();
+  assert.deepEqual(await probeHost(atCap.api, { ...OFFER, tickPrice: 10_000n }, { nonce: NONCE, probeMaxTick: 10_000n, ...clock() }), { passed: true });
 });
 
 function newRegistry(): HostRegistry {
@@ -138,6 +148,8 @@ test('startProbes probes due hosts at once: a pass lists, a bad offer fails, a c
     now: () => 5_000_000,
     log: (m) => logs.push(m),
     sleep: async () => undefined,
+    depositFor: () => 100_000n,
+    probeMaxTick: DEFAULT_PROBE_MAX_TICK,
     fetchOffer: async (url) => (url.includes('bad') ? 'bad_offer' : { ...OFFER, id: url }),
     apiOf: (o) => {
       if (o.id.includes('broke')) return fakeHost({ tickError: new CapitalCapError('broke') }).api;
@@ -162,6 +174,115 @@ test('startProbes probes due hosts at once: a pass lists, a bad offer fails, a c
     assert.equal(reg.firstProbesToday(5_000_000), 3);
     assert.equal(nonces.length, 1);
     assert.match(nonces[0]!, /^[0-9a-f]{32}$/);
+  } finally {
+    stop();
+  }
+});
+
+/** A host that passes any probe (or prints a wrong digest); its tick 0 locks 0.10 for it, as the door's onDeposit would. */
+function honestHost(locked: Map<string, bigint>, hostId: string, opens: string[], pass = true): HostApi {
+  let nonce = '';
+  const f = fakeHost();
+  return {
+    ...f.api,
+    open: async (job) => {
+      opens.push(hostId);
+      nonce = /b"([0-9a-f]+)"/.exec(job.args.SCRIPT!)![1]!;
+      return { leaseId: 'l1', state: 'awaiting_first_tick' };
+    },
+    tick: async () => {
+      locked.set(hostId, (locked.get(hostId) ?? 0n) + 100_000n);
+      return { paidIntervals: 1, paidThrough: 1, duplicate: false };
+    },
+    outputPart: async (_id, part) => ({ part, parts: 1, data: Buffer.from(pass ? createHash('sha256').update(nonce).digest('hex') : 'nope').toString('base64') }),
+  };
+}
+
+const CAPS = { probeDeposit: 100_000n, hostDeposit: 500_000n, probeCap: 1_000_000n, hostCap: 10_000_000n };
+const NOW = 5_000_000;
+
+/** A registry with 9 unproven hosts holding 0.10 each (0.90 of the 1 USDC probe cap) and probed just now. */
+function nearlyFull(): { reg: HostRegistry; locked: Map<string, bigint> } {
+  const reg = newRegistry();
+  const locked = new Map<string, bigint>();
+  for (let i = 0; i < 9; i++) {
+    const id = (reg.register(`https://old${i}.example`, 1) as { hostId: string }).hostId;
+    reg.probeResult(id, false, NOW);
+    locked.set(id, 100_000n);
+  }
+  return { reg, locked };
+}
+
+test('a round probes one host at a time: two hosts at 0.90 locked do not both get the last 0.10', async () => {
+  const { reg, locked } = nearlyFull();
+  const a = (reg.register('https://a.example', 10) as { hostId: string }).hostId;
+  const b = (reg.register('https://b.example', 11) as { hostId: string }).hostId;
+  const opens: string[] = [];
+  const logs: string[] = [];
+  const stop = startProbes({
+    registry: reg, perDay: 10, now: () => NOW, log: (m) => logs.push(m), sleep: async () => undefined,
+    depositFor: capitalAllocator({ registry: reg, locked: (id) => locked.get(id) ?? 0n, ...CAPS }),
+    probeMaxTick: DEFAULT_PROBE_MAX_TICK,
+    fetchOffer: async (url) => ({ ...OFFER, id: url }),
+    // a fails, so it stays unproven and its 0.10 stays in the probe tier.
+    apiOf: (o) => honestHost(locked, hostIdOf(o.id), opens, false),
+  });
+  try {
+    await until(() => logs.length >= 2);
+    assert.deepEqual(opens, [a]);
+    assert.equal(reg.get(a)!.state, 'hidden');
+    assert.equal(reg.get(b)!.state, 'probing');
+    assert.equal(reg.get(b)!.probes.lastAt, undefined);
+    assert.equal(reg.firstProbesToday(NOW), 1);
+    assert.ok(logs.some((l) => l.includes('b.example') && l.includes('waits for door capital')));
+  } finally {
+    stop();
+  }
+});
+
+test('a round while capital is refused counts nothing and opens nothing, round after round', async () => {
+  const { reg, locked } = nearlyFull();
+  locked.set([...locked.keys()][0]!, 200_000n);
+  const id = (reg.register('https://a.example', 10) as { hostId: string }).hostId;
+  const opens: string[] = [];
+  for (let round = 0; round < 2; round++) {
+    const logs: string[] = [];
+    const stop = startProbes({
+      registry: reg, perDay: 10, now: () => NOW, log: (m) => logs.push(m), sleep: async () => undefined,
+      depositFor: capitalAllocator({ registry: reg, locked: (h) => locked.get(h) ?? 0n, ...CAPS }),
+      probeMaxTick: DEFAULT_PROBE_MAX_TICK,
+      fetchOffer: async () => assert.fail('no offer fetch for a host the door cannot fund'),
+      apiOf: (o) => honestHost(locked, hostIdOf(o.id), opens),
+    });
+    try {
+      await until(() => logs.length >= 1);
+    } finally {
+      stop();
+    }
+  }
+  assert.deepEqual(opens, []);
+  assert.equal(reg.firstProbesToday(NOW), 0);
+  assert.equal(reg.get(id)!.state, 'probing');
+  assert.equal(reg.get(id)!.probes.lastAt, undefined);
+});
+
+test('startProbes records price_too_high as a failed probe and pays nothing', async () => {
+  const reg = newRegistry();
+  const id = (reg.register('https://dear.example', 1) as { hostId: string }).hostId;
+  const opens: string[] = [];
+  const logs: string[] = [];
+  const stop = startProbes({
+    registry: reg, perDay: 10, now: () => NOW, log: (m) => logs.push(m), sleep: async () => undefined,
+    depositFor: () => 100_000n,
+    probeMaxTick: DEFAULT_PROBE_MAX_TICK,
+    fetchOffer: async (url) => ({ ...OFFER, id: url, tickPrice: 1_000_000n }),
+    apiOf: (o) => honestHost(new Map(), hostIdOf(o.id), opens),
+  });
+  try {
+    await until(() => reg.get(id)!.state === 'hidden');
+    assert.deepEqual(opens, []);
+    assert.equal(reg.get(id)!.probes.failed, 1);
+    assert.ok(logs.some((l) => l.includes('price_too_high')));
   } finally {
     stop();
   }

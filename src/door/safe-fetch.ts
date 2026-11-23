@@ -38,6 +38,27 @@ for (const [net, bits] of [
   ['2001:db8::', 32], ['2002::', 16], ['fc00::', 7], ['fe80::', 10], ['fec0::', 10], ['ff00::', 8],
 ] as const) INWARD.addSubnet(net, bits, 'ipv6');
 
+/**
+ * Adds the operator's own addresses (the door box's public IPs, say) to the addresses refused, so a name
+ * resolving to the box cannot reach services published on it. Entries are IPs or CIDRs, IPv4 or IPv6. Call
+ * at startup; an invalid entry throws and nothing is added.
+ */
+export function blockAddresses(list: string[]): void {
+  const rules = list.map((entry): [string, number | undefined, 'ipv4' | 'ipv6'] => {
+    const [ip = '', bits, ...extra] = entry.trim().split('/');
+    const family = isIP(ip);
+    const max = family === 4 ? 32 : 128;
+    if (family === 0 || extra.length > 0 || (bits !== undefined && (!/^\d{1,3}$/.test(bits) || Number(bits) > max))) {
+      throw new Error(`not an IP address or CIDR: ${JSON.stringify(entry)}`);
+    }
+    return [ip, bits === undefined ? undefined : Number(bits), family === 4 ? 'ipv4' : 'ipv6'];
+  });
+  for (const [ip, bits, family] of rules) {
+    if (bits === undefined) INWARD.addAddress(ip, family);
+    else INWARD.addSubnet(ip, bits, family);
+  }
+}
+
 /** True for an address the door must not connect to, and for anything that is not an IP address. */
 export function blockedAddress(ip: string): boolean {
   const family = isIP(ip);

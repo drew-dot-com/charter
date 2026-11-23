@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { test } from 'node:test';
 import { normalizeHostUrl } from './hosts.js';
-import { blockedAddress, safeFetch, SafeFetchError } from './safe-fetch.js';
+import { blockAddresses, blockedAddress, safeFetch, SafeFetchError } from './safe-fetch.js';
 
 test('normalizeHostUrl refuses http, userinfo, query, fragment and inward IP literals', () => {
   for (const u of [
@@ -199,6 +199,30 @@ test("safeFetch rejects with the caller's abort reason", async () => {
     const why = new Error('caller gave up');
     setTimeout(() => c.abort(why), 50);
     await assert.rejects(safeFetch(s.url(), { signal: c.signal }, local), (e) => e === why);
+  } finally {
+    await s.close();
+  }
+});
+
+// Last in this file: it adds to the process-wide block list.
+test("blockAddresses adds the operator's own addresses, and safeFetch then refuses a name resolving to one", async () => {
+  assert.throws(() => blockAddresses(['203.0.114.7', 'nonsense']), /nonsense/);
+  assert.throws(() => blockAddresses(['203.0.114.0/33']));
+  assert.throws(() => blockAddresses(['2a01:4f9::/129']));
+  assert.throws(() => blockAddresses(['203.0.114.0/24/1']));
+  assert.equal(blockedAddress('203.0.114.7'), false, 'a throw adds nothing');
+  assert.equal(normalizeHostUrl('https://203.0.114.7'), 'https://203.0.114.7');
+  blockAddresses(['203.0.114.7', ' 2a01:4f9:c010::/48 ']);
+  assert.equal(blockedAddress('203.0.114.7'), true);
+  assert.equal(blockedAddress('::ffff:203.0.114.7'), true);
+  assert.equal(blockedAddress('2a01:4f9:c010:1::5'), true);
+  assert.equal(blockedAddress('203.0.114.8'), false);
+  assert.equal(normalizeHostUrl('https://203.0.114.7'), null);
+  const s = await server((_req, res) => res.end('box admin'));
+  try {
+    await refusedWith(safeFetch(s.url('self.test'), {}, { allowHttp: true, resolve: async () => ['203.0.114.7'] }), 'bad_url');
+    await refusedWith(safeFetch(s.url('self.test'), {}, { allowHttp: true, resolve: async () => ['2a01:4f9:c010::1'] }), 'bad_url');
+    assert.equal(s.hits.length, 0);
   } finally {
     await s.close();
   }

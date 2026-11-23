@@ -67,7 +67,7 @@ test('a probe pass lists, a fail hides, three fails in a row drop', () => {
   assert.deepEqual(r.probes, { passed: 2, failed: 4, consecutiveFailed: 3, lastAt: T0 + 5 * DAY, lastFailedAt: T0 + 5 * DAY });
 });
 
-test('a dropped host registers again as probing with its counters kept', () => {
+test('a dropped host registers again as probing with every counter kept, and one more failure drops it again', () => {
   const { reg } = registry();
   const id = add(reg, 'a');
   for (let i = 0; i < 3; i++) reg.probeResult(id, false, T0 + i * DAY);
@@ -75,10 +75,10 @@ test('a dropped host registers again as probing with its counters kept', () => {
   assert.deepEqual(reg.register('https://a.example', T0 + 3 * DAY), { hostId: id, state: 'probing' });
   const r = reg.get(id)!;
   assert.equal(r.probes.failed, 3);
-  assert.equal(r.probes.consecutiveFailed, 0);
-  // One more failure hides it; it is not dropped again at once.
+  assert.equal(r.probes.consecutiveFailed, 3);
   reg.probeResult(id, false, T0 + 4 * DAY);
-  assert.equal(reg.get(id)!.state, 'hidden');
+  assert.equal(reg.get(id)!.state, 'dropped');
+  assert.equal(reg.get(id)!.probes.consecutiveFailed, 4);
 });
 
 test('dueProbes: first probes oldest registration first, at most perDay a day', () => {
@@ -114,25 +114,38 @@ test('a re-registered dropped host waits out 24 h from its last probe', () => {
   assert.deepEqual(reg.dueProbes(T0 + 2 + DAY, 0, 10), [id]);
 });
 
-test('two host failures in a row make the host due, first in line, within the 24 h rule', () => {
+test('two host failures in a row hide a listed host until its next probe, 24 h on, passes', () => {
   const { reg } = registry();
   const a = add(reg, 'a');
   const b = add(reg, 'b');
   reg.probeResult(a, true, T0);
-  reg.probeResult(b, true, T0 - 1000);
-  reg.leaseOpened(b);
+  reg.probeResult(b, true, T0);
+  // A finish in between breaks the run.
   reg.leaseHostFailed(b, T0 + 10);
   reg.leaseFinished(b, 3);
   reg.leaseHostFailed(b, T0 + 20);
-  assert.equal(reg.get(b)!.probes.dueAt, undefined, 'a finish in between resets the run');
+  assert.equal(reg.get(b)!.state, 'listed');
   reg.leaseHostFailed(a, T0 + 30);
+  assert.equal(reg.get(a)!.state, 'listed');
   reg.leaseHostFailed(a, T0 + 40);
-  assert.equal(reg.get(a)!.probes.dueAt, T0 + 40);
-  assert.deepEqual(reg.dueProbes(T0 + 50, 0, 10), [], 'still inside 24 h of its last probe');
-  // b's daily re-probe came due first, but a is due outside its schedule: a goes first.
-  assert.deepEqual(reg.dueProbes(T0 + DAY, 0, 10), [a, b]);
+  assert.equal(reg.get(a)!.state, 'hidden');
+  assert.deepEqual(reg.listed().map((r) => r.hostId), [b]);
+  assert.deepEqual(reg.dueProbes(T0 + 50, 0, 10), [], 'the 24 h rule still holds');
+  assert.ok(reg.dueProbes(T0 + DAY, 0, 10).includes(a));
   reg.probeResult(a, true, T0 + DAY);
-  assert.equal(reg.get(a)!.probes.dueAt, undefined);
+  assert.equal(reg.get(a)!.state, 'listed');
+  assert.equal(reg.get(a)!.leases.consecutiveHostFailed, 0);
+  // The run starts over: one more failure does not hide it.
+  reg.leaseHostFailed(a, T0 + DAY + 1);
+  assert.equal(reg.get(a)!.state, 'listed');
+});
+
+test('host failures do not move a host that is not listed', () => {
+  const { reg } = registry();
+  const id = add(reg, 'a');
+  reg.leaseHostFailed(id, T0);
+  reg.leaseHostFailed(id, T0 + 1);
+  assert.equal(reg.get(id)!.state, 'probing');
 });
 
 test('lease counters, success rate and the home map', () => {
