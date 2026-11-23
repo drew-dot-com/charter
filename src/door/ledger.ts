@@ -43,10 +43,15 @@ export interface DoorLease {
   ticksPaidToHost: number;
   /** Micro-USDC the door paid a host for ticks the renter's payment never settled. */
   losses: Micro;
-  /** Why `losses` is above zero: the renter's payment did not settle, or the host refused the tick the door paid for. */
+  /** Why `losses` is above zero: the renter's payment did not settle, the host refused the tick the door paid for, or the tick timed out on a deposit. */
   lossKind?: LossKind;
   /** Epoch ms of the loss. */
   lossAt?: number;
+  /**
+   * Epoch ms a `deposit_timeout` loss was credited back: its deposit lapsed unlanded, so no money moved. `losses`
+   * keeps what was booked; the day's unpaid spend no longer counts it.
+   */
+  lossReversedAt?: number;
   /** The door will not pay another tick for this lease. */
   stopped: boolean;
   /** Epoch ms. */
@@ -74,8 +79,9 @@ export type LeaseOutcome = 'finished' | 'host_failed';
  * settle_failed: the payer's payment failed for a reason that is theirs (no balance, a used nonce, a bad signature).
  * settle_failed_transient: it failed for any other reason (facilitator down, an authorization that expired in the queue).
  * host_refused: the host answered the tick with an error, or the send timed out.
- * deposit_timeout: the send timed out while its deposit was landing on chain. The wait was the door's own, so it
- * is door spend (unpaidToday), never the host's budget.
+ * deposit_timeout: a host's first tick of the UTC day that timed out while its deposit was landing on chain. The
+ * wait was the door's own, so it is door spend (unpaidToday), never the host's budget, and is credited back if the
+ * deposit lapses unlanded. The host's later deposit timeouts that day are booked host_refused.
  */
 export type LossKind = 'settle_failed' | 'settle_failed_transient' | 'host_refused' | 'deposit_timeout';
 
@@ -111,11 +117,19 @@ export class DoorLedger {
   private readonly unblocksFile: string;
   private readonly unpaidFile: string;
   private readonly hostLossFile: string;
+  private readonly depositTimeoutsFile: string;
   private paymentLines = 0;
   /** Door spend no renter paid for (opens, free reads, losses the host is not to blame for) in one UTC day. */
   private unpaid: { day: string; micro: Micro } = { day: '', micro: 0n };
   /** host_refused losses per hostId in one UTC day: each host's own budget, apart from `unpaid`. */
   private hostLoss: { day: string; hosts: Map<string, Micro> } = { day: '', hosts: new Map() };
+  /** Deposit timeouts per hostId in one UTC day: the first is door spend, later ones count against the host. */
+  private depositTimeouts: { day: string; hosts: Map<string, number> } = { day: '', hosts: new Map() };
+  /**
+   * Per host, the `deposit_timeout` loss whose deposit is still pending: a lapse of that host's pending deposit
+   * credits it back. Cleared by the next deposit signed for the host. In memory, like the payer's pending deposits.
+   */
+  private readonly awaitingLapse = new Map<string, { leaseId: string; amount: Micro; at: number }>();
 
   constructor(
     private readonly file: string,
@@ -125,6 +139,16 @@ export class DoorLedger {
     this.unblocksFile = `${file}.unblocks`;
     this.unpaidFile = `${file}.unpaid`;
     this.hostLossFile = `${file}.hostloss`;
+    this.depositTimeoutsFile = `${file}.deposittimeouts`;
+    const timeouts = readIfThere(this.depositTimeoutsFile);
+    if (timeouts !== undefined) {
+      const t = JSON.parse(timeouts) as { day?: unknown; hosts?: Record<string, unknown> };
+      if (typeof t.day === 'string' && t.hosts && typeof t.hosts === 'object') {
+        const hosts = new Map<string, number>();
+        for (const [id, v] of Object.entries(t.hosts)) if (Number.isSafeInteger(v) && (v as number) > 0) hosts.set(id, v as number);
+        this.depositTimeouts = { day: t.day, hosts };
+      }
+    }
     const hostLoss = readIfThere(this.hostLossFile);
     if (hostLoss !== undefined) {
       const h = JSON.parse(hostLoss) as { day?: unknown; hosts?: Record<string, unknown> };
@@ -195,15 +219,17 @@ export class DoorLedger {
   }
 
   /**
-   * Money the door paid a host that the renter did not cover, at `at` (epoch ms). Only a payment that
-   * failed for the payer's own reason blocks them from new ticks, and only for BLOCK_MS. A `host_refused` loss
-   * counts against that host's daily budget (hostLossToday), not the door-wide unpaid spend: one host cannot
-   * stop every renter's ticks.
+   * Money the door paid (or may have paid) a host that the renter did not cover, at `at` (epoch ms). Only a
+   * payment that failed for the payer's own reason blocks them from new ticks, and only for BLOCK_MS. A
+   * `host_refused` loss counts against that host's daily budget (hostLossToday), not the door-wide unpaid spend:
+   * one host cannot stop every renter's ticks. Every other kind is door-wide unpaid spend; a `deposit_timeout` is
+   * credited back out of it if its deposit lapses unlanded (depositLapsed).
    */
   loss(leaseId: string, amount: Micro, kind: LossKind, at: number, payer?: string): void {
     const hostId = this.leases.get(leaseId)?.offer.hostId;
     if (kind === 'host_refused' && hostId) this.addHostLoss(hostId, amount, at);
     else this.addUnpaid(amount, at);
+    if (kind === 'deposit_timeout' && hostId && amount > 0n) this.awaitingLapse.set(hostId, { leaseId, amount, at });
     this.update(leaseId, (l) => {
       l.losses += amount;
       l.lossKind = kind;
@@ -261,11 +287,57 @@ export class DoorLedger {
   addUnpaid(amount: Micro, at: number): void {
     if (amount <= 0n) return;
     const day = utcDay(at);
-    this.unpaid = { day, micro: (this.unpaid.day === day ? this.unpaid.micro : 0n) + amount };
+    this.writeUnpaid({ day, micro: (this.unpaid.day === day ? this.unpaid.micro : 0n) + amount });
+  }
+
+  private writeUnpaid(u: { day: string; micro: Micro }): void {
+    this.unpaid = u;
     mkdirSync(dirname(this.unpaidFile), { recursive: true, mode: 0o700 });
     const tmp = `${this.unpaidFile}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ day, micro: this.unpaid.micro.toString() }), { mode: 0o600 });
+    writeFileSync(tmp, JSON.stringify({ day: u.day, micro: u.micro.toString() }), { mode: 0o600 });
     renameSync(tmp, this.unpaidFile);
+  }
+
+  /** A deposit was signed for this host: the one before it has landed or lapsed, so no later lapse is a timed-out tick's. */
+  depositSigned(hostId: string): void {
+    this.awaitingLapse.delete(hostId);
+  }
+
+  /**
+   * This host's pending deposit lapsed unlanded at `at`: no money moved. When a `deposit_timeout` loss waits on
+   * it, that amount comes back out of the unpaid spend of the UTC day it was booked in (if that is still the day
+   * counted), and the lease is marked `lossReversedAt`. Once per loss.
+   */
+  depositLapsed(hostId: string, at: number): void {
+    const w = this.awaitingLapse.get(hostId);
+    this.awaitingLapse.delete(hostId);
+    if (!w) return;
+    const l = this.leases.get(w.leaseId);
+    if (!l || l.lossKind !== 'deposit_timeout' || l.lossReversedAt !== undefined) return;
+    const day = utcDay(w.at);
+    if (this.unpaid.day === day) {
+      const micro = this.unpaid.micro > w.amount ? this.unpaid.micro - w.amount : 0n;
+      this.writeUnpaid({ day, micro });
+    }
+    this.update(w.leaseId, (r) => void (r.lossReversedAt = at));
+  }
+
+  /** Deposit timeouts of this host in the UTC day of `at` (epoch ms). */
+  depositTimeoutsToday(hostId: string, at: number): number {
+    return this.depositTimeouts.day === utcDay(at) ? (this.depositTimeouts.hosts.get(hostId) ?? 0) : 0;
+  }
+
+  /** Counts a deposit timeout of this host in the UTC day of `at` and returns that day's count. Kept across a restart. */
+  countDepositTimeout(hostId: string, at: number): number {
+    const day = utcDay(at);
+    if (this.depositTimeouts.day !== day) this.depositTimeouts = { day, hosts: new Map() };
+    const n = (this.depositTimeouts.hosts.get(hostId) ?? 0) + 1;
+    this.depositTimeouts.hosts.set(hostId, n);
+    mkdirSync(dirname(this.depositTimeoutsFile), { recursive: true, mode: 0o700 });
+    const tmp = `${this.depositTimeoutsFile}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ day, hosts: Object.fromEntries(this.depositTimeouts.hosts) }), { mode: 0o600 });
+    renameSync(tmp, this.depositTimeoutsFile);
+    return n;
   }
 
   /** What this host's refused ticks cost the door in the UTC day of `at` (epoch ms). */

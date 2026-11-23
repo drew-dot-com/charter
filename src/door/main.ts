@@ -143,10 +143,12 @@ async function main(): Promise<void> {
     fetch: hostFetch,
     onDeposit: (hostId, channelId, amount) => {
       capital.deposited(hostId, amount);
+      ledger.depositSigned(hostId);
       console.log(`charter-door: deposit ${amount} micro-USDC signed into channel ${channelId} of host ${hostId}`);
     },
     onDepositLapsed: (hostId, channelId, amount) => {
       capital.withdrawn(hostId, amount);
+      ledger.depositLapsed(hostId, Date.now());
       console.log(`charter-door: deposit ${amount} micro-USDC into channel ${channelId} of host ${hostId} lapsed unlanded; released`);
     },
     readContract: baseReader(env),

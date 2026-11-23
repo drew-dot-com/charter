@@ -1436,6 +1436,67 @@ test('I5: a deposit timeout is door spend: it never counts against the host\'s l
   }
 });
 
+test('I5: a deposit_timeout whose deposit lapsed unlanded is credited back out of the day\'s unpaid spend; the record stays, marked reversed', async () => {
+  const host = fakeHost({ open: counterOpen() }, () => new DepositTimeoutError());
+  const d = await start(host);
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    d.ledger.addUnpaid(1234n, d.clock.t);
+    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' })).status, 502);
+    assert.equal(d.ledger.unpaidToday(d.clock.t), 6234n);
+    d.ledger.depositLapsed(OFFER.hostId, d.clock.t + 5);
+    assert.equal(d.ledger.unpaidToday(d.clock.t), 1234n, 'back to its prior value');
+    const rec = d.ledger.get(LEASE_1)!;
+    assert.equal(rec.lossKind, 'deposit_timeout');
+    assert.equal(rec.losses, 5000n);
+    assert.equal(rec.lossReversedAt, d.clock.t + 5);
+    // Once only.
+    d.ledger.depositLapsed(OFFER.hostId, d.clock.t + 6);
+    assert.equal(d.ledger.unpaidToday(d.clock.t), 1234n);
+    assert.equal(new DoorLedger(join(d.dir, 'ledger.json')).get(LEASE_1)!.lossReversedAt, d.clock.t + 5, 'kept across a restart');
+    // Next day: a deposit signed after the timeout means the timed-out one resolved; a later lapse is not its.
+    d.clock.t += 86_400_000;
+    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' })).status, 502);
+    assert.equal(d.ledger.get(LEASE_2)!.lossKind, 'deposit_timeout');
+    assert.equal(d.ledger.unpaidToday(d.clock.t), 5000n);
+    d.ledger.depositSigned(OFFER.hostId);
+    d.ledger.depositLapsed(OFFER.hostId, d.clock.t + 5);
+    assert.equal(d.ledger.unpaidToday(d.clock.t), 5000n);
+    assert.equal(d.ledger.get(LEASE_2)!.lossReversedAt, undefined);
+  } finally {
+    d.close();
+  }
+});
+
+test('I5: a host\'s second deposit timeout in a UTC day counts against its loss budget and can hide it; the count resets daily and survives a restart', async () => {
+  const host = fakeHost({ open: counterOpen() }, () => new DepositTimeoutError());
+  const d = await start(host, { hostDailyLoss: 5000n });
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal((await d.post(`/v1/leases/${LEASE_1}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' })).status, 502);
+    assert.equal(d.ledger.get(LEASE_1)!.lossKind, 'deposit_timeout');
+    assert.equal(d.ledger.hostLossToday(OFFER.hostId, d.clock.t), 0n);
+    assert.equal(d.registry.get(OFFER.hostId)!.state, 'listed');
+    assert.equal(d.ledger.depositTimeoutsToday(OFFER.hostId, d.clock.t), 1);
+    assert.equal(new DoorLedger(join(d.dir, 'ledger.json')).depositTimeoutsToday(OFFER.hostId, d.clock.t), 1, 'kept across a restart');
+    assert.equal((await d.post(`/v1/leases/${LEASE_2}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' })).status, 502);
+    assert.equal(d.ledger.get(LEASE_2)!.lossKind, 'host_refused');
+    assert.equal(d.ledger.hostLossToday(OFFER.hostId, d.clock.t), 5000n);
+    assert.equal(d.ledger.unpaidToday(d.clock.t), 5000n, 'only the first is door spend');
+    assert.equal(d.registry.get(OFFER.hostId)!.state, 'hidden');
+    assert.equal(d.ledger.depositTimeoutsToday(OFFER.hostId, d.clock.t), 2);
+    // A new UTC day starts at 0, and its first deposit timeout is door spend again.
+    const next = d.clock.t + 86_400_000;
+    assert.equal(d.ledger.depositTimeoutsToday(OFFER.hostId, next), 0);
+    assert.equal(new DoorLedger(join(d.dir, 'ledger.json')).depositTimeoutsToday(OFFER.hostId, next), 0);
+    assert.equal(d.ledger.countDepositTimeout(OFFER.hostId, next), 1);
+  } finally {
+    d.close();
+  }
+});
+
 test('N3: a tick whose send timed out answers 502 host_timeout, books host_refused (it may have been paid) and stops the lease', async () => {
   const host = fakeHost({ tick: async () => { throw new SendTimeoutError(); } });
   const d = await start(host);

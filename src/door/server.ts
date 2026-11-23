@@ -96,8 +96,10 @@ const HOUR_MS = 3_600_000;
 /** Opens across every IP in an hour. */
 export const DOOR_OPENS_PER_HOUR = 30;
 /**
- * Door spend no renter paid for (opens, free reads, losses a renter's payment caused) in one UTC day, in
- * micro-USDC. Past it: 503 capacity. A host's refused ticks count against its own budget instead (HOST_DAILY_LOSS).
+ * Door spend no renter paid for (opens, free reads, losses a renter's payment caused, a host's first deposit
+ * timeout of the UTC day unless its deposit lapses unlanded) in one UTC day, in micro-USDC. Past it: 503
+ * capacity. A host's refused ticks, and its later deposit timeouts that day, count against its own budget
+ * instead (HOST_DAILY_LOSS).
  */
 export const DAILY_UNPAID_CAP: Micro = 500_000n;
 /** What one host's refused ticks may cost the door in a UTC day, unless CHARTER_HOST_DAILY_LOSS says otherwise. */
@@ -789,8 +791,9 @@ export function doorApp(deps: DoorDeps): express.Express {
       // A send that timed out may have been paid, though nothing was counted.
       const lost = e instanceof SendTimeoutError ? offer.tickPrice : api.spent() - before;
       if (lost > 0n) {
-        // A deposit timeout is the door's own spend: it neither uses up the host's budget nor hides it.
-        if (e instanceof DepositTimeoutError) ledger.loss(id, lost, 'deposit_timeout', now(), payer);
+        // A host's first deposit timeout in a UTC day is the door's own wait: door spend, credited back if the
+        // deposit lapses unlanded. A second one that day is the host's: it counts against its budget like a refusal.
+        if (e instanceof DepositTimeoutError && ledger.countDepositTimeout(offer.hostId, now()) === 1) ledger.loss(id, lost, 'deposit_timeout', now(), payer);
         else hostRefused(id, lost, payer);
         ledger.stop(id);
       }
