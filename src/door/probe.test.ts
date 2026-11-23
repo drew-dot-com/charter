@@ -9,7 +9,7 @@ import { HostError, type HostApi } from '../tenant/host-api.js';
 import type { JobSpec, Lease, Offer } from '../types.js';
 import { CapitalCapError } from './host-http.js';
 import { capitalAllocator, HostRegistry, hostIdOf } from './hosts.js';
-import { DEFAULT_PROBE_MAX_TICK, PROBE_SCRIPT, probeHost, startProbes } from './probe.js';
+import { DEFAULT_PROBE_MAX_TICK, PROBE_MAX_WAIT_MS, PROBE_SCRIPT, probeHost, startProbes } from './probe.js';
 
 const NONCE = '0123456789abcdef0123456789abcdef';
 const DIGEST = createHash('sha256').update(NONCE).digest('hex');
@@ -27,7 +27,7 @@ interface Fake {
 }
 
 /** A host that runs the job: `doneAfter` status reads see it booting, then done with `stdout`, unless `closeWith` is set. */
-function fakeHost(o: { stdout?: string; doneAfter?: number; openClosed?: boolean; closeWith?: Lease['closedReason']; never?: boolean; tickError?: Error } = {}): Fake {
+function fakeHost(o: { stdout?: string; doneAfter?: number; openClosed?: boolean; openBusy?: boolean; closeWith?: Lease['closedReason']; never?: boolean; tickError?: Error } = {}): Fake {
   const calls: string[] = [];
   const jobs: JobSpec[] = [];
   let reads = 0;
@@ -39,6 +39,7 @@ function fakeHost(o: { stdout?: string; doneAfter?: number; openClosed?: boolean
     open: async (job) => {
       calls.push('open');
       jobs.push(job);
+      if (o.openBusy) return { leaseId: 'l1', state: 'closed', closedReason: 'busy' };
       return o.openClosed ? { leaseId: 'l1', state: 'closed', closedReason: 'boot_failed', error: 'no such image' } : { leaseId: 'l1', state: 'awaiting_first_tick' };
     },
     tick: async (leaseId, index) => {
@@ -105,6 +106,20 @@ test('no done within one interval fails timeout, polling every 2 s', async () =>
   assert.ok(c.sleeps.every((ms) => ms === 2000));
   assert.equal(c.sleeps.length, 30);
   assert.equal(f.calls.filter((x) => x === 'status').length, 31);
+});
+
+test('an hourly offer still times out after PROBE_MAX_WAIT_MS, 5 minutes', async () => {
+  assert.equal(PROBE_MAX_WAIT_MS, 300_000);
+  const f = fakeHost({ never: true });
+  const c = clock();
+  assert.deepEqual(await probeHost(f.api, { ...OFFER, intervalSeconds: 3600 }, { nonce: NONCE, probeMaxTick: DEFAULT_PROBE_MAX_TICK, ...c }), { passed: false, reason: 'timeout' });
+  assert.equal(c.sleeps.length, 150);
+});
+
+test('a full host answering the open closed busy is no result: reason busy, nothing paid', async () => {
+  const f = fakeHost({ openBusy: true });
+  assert.deepEqual(await probeHost(f.api, OFFER, { nonce: NONCE, probeMaxTick: DEFAULT_PROBE_MAX_TICK, ...clock() }), { passed: false, reason: 'busy' });
+  assert.deepEqual(f.calls, ['open']);
 });
 
 test('a host error fails host_error; a door capital refusal is not the host failing', async () => {
@@ -335,4 +350,43 @@ test('with the proven tier full, a hidden proven host with funds locked is still
   } finally {
     stop();
   }
+});
+
+test('a busy host records nothing and counts no first probe; the next round probes it again', async () => {
+  const reg = newRegistry();
+  const id = (reg.register('https://full.example', 1) as { hostId: string }).hostId;
+  // A listed host, due again: three busy rounds in a row must not drop it.
+  const listed = (reg.register('https://listed.example', 2) as { hostId: string }).hostId;
+  reg.probeResult(listed, true, NOW - 2 * 86_400_000);
+  let busy = true;
+  const opens: string[] = [];
+  const round = async (): Promise<void> => {
+    const logs: string[] = [];
+    const stop = startProbes({
+      registry: reg, perDay: 10, now: () => NOW, log: (m) => logs.push(m), sleep: async () => undefined,
+      depositFor: () => 100_000n, locked: () => 0n, probeMaxTick: DEFAULT_PROBE_MAX_TICK,
+      fetchOffer: async (url) => ({ ...OFFER, id: url }),
+      apiOf: (o) => {
+        const h = honestHost(new Map(), hostIdOf(o.id), opens);
+        return busy ? { ...h, open: async (job) => (await h.open(job), { leaseId: 'l1', state: 'closed', closedReason: 'busy' }) } : h;
+      },
+    });
+    try {
+      await until(() => logs.length >= 2);
+    } finally {
+      stop();
+    }
+  };
+  for (let i = 0; i < 3; i++) await round();
+  assert.equal(opens.length, 6, 'both hosts were asked every round');
+  assert.equal(reg.firstProbesToday(NOW), 0, 'a busy first probe is not counted');
+  assert.equal(reg.get(id)!.state, 'probing');
+  assert.equal(reg.get(id)!.probes.lastAt, undefined, 'nothing recorded, so it is due again');
+  assert.equal(reg.get(listed)!.state, 'listed');
+  assert.equal(reg.get(listed)!.probes.consecutiveFailed, 0);
+  assert.equal(reg.get(listed)!.probes.lastAt, NOW - 2 * 86_400_000);
+  busy = false;
+  await round();
+  assert.equal(reg.get(id)!.state, 'listed');
+  assert.equal(reg.firstProbesToday(NOW), 1);
 });

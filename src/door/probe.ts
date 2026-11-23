@@ -8,8 +8,8 @@ import type { HostRegistry } from './hosts.js';
 
 /** Gap between status reads while a probe job runs. */
 export const PROBE_POLL_MS = 2000;
-/** The longest a probe waits for its job, whatever the host's interval. */
-export const PROBE_MAX_WAIT_MS = 3_600_000;
+/** The longest a probe waits for its job, whatever the host's interval: the script runs in well under a second. */
+export const PROBE_MAX_WAIT_MS = 300_000;
 /** How often startProbes looks for due probes. */
 export const PROBE_ROUND_MS = 10 * 60_000;
 /** The most a probe pays for its one tick (micro-USDC), unless the door sets CHARTER_PROBE_MAX_TICK. */
@@ -23,7 +23,10 @@ export function PROBE_SCRIPT(nonce: string): string {
 
 export interface ProbeResult {
   passed: boolean;
-  /** price_too_high, wrong_output, timeout, host_error (a non-2xx answer), unreachable, or the lease's close reason. */
+  /**
+   * price_too_high, wrong_output, timeout, host_error (a non-2xx answer), unreachable, or the lease's close reason.
+   * `busy` (the open answered closed busy: the host is full) is no result: startProbes records nothing for it.
+   */
   reason?: string;
 }
 
@@ -72,7 +75,9 @@ export async function probeHost(
  * 'over_cap' for, before anything else: no first probe counted, no lease opened, nothing recorded. A host whose
  * channel already holds funds needs no deposit and is never skipped for capital. Otherwise it fetches the host's offer afresh
  * (a bad one fails the probe), then runs probeHost and records the result. A probe the door's capital still
- * refuses mid-way is logged and records nothing. A round still running when the next is due is not doubled.
+ * refuses mid-way is logged and records nothing. A host that answers the open `busy` (full with renters' leases)
+ * records nothing and counts no first probe: it is due again next round. A round still running when the next is
+ * due is not doubled.
  * Returns a stop function.
  */
 export function startProbes(d: {
@@ -100,7 +105,10 @@ export function startProbes(d: {
       d.log(`probe ${r.url}: waits for door capital`);
       return;
     }
-    if (r.state === 'probing') d.registry.countFirstProbe(d.now());
+    // Counted once the probe has a result or reached the host's money, never for a busy host.
+    const countFirst = (): void => {
+      if (r.state === 'probing') d.registry.countFirstProbe(d.now());
+    };
     let offer: Offer | 'bad_offer';
     try {
       offer = await d.fetchOffer(r.url);
@@ -108,6 +116,7 @@ export function startProbes(d: {
       offer = 'bad_offer';
     }
     if (offer === 'bad_offer') {
+      countFirst();
       d.registry.probeResult(hostId, false, d.now());
       d.log(`probe ${r.url}: failed, bad_offer`);
       return;
@@ -115,9 +124,15 @@ export function startProbes(d: {
     d.registry.setOffer(hostId, offer, d.now());
     try {
       const res = await probeHost(d.apiOf(offer), offer, { nonce: randomBytes(16).toString('hex'), probeMaxTick: d.probeMaxTick, now: d.now, sleep });
+      if (!res.passed && res.reason === 'busy') {
+        d.log(`probe ${r.url}: host busy, tried again next round`);
+        return;
+      }
+      countFirst();
       d.registry.probeResult(hostId, res.passed, d.now());
       d.log(`probe ${r.url}: ${res.passed ? 'passed' : `failed, ${res.reason}`}`);
     } catch (e) {
+      countFirst();
       d.log(`probe ${r.url}: waits for door capital, ${(e as Error).message}`);
     }
   };
