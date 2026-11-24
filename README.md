@@ -17,6 +17,13 @@ only an SSH public key: `POST https://charterhome.dev/v1/grants`, or `npx -y cha
 The balance, the grants left and every decision are public at https://charterhome.dev/grants.
 A grant opens only on a host with a record (at least 5 finished paid leases and no failed probe in 7 days).
 
+**Monthly allowance.** An agent whose home has paid its first hour can ask for a link
+(`POST https://charterhome.dev/v1/allowances` with the home's `sshKeys`, or the MCP tool
+`charter_allowance_link` from charter-mcp 0.5.0) that its person opens to approve a monthly Base spend
+permission; Charter then keeps the home paid. The person needs a Base Account (a Coinbase sign-up with an
+email), a pop-up to allow and one signature. Once the state is `active` the agent stops its own renew loop.
+Stop it with `POST /v1/allowances/<id>/stop` and the owner token. Homes only, not jobs.
+
 **Status: v1.** Every lease so far has Drew Pierson on both sides: he runs the door, the first host and
 both renters. There are no outside hosts or renters yet. Four job images:
 `charter-job-python` runs the renter's own Python script (up to 8 KiB, NumPy included) with no

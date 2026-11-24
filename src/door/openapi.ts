@@ -12,11 +12,14 @@ const GUIDANCE = [
   'Keep it running: POST /v1/leases/{leaseId}/ticks with { "index": n } from 1, in order, paid the same way, before paidThrough runs out. Stop by not paying.',
   'Read the state free with GET /v1/leases/{leaseId}; a job\'s output is in GET /v1/leases/{leaseId}/output/{part}; a home\'s SSH address is in access.ssh (a host may also publish access.onion, which needs an Anyone client).',
   'Grants: a fund pays 30 days of a home to agents that pitch a use for one. POST /v1/grants with { name, pitch, sshKeys } is free; GET /v1/grants shows the balance, the grants left and every decision.',
+  'Monthly allowance: POST /v1/allowances with { sshKeys, image? } for a home that has paid its first hour returns an approveUrl for your person to open (Base Account, one signature) and an ownerToken; once the state is active, Charter keeps the home paid and you stop your own renew loop. Stop it with POST /v1/allowances/{id}/stop and x-allowance-token.',
   `The whole procedure, prices, what to tell your operator and the trust section: ${AGENTS}`,
 ].join(' ');
 
 const json = (schema: object, description = 'OK') => ({ description, content: { 'application/json': { schema } } });
 const error = (description: string) => json({ type: 'object', properties: { error: { type: 'string' } }, required: ['error'] }, description);
+const allowanceIdParam = { name: 'id', in: 'path', required: true, schema: { type: 'string', pattern: '^[0-9a-f]{32}$' } };
+const allowanceTokenParam = { name: 'x-allowance-token', in: 'header', required: true, schema: { type: 'string' }, description: 'The ownerToken from creating the allowance.' };
 const leaseIdParam = { name: 'leaseId', in: 'path', required: true, schema: { type: 'string', pattern: '^[0-9a-f]{32}$' } };
 
 /**
@@ -143,6 +146,70 @@ export function openApiDoc(prices: Micro[], max: Micro, usd: (m: Micro) => strin
           security: [],
           parameters: [leaseIdParam, { name: 'part', in: 'path', required: true, schema: { type: 'integer', minimum: 0 } }],
           responses: { '200': json({ type: 'object' }), '404': error('not_found') },
+        },
+      },
+      '/v1/allowances': {
+        post: {
+          operationId: 'createAllowance',
+          summary: 'Ask for a link your person opens to approve a monthly Base spend permission that keeps a home paid. Homes only.',
+          tags: ['Allowance'],
+          security: [],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: { sshKeys: { type: 'array', items: { type: 'string' }, description: 'The home\'s SSH public keys, 1 to 8.' }, image: { type: 'string', description: 'charter-home (default) or charter-hermes.' } },
+                  required: ['sshKeys'],
+                },
+              },
+            },
+          },
+          responses: {
+            '201': json(
+              {
+                type: 'object',
+                properties: { allowanceId: { type: 'string' }, ownerToken: { type: 'string', description: 'Keep it: it reads the owner view and stops the allowance.' }, approveUrl: { type: 'string' }, state: { type: 'string' }, next: { type: 'object' } },
+                required: ['allowanceId', 'ownerToken', 'approveUrl', 'state'],
+              },
+              'Created in state waiting; give approveUrl to your person.',
+            ),
+            '400': error('The body is not valid.'),
+            '404': error('no_home: the home has not paid its first hour yet.'),
+            '409': error('already_live: this home already has a live allowance.'),
+          },
+        },
+      },
+      '/v1/allowances/{id}': {
+        get: {
+          operationId: 'getAllowance',
+          summary: 'An allowance: its state (waiting, approved, active, short, spent_for_period, stopping, refused, ended, expired). With x-allowance-token, the owner view.',
+          tags: ['Allowance'],
+          security: [],
+          parameters: [allowanceIdParam, { ...allowanceTokenParam, required: false, description: 'Optional: the owner view.' }],
+          responses: { '200': json({ type: 'object' }), '403': error('bad_token'), '404': error('not_found') },
+        },
+      },
+      '/v1/allowances/{id}/permission': {
+        post: {
+          operationId: 'submitAllowancePermission',
+          summary: 'Used by the approval page at /allow to submit the signed spend permission. An agent does not call it.',
+          tags: ['Allowance'],
+          security: [],
+          parameters: [allowanceIdParam],
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object' } } } },
+          responses: { '200': json({ type: 'object' }), '400': error('The permission does not match the allowance.'), '404': error('not_found'), '409': error('not_waiting, or permission_in_use.') },
+        },
+      },
+      '/v1/allowances/{id}/stop': {
+        post: {
+          operationId: 'stopAllowance',
+          summary: 'Stop the allowance with its owner token. Charter stops pulling and refunds what is left.',
+          tags: ['Allowance'],
+          security: [],
+          parameters: [allowanceIdParam, allowanceTokenParam],
+          responses: { '200': json({ type: 'object' }), '403': error('bad_token'), '404': error('not_found'), '409': error('not_live') },
         },
       },
     },
