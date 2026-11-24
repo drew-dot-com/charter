@@ -23,6 +23,7 @@ import { fileRequestSink } from './reqlog.js';
 import { blockAddresses, safeFetch } from './safe-fetch.js';
 import { errorReason } from './redact.js';
 import { doorApp } from './server.js';
+import { AllowanceStore } from './allowances.js';
 import { GrantStore, readFundPublic } from './grants.js';
 import { BASE_USDC, buildSchemes, facilitatorOffersBatch, parseClaimKey, type Schemes, type X402Config } from '../x402/seller.js';
 import { baseUsdcWallet, startSweep } from './sweep.js';
@@ -126,6 +127,13 @@ async function main(): Promise<void> {
   const fundAddressRaw = env.CHARTER_FUND_ADDRESS?.trim();
   if (fundAddressRaw && !/^0x[0-9a-fA-F]{40}$/.test(fundAddressRaw)) throw new Error('CHARTER_FUND_ADDRESS must be a 0x address (40 hex characters)');
 
+  const allowTokenFile = env.CHARTER_ALLOW_TOKEN_FILE?.trim();
+  const allowToken = allowTokenFile ? readFileSync(allowTokenFile, 'utf8').trim() : undefined;
+  if (allowTokenFile && !allowToken) throw new Error(`CHARTER_ALLOW_TOKEN_FILE ${allowTokenFile} is empty`);
+  const allowAddressRaw = env.CHARTER_ALLOW_ADDRESS?.trim();
+  if (allowAddressRaw && !/^0x[0-9a-fA-F]{40}$/.test(allowAddressRaw)) throw new Error('CHARTER_ALLOW_ADDRESS must be a 0x address (40 hex characters)');
+  const allowances = new AllowanceStore(join(dataDir, 'allowances.jsonl'), Date.now);
+
   // Hosts: who registered, what the door has locked in their channels, and how much more it may lock.
   const registry = new HostRegistry(join(dataDir, HOSTS_FILE));
   const capital = new CapitalBook(join(dataDir, CAPITAL_FILE));
@@ -196,6 +204,10 @@ async function main(): Promise<void> {
     fundOpen,
     ...(fundToken ? { fundToken } : {}),
     ...(fundAddressRaw ? { fundAddress: fundAddressRaw.toLowerCase() } : {}),
+    allowances,
+    ...(allowToken ? { allowToken } : {}),
+    ...(allowAddressRaw ? { allowAddress: allowAddressRaw.toLowerCase() } : {}),
+    ...(env.CHARTER_ALLOW_PAGE_URL?.trim() ? { allowPageUrl: env.CHARTER_ALLOW_PAGE_URL.trim() } : {}),
     x402,
     schemes,
     offerBatch,

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { HostError, type HostApi, type OpenResult } from '../tenant/host-api.js';
 import { JOB_IMAGES, homeIdOf, isHomeImage, jobFromBody } from '../jobs.js';
+import { ALLOWED_MOVES as ALLOWANCE_MOVES, BadMove as AllowanceBadMove, LIVE_STATES as ALLOWANCE_LIVE, billerView, ownerView as allowanceOwnerView, pageView as allowancePageView, validatePermission, validateRequest as validateAllowanceRequest, type AllowanceState, type AllowanceStore, type EndReason } from './allowances.js';
 import { ALLOWED_MOVES, BadMove, ownerView, publicView, readFundPublic, validatePitch, type Grant, type GrantState, type GrantStore } from './grants.js';
 import type { JobSpec, Lease, Micro, Offer } from '../types.js';
 import { DeadlinePassedError, SendTimeoutError } from '../errors.js';
@@ -71,6 +72,14 @@ export interface DoorDeps {
   fundToken?: string;
   /** The fund's own payer address, lowercased. A payer equal to it is never answered payer_blocked. */
   fundAddress?: string;
+  /** The allowance store. Left out (or no `allowAddress`): the /v1/allowances routes are not mounted. */
+  allowances?: AllowanceStore;
+  /** The biller's bearer token. Left out: the /v1/biller routes do not exist. */
+  allowToken?: string;
+  /** The biller's spender address, lowercased: the spend permissions are granted to it. A payer equal to it is never answered payer_blocked. */
+  allowAddress?: string;
+  /** Where the approval page lives. Default: https://charterhome.dev/allow. */
+  allowPageUrl?: string;
 }
 
 const PITCHES_PER_HOUR = 5;
@@ -508,6 +517,101 @@ export function doorApp(deps: DoorDeps): express.Express {
     });
   }
 
+  if (deps.allowances && deps.allowAddress) {
+    const allowances = deps.allowances;
+    const spender = deps.allowAddress;
+    const pageUrl = deps.allowPageUrl ?? 'https://charterhome.dev/allow';
+    const ENDS: readonly string[] = ['cancelled', 'stopped', 'home_gone', 'operator'];
+    /** The home's newest lease in the ledger, by createdAt. */
+    const newestLease = (homeId: string) => ledger.all().filter((l) => l.homeId === homeId).sort((a, b) => b.createdAt - a.createdAt)[0];
+
+    app.post('/v1/allowances', (req, res) => {
+      if (!allowPitch(req.ip ?? 'unknown')) return void res.status(429).json({ error: 'rate_limited' });
+      const v = validateAllowanceRequest(req.body);
+      if (!v.ok) return void res.status(400).json({ error: v.error });
+      const homeId = homeIdOf(v.sshKeys);
+      const newest = newestLease(homeId);
+      const paid = ledger.all().some((l) => l.homeId === homeId && l.ticksPaidByRenter > 0);
+      if (!newest || !paid || !registry.homeHost(homeId)) return void res.status(404).json({ error: 'no_home' });
+      const live = allowances.liveForHome(homeId);
+      if (live) return void res.status(409).json({ error: 'already_live', allowanceId: live.allowanceId });
+      const token = randomBytes(32).toString('hex');
+      const a = allowances.add({ sshKeys: v.sshKeys, image: v.image, tickMicro: priceOf(newest.leaseId)! }, token);
+      res.status(201).json({ allowanceId: a.allowanceId, ownerToken: token, approveUrl: `${pageUrl}?id=${a.allowanceId}`, state: a.state, next: `/v1/allowances/${a.allowanceId}` });
+    });
+    app.get('/v1/allowances/:id', (req, res) => {
+      const id = String(req.params.id);
+      const a = allowances.get(id);
+      if (!a) return void res.status(404).json({ error: 'not_found' });
+      const token = req.get('x-allowance-token');
+      if (token === undefined) return void res.json(allowancePageView(a, spender));
+      if (!allowances.tokenOk(id, token)) return void res.status(403).json({ error: 'bad_token' });
+      res.json(allowanceOwnerView(a, spender));
+    });
+    app.post('/v1/allowances/:id/permission', (req, res) => {
+      const id = String(req.params.id);
+      const a = allowances.get(id);
+      if (!a) return void res.status(404).json({ error: 'not_found' });
+      if (a.state !== 'waiting') return void res.status(409).json({ error: 'not_waiting' });
+      const v = validatePermission(req.body, { spender, tickMicro: BigInt(a.tickMicro), now: now() });
+      if (!v.ok) return void res.status(400).json({ error: v.error });
+      res.json(allowancePageView(allowances.update(id, { state: 'approved', signed: v.signed, account: v.signed.permission.account }), spender));
+    });
+    app.post('/v1/allowances/:id/stop', (req, res) => {
+      const id = String(req.params.id);
+      const a = allowances.get(id);
+      if (!a) return void res.status(404).json({ error: 'not_found' });
+      const token = req.get('x-allowance-token');
+      if (token === undefined || !allowances.tokenOk(id, token)) return void res.status(403).json({ error: 'bad_token' });
+      if (!ALLOWANCE_LIVE.includes(a.state)) return void res.status(409).json({ error: 'not_live' });
+      res.json(allowanceOwnerView(allowances.update(id, { state: a.state === 'waiting' ? 'expired' : 'stopping' }), spender));
+    });
+
+    if (deps.allowToken) {
+      const want = createHash('sha256').update(deps.allowToken).digest();
+      const billerAuth: express.RequestHandler = (req, res, next) => {
+        const m = /^Bearer (.+)$/.exec(req.get('authorization') ?? '');
+        const got = createHash('sha256').update(m?.[1] ?? '').digest();
+        if (!m || !timingSafeEqual(got, want)) return void res.status(401).json({ error: 'unauthorized' });
+        next();
+      };
+      app.get('/v1/biller/allowances', billerAuth, (_req, res) => {
+        // liveForHome expires a stale waiting allowance, so run it for each home first.
+        for (const h of new Set(allowances.all().map((a) => a.homeId))) allowances.liveForHome(h);
+        res.json({ allowances: allowances.all().filter((a) => ALLOWANCE_LIVE.includes(a.state)).map(billerView) });
+      });
+      app.post('/v1/biller/allowances/:id', billerAuth, (req, res) => {
+        const id = String(req.params.id);
+        if (!allowances.get(id)) return void res.status(404).json({ error: 'not_found' });
+        const b = req.body;
+        if (typeof b !== 'object' || b === null || Array.isArray(b)) return void res.status(400).json({ error: 'body must be a JSON object' });
+        const patch: Parameters<AllowanceStore['update']>[1] = {};
+        const digits = (v: unknown): v is string => typeof v === 'string' && /^[0-9]{1,78}$/.test(v);
+        for (const [k, v] of Object.entries(b as Record<string, unknown>)) {
+          if (k === 'state' && typeof v === 'string' && Object.hasOwn(ALLOWANCE_MOVES, v)) patch.state = v as AllowanceState;
+          else if (k === 'endReason' && typeof v === 'string' && ENDS.includes(v)) patch.endReason = v as EndReason;
+          else if ((k === 'reason' || k === 'account' || k === 'lastPullTx' || k === 'leaseId') && typeof v === 'string' && v.length <= 2000) patch[k] = v;
+          else if ((k === 'remainingMicro' || k === 'creditMicro') && digits(v)) patch[k] = v;
+          else if (k === 'periodEndsAt' && typeof v === 'number' && Number.isSafeInteger(v) && v >= 0) patch.periodEndsAt = v;
+          else if (k === 'hoursPaid' && typeof v === 'number' && Number.isInteger(v) && v >= 0) patch.hoursPaid = v;
+          else return void res.status(400).json({ error: `bad field ${k}` });
+        }
+        try {
+          res.json(billerView(allowances.update(id, patch)));
+        } catch (e) {
+          if (e instanceof AllowanceBadMove) return void res.status(409).json({ error: 'bad_move' });
+          throw e;
+        }
+      });
+      app.get('/v1/biller/homes/:homeId', billerAuth, (req, res) => {
+        const homeId = String(req.params.homeId);
+        const newest = newestLease(homeId);
+        const grantLive = deps.grants?.all().some((g) => g.homeId === homeId && (g.state === 'active' || g.state === 'approved_waiting')) ?? false;
+        res.json({ leaseId: newest?.leaseId ?? null, offerId: newest?.offerId ?? null, hostKnown: registry.homeHost(homeId) !== undefined, grantLive });
+      });
+    }
+  }
+
   app.use(hostRoutes({
     registry,
     fetch: deps.hostFetch ?? ((input, init) => safeFetch(input as string | URL | Request, init ?? {})),
@@ -727,8 +831,8 @@ export function doorApp(deps: DoorDeps): express.Express {
   const verified = (res: express.Response): boolean => {
     if (res.locals.paymentKey) ledger.addPayment(res.locals.paymentKey as string);
     const payer = res.locals.payer as string | undefined;
-    // The fund's own wallet is exempt: its losses are booked, but it is never turned away.
-    if (payer && payer.toLowerCase() !== deps.fundAddress && ledger.payerHasLoss(payer, now())) return void res.status(403).json({ error: 'payer_blocked' }), false;
+    // The fund's own wallet and the allowance biller's are exempt: its losses are booked, but it is never turned away.
+    if (payer && payer.toLowerCase() !== deps.fundAddress && payer.toLowerCase() !== deps.allowAddress && ledger.payerHasLoss(payer, now())) return void res.status(403).json({ error: 'payer_blocked' }), false;
     return true;
   };
 
