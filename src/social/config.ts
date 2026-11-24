@@ -1,4 +1,6 @@
 /** Parsing for charter-social's environment. See docs/superpowers/specs/2026-11-24-charter-x-account-design.md section 9. */
+import { DEFAULT_BANNED } from './files.js';
+import { costOf } from './x.js';
 
 export interface SocialConfig {
   x: { consumerKey: string; consumerSecret: string; accessToken: string; accessSecret: string; userId: string };
@@ -24,8 +26,33 @@ const REQUIRED = [
   'TELEGRAM_BOT_TOKEN_FILE', 'TELEGRAM_CHAT_ID', 'CHARTER_SITE_URL',
 ] as const;
 
-function list(v: string | undefined): Set<string> {
-  return new Set((v ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
+/** The dearest X write, a post with a link: a smaller daily cap could never post anything. */
+const MIN_SPEND_CAP = costOf('post', { hasUrl: true });
+
+const ADDRESS = /^0x[0-9a-f]{40}$/;
+
+/**
+ * A comma-separated wallet list, lowercased. Every entry must be an EVM address: a typo would silently let that
+ * wallet's leases read as an outsider's, so it is named in `missing` (first 6 characters only) instead.
+ */
+function payers(name: string, v: string | undefined, missing: string[]): Set<string> {
+  const out = new Set<string>();
+  for (const raw of (v ?? '').split(',')) {
+    const a = raw.trim().toLowerCase();
+    if (!a) continue;
+    if (ADDRESS.test(a)) out.add(a);
+    else missing.push(`${name} has a bad address: ${raw.trim().slice(0, 6)}\u2026`);
+  }
+  return out;
+}
+
+/** The host of a site URL, with or without a scheme, lowercased. */
+function hostOf(url: string): string {
+  try {
+    return new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(url) ? url : `https://${url}`).hostname.toLowerCase();
+  } catch {
+    return url.toLowerCase();
+  }
 }
 
 function positive(v: string | undefined, dflt: number, name: string, missing: string[]): number {
@@ -65,7 +92,21 @@ export function parseSocialConfig(env: NodeJS.ProcessEnv, readFile: (p: string) 
   if (write && check && write === check) missing.push('GEMINI_MODEL_CHECK must differ from GEMINI_MODEL_WRITE');
 
   const spendCapUsdDay = positive(env.SPEND_CAP_USD_DAY, 2, 'SPEND_CAP_USD_DAY', missing);
+  if (spendCapUsdDay < MIN_SPEND_CAP) missing.push(`SPEND_CAP_USD_DAY must be at least ${MIN_SPEND_CAP}, the cost of one post with a link`);
   const geminiCallsCapDay = positive(env.GEMINI_CALLS_CAP_DAY, 200, 'GEMINI_CALLS_CAP_DAY', missing);
+
+  // Leases paid by these wallets never produce a post; an empty list would make Drew's own leases outsiders.
+  const firstParty = payers('FIRST_PARTY_PAYERS', env.FIRST_PARTY_PAYERS, missing);
+  if (firstParty.size === 0 && !missing.some((m) => m.startsWith('FIRST_PARTY_PAYERS'))) missing.push('FIRST_PARTY_PAYERS');
+  const probes = payers('PROBE_PAYERS', env.PROBE_PAYERS, missing);
+
+  // Ruling R18: posts link to the site, so its host must not carry a banned word (e.g. toonprotocol).
+  const siteUrl = get('CHARTER_SITE_URL');
+  if (siteUrl) {
+    const host = hostOf(siteUrl);
+    const word = DEFAULT_BANNED.find((w) => host.includes(w));
+    if (word) missing.push(`CHARTER_SITE_URL host contains a banned word: ${word}`);
+  }
 
   if (missing.length) return { missing };
   return {
@@ -80,9 +121,9 @@ export function parseSocialConfig(env: NodeJS.ProcessEnv, readFile: (p: string) 
       },
       gemini: { apiKey: get('GEMINI_API_KEY'), modelWrite: write, modelCheck: check },
       telegram: { token, chatId: get('TELEGRAM_CHAT_ID') },
-      firstParty: list(env.FIRST_PARTY_PAYERS),
-      probes: list(env.PROBE_PAYERS),
-      siteUrl: get('CHARTER_SITE_URL'),
+      firstParty,
+      probes,
+      siteUrl,
       doorUrl: get('CHARTER_DOOR_URL') || 'http://charter-door:3701',
       dataDir: get('CHARTER_DATA_DIR') || '/data',
       stateDir: get('STATE_DIR') || '/state',

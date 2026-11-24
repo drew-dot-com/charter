@@ -638,7 +638,11 @@ Mondays: a report to Drew at 13:00 UTC, the summary post at 15:00 UTC). The loop
 
 - `social.env` (mode 600): from `deploy/social/social.env.example`. The X keys, the Gemini key and models,
   `TELEGRAM_CHAT_ID`, `CHARTER_SITE_URL`, `FIRST_PARTY_PAYERS` and `PROBE_PAYERS` (copy both from
-  `/etc/charter-ops/env`), `DRY_RUN`, the caps.
+  `/etc/charter-ops/env`), `DRY_RUN`, the caps. Startup refuses, and the loops stay idle with `/status` saying
+  why: an empty `FIRST_PARTY_PAYERS`; any payer entry that is not `0x` and 40 hex digits; a
+  `SPEND_CAP_USD_DAY` below 0.20 (one post with a link); a `CHARTER_SITE_URL` whose host contains a default
+  banned word (token, airdrop, presale, guarantee, escape, jailbreak, unfenced, toon), so the current
+  `charter.mainnet.toonprotocol.dev` is refused and the loops wait for the site's new, non-TOON domain.
 - `secrets/telegram.token` (0400): the token of a bot made for this service alone (BotFather). A token another
   process also polls breaks both.
 - `config/` (read-only in the container, re-read every tick, so an edit applies within 5 minutes):

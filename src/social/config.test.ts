@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseSocialConfig } from './config.js';
 
+const FUND = '0x' + 'ab'.repeat(20);
+const PROBE = '0x' + 'cd'.repeat(20);
 const good: NodeJS.ProcessEnv = {
   X_CONSUMER_KEY: 'ck',
   X_CONSUMER_SECRET: 'cs',
@@ -14,6 +16,7 @@ const good: NodeJS.ProcessEnv = {
   TELEGRAM_BOT_TOKEN_FILE: '/secrets/telegram.token',
   TELEGRAM_CHAT_ID: '42',
   CHARTER_SITE_URL: 'https://charter.example',
+  FIRST_PARTY_PAYERS: FUND,
 };
 const read = (p: string): string => (p === '/secrets/telegram.token' ? 'tok\n' : '');
 
@@ -71,8 +74,45 @@ test('a bad number is reported, not defaulted', () => {
 });
 
 test('payer lists are lowercased, comma split and trimmed', () => {
-  const r = parseSocialConfig({ ...good, FIRST_PARTY_PAYERS: '0xABC, 0xDef ,,', PROBE_PAYERS: '0xAA' }, read);
-  assert.deepEqual([...(r.config?.firstParty ?? [])], ['0xabc', '0xdef']);
-  assert.deepEqual([...(r.config?.probes ?? [])], ['0xaa']);
-  assert.equal(parseSocialConfig(good, read).config?.firstParty.size, 0);
+  const r = parseSocialConfig({ ...good, FIRST_PARTY_PAYERS: `${FUND.toUpperCase().replace('0X', '0x')}, ${'0x' + 'Ef'.repeat(20)} ,,`, PROBE_PAYERS: PROBE.toUpperCase().replace('0X', '0x') }, read);
+  assert.deepEqual(r.missing, []);
+  assert.deepEqual([...(r.config?.firstParty ?? [])], [FUND, '0x' + 'ef'.repeat(20)]);
+  assert.deepEqual([...(r.config?.probes ?? [])], [PROBE]);
+  assert.equal(parseSocialConfig({ ...good, PROBE_PAYERS: '' }, read).config?.probes.size, 0);
+});
+
+test('an empty FIRST_PARTY_PAYERS keeps the loops idle: own leases would read as outsiders', () => {
+  for (const v of [undefined, '', ' , ,']) {
+    const r = parseSocialConfig({ ...good, FIRST_PARTY_PAYERS: v }, read);
+    assert.equal(r.config, undefined, String(v));
+    assert.ok(r.missing.includes('FIRST_PARTY_PAYERS'), String(v));
+  }
+});
+
+test('a payer entry that is not 0x and 40 hex digits is named in missing', () => {
+  const r = parseSocialConfig({ ...good, FIRST_PARTY_PAYERS: `${FUND},0xabc` }, read);
+  assert.equal(r.config, undefined);
+  assert.ok(r.missing.includes('FIRST_PARTY_PAYERS has a bad address: 0xabc\u2026'), r.missing.join(' | '));
+  const p = parseSocialConfig({ ...good, PROBE_PAYERS: `${PROBE}, ${FUND}1` }, read);
+  assert.equal(p.config, undefined);
+  assert.ok(p.missing.includes('PROBE_PAYERS has a bad address: 0xabab\u2026'), p.missing.join(' | '));
+  assert.ok(parseSocialConfig({ ...good, PROBE_PAYERS: 'fund-wallet' }, read).missing.includes('PROBE_PAYERS has a bad address: fund-w\u2026'));
+});
+
+test('SPEND_CAP_USD_DAY below the dearest post (0.20) is refused', () => {
+  const r = parseSocialConfig({ ...good, SPEND_CAP_USD_DAY: '0.19' }, read);
+  assert.equal(r.config, undefined);
+  assert.ok(r.missing.includes('SPEND_CAP_USD_DAY must be at least 0.2, the cost of one post with a link'), r.missing.join(' | '));
+  assert.equal(parseSocialConfig({ ...good, SPEND_CAP_USD_DAY: '0.2' }, read).config?.spendCapUsdDay, 0.2);
+});
+
+test('Ruling R18: a CHARTER_SITE_URL whose host contains a default banned word is refused', () => {
+  for (const url of ['https://charter.mainnet.toonprotocol.dev', 'https://TOONPROTOCOL.dev/x', 'charter.tokenhub.io', 'https://jailbreakers.example']) {
+    const r = parseSocialConfig({ ...good, CHARTER_SITE_URL: url }, read);
+    assert.equal(r.config, undefined, url);
+    assert.ok(r.missing.some((m) => m.startsWith('CHARTER_SITE_URL host contains a banned word: ')), `${url}: ${r.missing.join(' | ')}`);
+  }
+  assert.ok(parseSocialConfig({ ...good, CHARTER_SITE_URL: 'https://charter.mainnet.toonprotocol.dev' }, read).missing.includes('CHARTER_SITE_URL host contains a banned word: toon'));
+  // Only the host counts: a path is not a host.
+  assert.deepEqual(parseSocialConfig({ ...good, CHARTER_SITE_URL: 'https://charter.example/toon' }, read).missing, []);
 });
