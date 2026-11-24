@@ -49,6 +49,18 @@ test('VOICE is the spec voice paragraph', () => {
   assert.ok(VOICE.endsWith('The tenants can be wild; Charter is calm.'));
 });
 
+test('the VOICE example names no one, is plain ASCII, and is followed by a tone-only line', async () => {
+  assert.ok(VOICE.includes('"A renter paid another hour. Rent\'s current. basescan.org/tx/0x..."'), VOICE);
+  assert.ok(!/Teeny|37/.test(VOICE));
+  assert.ok(/^[\x20-\x7E]*$/.test(VOICE), 'VOICE is printable ASCII');
+  const m = fake({ write: { candidates: ['Leases running: 2.'] }, check: sourced });
+  await compose(deps(m), post);
+  const sys = m.calls[0]!.system!.split('\n');
+  const at = sys.indexOf(VOICE);
+  assert.ok(at >= 0, 'VOICE is a line of the writer system prompt');
+  assert.equal(sys[at + 1], 'The example shows tone only. Never use its words, numbers or link as facts.');
+});
+
 test('compose returns the first candidate that passes lint and the checker', async () => {
   const m = fake({ write: { candidates: ['Two leases running now.', 'Leases running: 2.', 'Still 2 running.'] }, check: sourced });
   // "Two" has no digit, so lint passes it; the checker sources it. The first survivor wins.

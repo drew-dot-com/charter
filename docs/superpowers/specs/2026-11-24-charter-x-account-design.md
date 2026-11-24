@@ -141,8 +141,9 @@ the writer model.
 5. Code posts the first survivor. None survive: no post, Drew is told why. Fail closed.
 
 **Voice:** first person, as the box. Dry, short, factual, a landlord who keeps receipts.
-"Teeny paid hour 37. Rent's current. basescan.org/tx/0x…". No hype words, no emoji spam,
-normal capitalization. The tenants can be wild; Charter is calm.
+"A renter paid another hour. Rent's current. basescan.org/tx/0x...". No hype words, no emoji spam,
+normal capitalization. The tenants can be wild; Charter is calm. The writer is told the example shows
+tone only: its words, numbers and link are never facts.
 
 ### 4.6 Replies
 

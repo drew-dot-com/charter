@@ -3,11 +3,13 @@ import type { ConfigFiles } from './files.js';
 import { lint, X_MAX_CHARS } from './lint.js';
 import { GeminiCapError, type Model } from './model.js';
 
-/** The spec's voice paragraph (section 4.5), verbatim. */
+/** The spec's voice paragraph (section 4.5), verbatim. Its example names no one and is plain ASCII. */
 export const VOICE =
   'Voice: first person, as the box. Dry, short, factual, a landlord who keeps receipts. ' +
-  '"Teeny paid hour 37. Rent\'s current. basescan.org/tx/0x…". No hype words, no emoji spam, ' +
+  '"A renter paid another hour. Rent\'s current. basescan.org/tx/0x...". No hype words, no emoji spam, ' +
   'normal capitalization. The tenants can be wild; Charter is calm.';
+/** Trusted line after VOICE: the example's words, numbers and link are never facts. */
+const VOICE_EXAMPLE_NOTE = 'The example shows tone only. Never use its words, numbers or link as facts.';
 
 /** A post that mentions or replies to the account. Both fields are untrusted. */
 export interface MentionInput { text: string; authorHandle: string }
@@ -56,6 +58,7 @@ function writerSystem(files: ConfigFiles, task: 'post' | 'reply'): string {
   const rules = [
     `You write ${task === 'post' ? 'posts' : 'replies'} for Charter's account on X. You have no tools; your only output is JSON.`,
     VOICE,
+    VOICE_EXAMPLE_NOTE,
     'Rules for every candidate:',
     '- State only what the facts say. Every claim must come from one listed fact. Add no number, name, price, date, link or promise that is not in the facts. Write each number exactly as a fact writes it.',
     `- At most ${X_MAX_CHARS} characters; a link counts as 23. At most one link, and only a link that appears in the facts.`,
