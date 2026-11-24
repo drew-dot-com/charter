@@ -736,3 +736,24 @@ Charter stopped using TOON. Renters pay the door over x402 on Base as before; th
   hel1 record after: `leasesFinished 5`, `successRate 1`, `new false`; channel charged 42000 (probe + five ticks), zero losses.
 - TOON retired for Charter: channels `FEFVKrn2…GLW` (edge to hel1), `DaZN3vmu…5hdr` (hel1 to edge) and `5akKFS2L…M2Wm` (old door to edge, close tx `36dMeknX3SvtuWVdwDiiq9Mx3tP83HcYoJPBKwZhb67RwcPTiCKG9JRYF1yoqM6DsLccNuRip7fc9x3KGw2HLWZR`) closed, accounts gone on chain; nothing was owed on any. hel1's routes and peering removed from the edge; hel1's TOON node stopped and disabled; `/ilp` dropped from hel1's Caddy. `~/.toon` on hel1 kept (its EVM key is hel1's payout address).
 - Not republished: the Arweave landing page (charter.ar.io stays at v8; the site moves to a regular website later).
+
+## 19. Charter on its own domain: charterhome.dev (2026-11-24)
+
+Charter left Jonathan's DNS zone and its Arweave landing page. Spec
+`docs/superpowers/specs/2026-11-24-charterhome-domain-design.md`, plan
+`docs/superpowers/plans/2026-11-24-charterhome-domain.md`.
+
+- Domain `charterhome.dev` bought at Porkbun (Drew's account), registered 14:36Z, expires 2027-11-24.
+  DNS: A and AAAA for the apex and `rent`, to 167.233.221.236 and 2a01:4f8:c015:382f::1 (Porkbun's two
+  parking records were edited into the A records).
+- Caddy: the apex serves the landing page at `/` (rewritten to the door's `/home`) and the door on every
+  other path; `rent.charterhome.dev` is the browser storefront; `charter.mainnet.toonprotocol.dev` and the
+  sslip name stay as aliases. Backup `/opt/toon-relay/deploy/Caddyfile.bak-20261124-precharterhome`.
+- Door redeployed (backup `/opt/charter.bak-20261124-precharterhome`): `https://charterhome.dev/` renders
+  the landing page with its fonts and no console error; `POST /v1/rent` answers 402 naming
+  `resource.url = https://charterhome.dev/v1/rent`; `/llms.txt` names only the new address.
+- Fund rebuilt: its default door is now `https://charterhome.dev`; `/v1/grants` shows the fund open, 19 left.
+- hel1: `CHARTER_DOOR_URL=https://charterhome.dev` (backup `~/.config/charter/env.bak-20261124-precharterhome`),
+  restarted with no lease booting or running; it logs `door https://charterhome.dev` and is listed again.
+- `charter.ar.io` moved notice uploaded free through Turbo: txid
+  `EKxsZP-wQZ8p0VJxRO37ParEW-tHm-oXu8Q_9CdvOPg` (1101 bytes, sha256 e172e9f8...c008).
