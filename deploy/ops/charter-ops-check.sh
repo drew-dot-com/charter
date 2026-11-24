@@ -1,6 +1,6 @@
 #!/bin/bash
 # What charter-ops.timer runs every 5 minutes on the box: the door canary, the door
-# headroom and daily-spend checks, the host channel check, the grant fund check, the homes' outside SSH check and the outside-usage check, each alerting through
+# headroom and daily-spend checks, the host channel check, the grant fund check, the allowance biller check, the homes' outside SSH check and the outside-usage check, each alerting through
 # charter-alert.sh.
 # Exit status is informational only (the timer does not care).
 set -u
@@ -13,6 +13,7 @@ mkdir -p "$STATE"
   "$here/charter-headroom.sh" --alert
   "$here/charter-host-channel.sh" --alert
   "$here/charter-fund-check.sh" --alert
+  "$here/charter-allow-check.sh" --alert
   "$here/charter-home-ssh-check.sh" --alert
   "$here/charter-usage-check.sh" --alert
 } >> "$STATE/check.log" 2>&1

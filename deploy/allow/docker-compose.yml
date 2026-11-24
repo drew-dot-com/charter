@@ -1,0 +1,40 @@
+# charter-allow (the allowance biller) on Drew's node (Hetzner), beside charter-door and charter-fund. It
+# listens on nothing: it calls the door over https and the Base RPC, and Drew's commands reach it with
+# `docker exec`.
+#
+# CHARTER_ALLOW_HOME (default /root/charter-allow), owned by uid 1000 (the image's `node` user), mode 700:
+#   allow.env         CHARTER_ALLOW_DOOR_URL, optional (allow.env.example)
+#   data/             state.json (what the biller pulled, paid and refunded: back it up), stops.json,
+#                     resolutions.json, health.json
+#                     (charter-backup-stream.sh sends state.json in the nightly backup)
+#   secrets/          allow-key (0400, from new-allow-key.mjs: the spender key; it holds a little ETH for gas
+#                     and the credit it has pulled), allow-token (0400, the same token the door reads as
+#                     CHARTER_ALLOW_TOKEN_FILE), rpc-url (0400, a Base RPC URL)
+#
+# Losing data/state.json lets the biller pull or refund twice: back it up.
+services:
+  charter-allow:
+    build:
+      context: ../..
+      dockerfile: deploy/allow/Dockerfile
+    image: charter-allow:local
+    container_name: charter-allow
+    env_file: ${CHARTER_ALLOW_HOME:-/root/charter-allow}/allow.env
+    environment:
+      CHARTER_ALLOW_DATA_DIR: /data
+      CHARTER_ALLOW_KEY_FILE: /secrets/allow-key
+      CHARTER_ALLOW_TOKEN_FILE: /secrets/allow-token
+      CHARTER_ALLOW_RPC_URL_FILE: /secrets/rpc-url
+    volumes:
+      - ${CHARTER_ALLOW_HOME:-/root/charter-allow}/data:/data
+      - ${CHARTER_ALLOW_HOME:-/root/charter-allow}/secrets:/secrets:ro
+    networks: [relay_deploy_net]
+    restart: unless-stopped
+    # A cycle can be inside a chain send (waiting up to 120 s for a receipt) or a paid tick. The default 10 s
+    # would SIGKILL it mid-call; the state file records every send first, so that is safe, but 90 s lets a
+    # cycle finish cleanly.
+    stop_grace_period: 90s
+
+networks:
+  relay_deploy_net:
+    external: true
