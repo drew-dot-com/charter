@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 
 export const BASE = 'eip155:8453';
 export const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
-const DEFAULT_DOOR = 'https://charter.mainnet.toonprotocol.dev';
+const DEFAULT_DOOR = 'https://charterhome.dev';
 const LEASE_ID = /^[0-9a-f]{32}$/;
 /** After a failed try: a minute, doubling to ten while the tries keep failing, so a dry wallet does not spend the lease's free reads. */
 const RETRY_MS = 60_000;

@@ -326,7 +326,7 @@ test('a lock left by a dead server is cleared; a live one is waited for and then
 
 test('options come from the environment with safe defaults and refuse a cap that is not a number', () => {
   const d = optionsFromEnv({});
-  assert.equal(d.door, 'https://charter.mainnet.toonprotocol.dev');
+  assert.equal(d.door, 'https://charterhome.dev');
   assert.equal(d.maxHour, 10_000n);
   assert.equal(d.maxDay, 250_000n);
   assert.equal(d.makeKey, true);

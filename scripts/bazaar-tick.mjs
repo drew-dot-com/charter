@@ -18,7 +18,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { ExactEvmScheme } from '@x402/evm/exact/client';
 import { decodePaymentResponseHeader, wrapFetchWithPaymentFromConfig } from '@x402/fetch';
 
-const DOOR = (process.env.CHARTER_DOOR_URL ?? 'https://charter.mainnet.toonprotocol.dev').replace(/\/$/, '');
+const DOOR = (process.env.CHARTER_DOOR_URL ?? 'https://charterhome.dev').replace(/\/$/, '');
 const CATALOG = 'https://facilitator.payai.network/discovery/resources';
 const dryRun = process.argv.includes('--dry-run');
 const viaRent = process.argv.includes('--rent');

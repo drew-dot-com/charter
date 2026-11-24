@@ -16,7 +16,7 @@
 
 export const BASE = 'eip155:8453';
 export const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
-export const DEFAULT_DOOR = 'https://charter.mainnet.toonprotocol.dev';
+export const DEFAULT_DOOR = 'https://charterhome.dev';
 export const LEASE_ID = /^[0-9a-f]{32}$/;
 
 /** Longest text handed back for one page or one stream, so a tool answer stays readable. */

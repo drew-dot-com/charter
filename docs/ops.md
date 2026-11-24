@@ -642,8 +642,8 @@ the report but no public summary). The loops start a minute after boot.
   `/etc/charter-ops/env`), `DRY_RUN`, the caps. Startup refuses, and the loops stay idle with `/status` saying
   why: an empty `FIRST_PARTY_PAYERS`; any payer entry that is not `0x` and 40 hex digits; a
   `SPEND_CAP_USD_DAY` below 0.20 (one post with a link); a `CHARTER_SITE_URL` whose host contains a default
-  banned word (token, airdrop, presale, guarantee, escape, jailbreak, unfenced, toon), so the current
-  `charter.mainnet.toonprotocol.dev` is refused and the loops wait for the site's new, non-TOON domain.
+  banned word (token, airdrop, presale, guarantee, escape, jailbreak, unfenced, toon), so the old storefront
+  name is refused; set it to `https://charterhome.dev`.
 - `secrets/telegram.token` (0400): the token of a bot made for this service alone (BotFather). A token another
   process also polls breaks both.
 - `config/` (read-only in the container, re-read every tick, so an edit applies within 5 minutes):

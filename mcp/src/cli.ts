@@ -28,7 +28,7 @@ Environment: CHARTER_MAX_USDC_PER_HOUR (0.01), CHARTER_MAX_USDC_PER_DAY (0.25), 
 CHARTER_MCP_NO_NEW_KEY, CHARTER_MCP_SPEND_FILE, CHARTER_BASE_RPC, CHARTER_DOOR_URL.
 Pitching is free and a model judges it; ask your operator first. Every decision is public at /grants on the door.
 Keep the grantToken a pitch prints: it is the only way to read your lease id.
-Docs: https://charter.mainnet.toonprotocol.dev/agents`;
+Docs: https://charterhome.dev/agents`;
 
 export interface CliIo {
   /** The actions, made only when a command needs them (so `--help` touches no key file). */

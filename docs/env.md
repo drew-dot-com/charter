@@ -19,7 +19,7 @@ steps: README.md, "Run a host".
 | `CHARTER_HOST_PAY_TO` | yes | | The Base address ticks are paid to. |
 | `CHARTER_CLAIM_KEY_FILE` | yes | | File holding the host's x402 claim key: one `0x` + 64 hex secp256k1 private key (`deploy/door/new-claim-key.mjs`). It authorizes claims and refunds on the door's channel and holds no funds. Channel records live in `<CHARTER_DATA_DIR>/x402-channels/`; the door's channel is refunded after 7 idle days. |
 | `CHARTER_HOST_PORT` | no | `7401` | Loopback port the host app listens on, behind the TLS proxy. |
-| `CHARTER_DOOR_URL` | no | `https://charter.mainnet.toonprotocol.dev` | The door this host registers with (`POST /v1/hosts`, at boot, every minute until accepted, and when its free home slots change) and answers: the host reads the door's payer address from `GET /v1/door` at boot and every 10 minutes. Each home is handed it as `CHARTER_DOOR_URL`, to renew through. |
+| `CHARTER_DOOR_URL` | no | `https://charterhome.dev` | The door this host registers with (`POST /v1/hosts`, at boot, every minute until accepted, and when its free home slots change) and answers: the host reads the door's payer address from `GET /v1/door` at boot and every 10 minutes. Each home is handed it as `CHARTER_DOOR_URL`, to renew through. |
 | `X402_FACILITATOR_URL` | no | `https://facilitator.payai.network` | x402 facilitator that verifies and settles the door's vouchers. |
 | `CHARTER_OFFER_ID` | yes | | The offer's id (`<hostId>:<id>` is its `offerId` at the door). |
 | `CHARTER_PROXY` | no | none | SOCKS proxy for job egress (for example `socks5://172.17.0.1:9150`). Set means the offer says `hiddenEgress`. A loopback host is rewritten to `host.docker.internal` for the container. |
@@ -100,7 +100,7 @@ that cannot be fetched stays listed 10 minutes, then is hidden until it answers.
 | variable | required | default | what it is |
 | --- | --- | --- | --- |
 | `CHARTER_KEY_FILE` | for `rent`, `renew`, `address` | | File holding one Base private key in hex (`0x` optional). Its address needs USDC on Base and no ETH. Inside a `charter-hermes` home the default boot makes `~/.charter/payer.key`. |
-| `CHARTER_DOOR_URL` | no | `https://charter.mainnet.toonprotocol.dev` | The door (`--door` wins). Set for you inside a home. |
+| `CHARTER_DOOR_URL` | no | `https://charterhome.dev` | The door (`--door` wins). Set for you inside a home. |
 | `CHARTER_MAX_TICK` | no | `10000` | The most one tick may cost, micro-USDC (0.01 USDC). A dearer 402 is never signed. |
 
 `CHARTER_PAYER` and `CHARTER_OFFER_JSON` belonged to the TOON payer, which is gone: the CLI refuses to run

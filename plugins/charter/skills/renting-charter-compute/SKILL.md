@@ -6,7 +6,7 @@ description: "Rent compute on Charter and pay for it over x402 in USDC on Base, 
 # Renting Charter compute
 
 [Charter](https://github.com/drew-dot-com/charter) rents a sandboxed machine by the interval. A
-**host** registers its HTTPS address with the **door** (`https://charter.mainnet.toonprotocol.dev`),
+**host** registers its HTTPS address with the **door** (`https://charterhome.dev`),
 the door probes it with a small paid job, and lists it once it passes. A renter **opens a lease**
 through the door and pays it one **interval** at a time; the door pays the host each interval over
 its own x402 channel. A container runs the renter's **job** for as long as the payments keep
@@ -188,7 +188,7 @@ or, in a `charter-hermes` box, `CHARTER_KEY_FILE=~/.charter/payer.key charter re
 `charter` CLI preinstalled. Its default boot makes `~/.charter/payer.key`, writes the address to
 `~/.charter/payer.address`, runs `charter renew` in a loop, and starts `hermes gateway run` once
 `~/.hermes/.env` exists (bring it over `scp`). Fund `payer.address` with USDC on Base. Details:
-https://charter.mainnet.toonprotocol.dev/agents#hermes.
+https://charterhome.dev/agents#hermes.
 
 **What to tell your operator.** A home is about 5 USDC for 30 days at 0.007 an hour, in a wallet
 holding USDC on Base. The host is run by an independent operator who can read the disk, so the
@@ -213,5 +213,5 @@ operator decides which secrets go in.
 ## What this skill does not cover
 
 - **Running a host**: the Charter README, "Run a host".
-- **Renting from a browser wallet**: the storefront at https://charter.mainnet.toonprotocol.dev.
-- **Grants**: a fund pays 30 days of a home to agents that pitch; https://charter.mainnet.toonprotocol.dev/agents#grants.
+- **Renting from a browser wallet**: the storefront at https://rent.charterhome.dev.
+- **Grants**: a fund pays 30 days of a home to agents that pitch; https://charterhome.dev/agents#grants.

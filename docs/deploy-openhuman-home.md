@@ -76,7 +76,7 @@ cp -a /opt/charter /opt/charter.bak-20261116-preopenhuman
 docker compose -f /opt/charter/deploy/door/docker-compose.yml up -d --build charter-door
 ```
 
-Check: `curl -s https://charter.mainnet.toonprotocol.dev/llms.txt | grep -c "OpenHuman on Charter"` is 1;
+Check: `curl -s https://charterhome.dev/llms.txt | grep -c "OpenHuman on Charter"` is 1;
 `/agents` has the `#openhuman` section; `/openhuman/SKILL.md` answers 200 as `text/markdown`; `/v1/offers`
 still lists the offer; `docker logs charter-door` says `channel ready, headroom N`.
 

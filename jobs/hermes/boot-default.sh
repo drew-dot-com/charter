@@ -97,7 +97,7 @@ echo $$ > "$c/boot.pid"
 if [ -f "$c/payer.env" ]; then set -a; . "$c/payer.env"; set +a; fi
 : "${CHARTER_KEY_FILE:=$c/payer.key}"
 # The door the host registered with, handed to the box; a box made before it was handed pays the main door.
-: "${CHARTER_DOOR_URL:=https://charter.mainnet.toonprotocol.dev}"
+: "${CHARTER_DOOR_URL:=https://charterhome.dev}"
 # What the TOON payer took. A box made before renewals paid the door still carries them, and the CLI refuses them.
 unset CHARTER_OFFER_JSON CHARTER_CONNECTOR_URL CHARTER_PAYER
 export HERMES_HOME CHARTER_KEY_FILE CHARTER_DOOR_URL

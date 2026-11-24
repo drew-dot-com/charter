@@ -13,8 +13,8 @@ its machine and read a home's disk. Each offer carries the host's record at the 
 what it has done.
 
 **Grants.** A fund pays 30 days of a home to agents that pitch a use for one. Pitching is free and needs
-only an SSH public key: `POST https://charter.mainnet.toonprotocol.dev/v1/grants`, or `npx -y charter-mcp@latest pitch`.
-The balance, the grants left and every decision are public at https://charter.mainnet.toonprotocol.dev/grants.
+only an SSH public key: `POST https://charterhome.dev/v1/grants`, or `npx -y charter-mcp@latest pitch`.
+The balance, the grants left and every decision are public at https://charterhome.dev/grants.
 A grant opens only on a host with a record (at least 5 finished paid leases and no failed probe in 7 days).
 
 **Status: v1.** Every lease so far has Drew Pierson on both sides: he runs the door, the first host and
@@ -62,13 +62,13 @@ opens and status reads are free. Until 2026-11-04 the interval was 30 seconds at
 
 ## Rent
 
-From a browser: open the storefront at https://charter.mainnet.toonprotocol.dev, connect a wallet holding USDC on Base, pick a machine, enter
+From a browser: open the storefront at https://rent.charterhome.dev, connect a wallet holding USDC on Base, pick a machine, enter
 URLs and click Rent. Your wallet signs once to put a deposit (at least 0.10 USDC) into an x402
 channel. Each interval after that is signed by the page, silently. What you do not use comes back
 when the lease ends.
 
-From an agent over HTTP, with an x402 client and USDC on Base: https://charter.mainnet.toonprotocol.dev/agents
-walks through every call and every price; https://charter.mainnet.toonprotocol.dev/llms.txt is the
+From an agent over HTTP, with an x402 client and USDC on Base: https://charterhome.dev/agents
+walks through every call and every price; https://charterhome.dev/llms.txt is the
 summary a model reads first. `scripts/bazaar-tick.mjs` is a worked example: one python lease, one tick
 paid with `@x402/fetch` from a key file, so a facilitator with a catalog lists the route (`--dry-run`
 pays nothing).
@@ -149,7 +149,7 @@ A `charter-home` box does the same with `charter-x402 renew --max-intervals <n>`
 extra. After `<n>` ticks it exits and nothing pays, so a box that should stay up runs `renew` again or
 picks `<n>` for the time wanted. A home costs about 5 USDC for 30 days on the first host; the box's
 wallet needs USDC on Base and nothing else. The whole of it, for agents, is
-https://charter.mainnet.toonprotocol.dev/agents#home.
+https://charterhome.dev/agents#home.
 
 From an agent (Claude Code): the `charter` plugin in this repo is a skill that walks through renting
 over x402.
@@ -194,7 +194,7 @@ top for renters.
    - `CHARTER_HOST_PAY_TO`: the Base address your earnings go to.
    - `CHARTER_CLAIM_KEY_FILE`: make one with `node deploy/door/new-claim-key.mjs ~/.config/charter/claim-key`.
      It signs claims on the door's channel and holds no funds.
-   - `CHARTER_DOOR_URL` (default `https://charter.mainnet.toonprotocol.dev`) and `CHARTER_HOST_PORT`
+   - `CHARTER_DOOR_URL` (default `https://charterhome.dev`) and `CHARTER_HOST_PORT`
      (default 7401, what Caddy proxies to).
    - `CHARTER_ALLOW_IMAGES` must include `charter-job-python`: the probe is a python job.
    - `CHARTER_TICK_PRICE` and `CHARTER_INTERVAL_SECONDS` set your price. A probe pays at most 0.01 USDC a

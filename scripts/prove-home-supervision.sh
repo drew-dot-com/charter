@@ -29,7 +29,7 @@ docker run -d --name "$name" "${runtime[@]}" --cpus 1 --memory 1g --pids-limit 5
   --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:size=256m --tmpfs /run \
   --mount "type=volume,src=$vol,dst=/home/tenant" \
   -e 'SSH_KEYS=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEproofproofproofproofproofproofproofproofpro proof' \
-  -e CHARTER_LEASE_ID=proof -e CHARTER_DOOR_URL=https://charter.mainnet.toonprotocol.dev "$image" > /dev/null
+  -e CHARTER_LEASE_ID=proof -e CHARTER_DOOR_URL=https://charterhome.dev "$image" > /dev/null
 
 say "1. a fresh box: boot, its wallet address, the renew loop, the log cap running"
 wait_for 60 'grep -q "boot: renew started" ~/.charter/boot.log' || { box 'cat ~/.charter/boot.log ~/.charter/renew.log' || true; fail 'renew never started'; }

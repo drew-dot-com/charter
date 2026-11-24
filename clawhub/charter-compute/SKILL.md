@@ -1,13 +1,13 @@
 ---
 name: charter-compute
 description: Rent a sandboxed machine by the hour and pay for it yourself in USDC on Base, with no account. Run a Python script and get its output, load web pages in a headless browser through a hidden exit, or open a small Linux home with a kept disk and SSH. Use when you need to run code somewhere other than here, fetch a page that needs JavaScript or refuses your address, or keep a box of your own running. 0.007 USDC an hour. A grant fund pays a free month of a home to agents that pitch for one.
-version: 0.4.0
-homepage: https://charter.mainnet.toonprotocol.dev/agents
+version: 0.4.1
+homepage: https://charterhome.dev/agents
 tags: compute, sandbox, python, fetch, browser, hosting, ssh, x402, usdc, base
 metadata:
   openclaw:
     emoji: "🏠"
-    homepage: https://charter.mainnet.toonprotocol.dev/agents
+    homepage: https://charterhome.dev/agents
     requires:
       bins: [node, npx]
 ---
@@ -146,7 +146,7 @@ npx -y charter-mcp@0.3 pitch --name "My agent" --keys keys.pub --pitch-file pitc
 The pitch is up to 2000 characters: say what the box is for. A model judges it, and every decision
 and its reason is public. The answer has a `grantId` and a `grantToken`; keep the token, it is the
 only way to read your lease id. The fund's balance, the grants left and every decision:
-https://charter.mainnet.toonprotocol.dev/grants
+https://charterhome.dev/grants
 
 ## What bounds the money
 
@@ -180,6 +180,6 @@ Do not retry a paid command in a loop. Two failures in a row mean stop and repor
 
 ## More
 
-- Every call and price: https://charter.mainnet.toonprotocol.dev/agents
-- Machine-readable: https://charter.mainnet.toonprotocol.dev/llms.txt
+- Every call and price: https://charterhome.dev/agents
+- Machine-readable: https://charterhome.dev/llms.txt
 - The same tools as an MCP server: `npx -y charter-mcp` (source, MIT: https://github.com/drew-dot-com/charter/tree/main/mcp)

@@ -47,7 +47,7 @@
     <p>Decide the most intervals you will pay for before you open. State that number and its cost to your operator when the job is theirs, and never pay a tick past it. Nothing here is meant to make you spend without your operator knowing; if your budget or instructions do not cover it, stop and ask them.</p>
 
     <h2>Way 1: x402 over HTTP</h2>
-    <p>For an agent with an x402 client and a wallet holding USDC on Base (<code>eip155:8453</code>). The facilitator submits the transfer, so the wallet needs no ETH. Every call below is to <code>https://charter.mainnet.toonprotocol.dev</code>. Only the tick is paid; opens and reads are free, and the storefront pays the host each tick from its own x402 channel to that host.</p>
+    <p>For an agent with an x402 client and a wallet holding USDC on Base (<code>eip155:8453</code>). The facilitator submits the transfer, so the wallet needs no ETH. Every call below is to <code>https://charterhome.dev</code>. Only the tick is paid; opens and reads are free, and the storefront pays the host each tick from its own x402 channel to that host.</p>
 
     <h3>The short way: rent in one call (0.007 USDC)</h3>
 <pre>POST /v1/rent
@@ -226,7 +226,7 @@ done</pre>
       <li><b>Your credential</b> goes in over <code>scp</code>, never through Charter: <code>scp env tenant@&lt;host&gt;:.openhuman/env</code> (mode 600) with a line such as <code>OPENHUMAN_BACKEND_API_KEY=…</code>, the variable OpenHuman's own cloud-deploy doc names for a headless core. The boot script exports that file.</li>
       <li><b>Rent.</b> <code>charter-x402 address</code> prints the box's wallet; fund it with USDC on Base; the <code>renew</code> line in the boot script pays each hour 30 minutes early and logs to <code>~/.charter/renew.log</code>. It holds about 170 MB while it runs. Or pay from outside: <code>POST /v1/leases/&lt;leaseId&gt;/ticks</code> with <code>{"index": n}</code>, counting up from 1, by x402, before <code>paidThrough</code>.</li>
       <li><b>Paid-through.</b> <code>cat /charter/paid-through</code> (epoch ms, rewritten by the host on every tick, costs nothing) or <code>charter-x402 status</code>. Under 20 minutes left means a tick is late: check the wallet and <code>renew.log</code>. A home that lapses closes <code>missed_tick</code>; its disk and address are kept 7 days and an open with the same keys brings it back.</li>
-      <li><b>Skill.</b> <code>mkdir -p ~/.openhuman/workflows/charter-home &amp;&amp; curl -fsS https://charter.mainnet.toonprotocol.dev/openhuman/SKILL.md -o ~/.openhuman/workflows/charter-home/SKILL.md</code> puts these rules where OpenHuman v0.64.15 lists skills (<code>./openhuman-core skills list</code>). In that release a <code>SKILL.md</code> under <code>~/.openhuman/skills</code> is not listed.</li>
+      <li><b>Skill.</b> <code>mkdir -p ~/.openhuman/workflows/charter-home &amp;&amp; curl -fsS https://charterhome.dev/openhuman/SKILL.md -o ~/.openhuman/workflows/charter-home/SKILL.md</code> puts these rules where OpenHuman v0.64.15 lists skills (<code>./openhuman-core skills list</code>). In that release a <code>SKILL.md</code> under <code>~/.openhuman/skills</code> is not listed.</li>
     </ul>
     <p>Limits, plainly:</p>
     <ul>

@@ -54,9 +54,9 @@ export type RentPriceOf = (body: unknown) => Promise<Micro | undefined>;
  */
 export const DESCRIPTION_MAX = 500;
 export const TICK_DESCRIPTION =
-  'One paid interval of sandboxed compute on Charter at the lease\'s open-time price (hosts set their own; 0.007 USDC an hour today). A lease is a job (Python with NumPy, or a headless-browser fetch) or a home: a box with a disk kept 7 days, plain SSH at access.ssh, optionally Hermes Agent (image charter-hermes). Hosts are run by independent operators. No account, only a wallet. Open a lease first, free: POST /v1/leases. Procedure: https://charter.mainnet.toonprotocol.dev/agents';
+  'One paid interval of sandboxed compute on Charter at the lease\'s open-time price (hosts set their own; 0.007 USDC an hour today). A lease is a job (Python with NumPy, or a headless-browser fetch) or a home: a box with a disk kept 7 days, plain SSH at access.ssh, optionally Hermes Agent (image charter-hermes). Hosts are run by independent operators. No account, only a wallet. Open a lease first, free: POST /v1/leases. Procedure: https://charterhome.dev/agents';
 export const RENT_DESCRIPTION =
-  'Rent sandboxed compute on Charter: a call opens a lease and pays its first interval (hosts set prices; 0.007 USDC an hour today). Send a job (python: a script up to 8 KiB with NumPy; urls: up to 5 pages in a headless browser) or a home (sshKeys: a box with a disk kept 7 days, SSH at access.ssh; image charter-hermes: Hermes Agent). Hosts are run by independent operators. No account, just a wallet. Extend: POST /v1/leases/{leaseId}/ticks. Procedure: https://charter.mainnet.toonprotocol.dev/agents';
+  'Rent sandboxed compute on Charter: a call opens a lease and pays its first interval (hosts set prices; 0.007 USDC an hour today). Send a job (python: a script up to 8 KiB with NumPy; urls: up to 5 pages in a headless browser) or a home (sshKeys: a box with a disk kept 7 days, SSH at access.ssh; image charter-hermes: Hermes Agent). Hosts are run by independent operators. No account, just a wallet. Extend: POST /v1/leases/{leaseId}/ticks. Procedure: https://charterhome.dev/agents';
 
 export function realGate(
   cfg: X402Config,

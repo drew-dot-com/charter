@@ -53,7 +53,7 @@ export interface HostConfig {
 }
 
 /** The door a host registers with unless CHARTER_DOOR_URL names another. */
-export const DEFAULT_DOOR_URL = 'https://charter.mainnet.toonprotocol.dev';
+export const DEFAULT_DOOR_URL = 'https://charterhome.dev';
 
 function need(env: Record<string, string | undefined>, name: string): string {
   const v = env[name];

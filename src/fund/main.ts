@@ -15,7 +15,7 @@ import { emptyState, loadState, saveState, type FundState } from './state.js';
 export const CYCLE_MS = 60_000;
 export const PROBLEM_MS = 3_600_000;
 const GRANT_ID = /^[0-9a-f]{32}$/;
-const DEFAULT_DOOR = 'https://charter.mainnet.toonprotocol.dev';
+const DEFAULT_DOOR = 'https://charterhome.dev';
 
 const secrets = new Set<string>();
 /** Strings (the RPC URL, the tokens, the keys) that must never reach health.json, logs or the door. */

@@ -1,6 +1,6 @@
 # charter-mcp
 
-An MCP server that lets an agent rent a machine on [Charter](https://charter.mainnet.toonprotocol.dev/agents) and pay for it itself. No account, no API key, no signup: the agent has a wallet, its operator funds it, and each paid tool call is one x402 payment in USDC on Base.
+An MCP server that lets an agent rent a machine on [Charter](https://charterhome.dev/agents) and pay for it itself. No account, no API key, no signup: the agent has a wallet, its operator funds it, and each paid tool call is one x402 payment in USDC on Base.
 
 What it rents, by the hour, at the price each host sets (0.007 USDC an hour today). Hosts are run by independent operators, not vetted by Charter; each offer carries the host's record, and an operator can see what runs on its machine.
 
@@ -105,7 +105,7 @@ Other settings: `CHARTER_MCP_KEY_FILE`, `CHARTER_MCP_SPEND_FILE`, `CHARTER_MCP_N
 - A home lives on the host that holds its disk. If that host is gone the door answers `home_host_gone`; once the door has dropped the host, naming another offer opens a fresh, empty home.
 - A home that is not paid closes; its disk and port are kept 7 days and the same keys open it again.
 
-The full procedure is at [charter.mainnet.toonprotocol.dev/agents](https://charter.mainnet.toonprotocol.dev/agents).
+The full procedure is at [charterhome.dev/agents](https://charterhome.dev/agents).
 
 ## Status
 

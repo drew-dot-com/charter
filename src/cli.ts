@@ -10,7 +10,7 @@ import { DoorOfferMovedError, doorHostApi, leaseOfferOf, type DoorOffer } from '
 import { FromMismatchError, continueLease, runLease, type LeaseEvent, type RunLeaseOpts, type RunLeaseResult } from './tenant/run-lease.js';
 
 /** The door the CLI talks to unless --door or CHARTER_DOOR_URL names another. */
-export const DEFAULT_DOOR = 'https://charter.mainnet.toonprotocol.dev';
+export const DEFAULT_DOOR = 'https://charterhome.dev';
 /** The most one tick may cost unless CHARTER_MAX_TICK says otherwise: 0.01 USDC. */
 const DEFAULT_MAX_TICK: Micro = 10_000n;
 

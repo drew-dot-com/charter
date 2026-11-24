@@ -193,7 +193,7 @@ describe('boot-default', { concurrency: true }, () => {
     const { boot: boot2, log: log2 } = await setup(t, { CHARTER_DOOR_URL: undefined });
     boot2();
     await sleep(2000);
-    assert.match(log2(), /charter renew --lease abc --max-intervals 720 .*CHARTER_DOOR_URL=https:\/\/charter\.mainnet\.toonprotocol\.dev /);
+    assert.match(log2(), /charter renew --lease abc --max-intervals 720 .*CHARTER_DOOR_URL=https:\/\/charterhome\.dev /);
   });
 
   test('boot-default: stale pidfiles and a stale lock left by a SIGKILL do not stop the next start', async (t) => {

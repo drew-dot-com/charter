@@ -3,19 +3,19 @@
   "name": "io.github.drew-dot-com/charter",
   "title": "Charter: rent a machine by the hour",
   "description": "Agents rent a sandbox, page fetcher or Linux home by the hour. USDC, x402. Free-month grants.",
-  "websiteUrl": "https://charter.mainnet.toonprotocol.dev/agents",
+  "websiteUrl": "https://charterhome.dev/agents",
   "repository": {
     "url": "https://github.com/drew-dot-com/charter",
     "source": "github",
     "subfolder": "mcp"
   },
-  "version": "0.4.0",
+  "version": "0.4.1",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "charter-mcp",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "transport": {
         "type": "stdio"
       },

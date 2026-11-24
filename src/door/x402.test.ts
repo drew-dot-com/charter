@@ -724,7 +724,7 @@ test('the catalog descriptions fit CDP: its facilitator refuses a payment whose 
   assert.equal(DESCRIPTION_MAX, 500);
   assert.ok(TICK_DESCRIPTION.length <= DESCRIPTION_MAX, `tick: ${TICK_DESCRIPTION.length}`);
   assert.ok(RENT_DESCRIPTION.length <= DESCRIPTION_MAX, `rent: ${RENT_DESCRIPTION.length}`);
-  for (const d of [TICK_DESCRIPTION, RENT_DESCRIPTION]) assert.match(d, /https:\/\/charter\.mainnet\.toonprotocol\.dev\/agents$/);
+  for (const d of [TICK_DESCRIPTION, RENT_DESCRIPTION]) assert.match(d, /https:\/\/charterhome\.dev\/agents$/);
 });
 
 test('the catalog text says hosts are independent and names no TOON', () => {

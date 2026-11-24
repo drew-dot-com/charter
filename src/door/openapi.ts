@@ -1,7 +1,7 @@
 import type { Micro } from '../types.js';
 import { RENT_INPUT_SCHEMA, RENT_OUTPUT_EXAMPLE } from './x402.js';
 
-const AGENTS = 'https://charter.mainnet.toonprotocol.dev/agents';
+const AGENTS = 'https://charterhome.dev/agents';
 
 /** What an agent reads first: the procedure in a few sentences, including the tick route the index does not probe. */
 const GUIDANCE = [
