@@ -3,7 +3,7 @@
 // refunds and reads balances. It decides nothing; the cycle in biller.ts does. Every error it throws has
 // the RPC URL (which holds the provider's key) taken out.
 import { getPermissionStatus, prepareRevokeCallData, prepareSpendCallData } from '@base-org/account/spend-permission';
-import { BaseError, createPublicClient, createWalletClient, decodeErrorResult, encodeFunctionData, erc20Abi, http, type Hex } from 'viem';
+import { BaseError, createPublicClient, createWalletClient, decodeErrorResult, encodeFunctionData, erc20Abi, getAddress, http, parseAbi, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
 import type { SignedPermission } from '../door/allowances.js';
@@ -37,6 +37,19 @@ const OVER_LIMIT = '0xfd1ebc88';
 /** SpendPermissionManager: the permission is revoked. */
 const REVOKED = '0x282b9f97';
 const RECEIPT_MS = 120_000;
+const MANAGER = '0xf85210B21cC50302F477BA56686d2019dC9b67Ad';
+const MANAGER_ABI = parseAbi([
+  'struct SpendPermission { address account; address spender; address token; uint160 allowance; uint48 period; uint48 start; uint48 end; uint256 salt; bytes extraData; }',
+  'function isRevoked(SpendPermission spendPermission) view returns (bool)',
+]);
+
+/**
+ * The permission is in force at `nowSec` (unix seconds): from its start until its end. Outside it the
+ * contract's period getter reverts, so `status` reads only the revoke flag and answers `isExpired`.
+ */
+export function inForce(p: SignedPermission, nowSec: number): boolean {
+  return nowSec >= p.permission.start && nowSec < p.permission.end;
+}
 
 type Call = { to: Hex; data: Hex; value?: bigint };
 
@@ -112,6 +125,12 @@ export function baseChain(o: { key: `0x${string}`; rpcUrl: string }): Chain {
 
     status: (p) =>
       guard(async () => {
+        if (!inForce(p, Math.floor(Date.now() / 1000))) {
+          const q = p.permission;
+          const sp = { account: getAddress(q.account), spender: getAddress(q.spender), token: getAddress(q.token), allowance: BigInt(q.allowance), period: q.period, start: q.start, end: q.end, salt: BigInt(q.salt), extraData: q.extraData as Hex };
+          const isRevoked = await pub.readContract({ address: MANAGER, abi: MANAGER_ABI, functionName: 'isRevoked', args: [sp] });
+          return { isRevoked, isExpired: true, remainingMicro: 0n, periodSpentMicro: 0n, periodEndsAt: q.end * 1000 };
+        }
         const s = await getPermissionStatus(p, opts);
         return {
           isRevoked: s.isRevoked,

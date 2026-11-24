@@ -621,8 +621,11 @@ export function doorApp(deps: DoorDeps): express.Express {
       app.get('/v1/biller/homes/:homeId', billerAuth, (req, res) => {
         const homeId = String(req.params.homeId);
         const newest = newestLease(homeId);
+        // The offer to re-open on is the home's own host's: the newest lease may be an unpaid open elsewhere.
+        const holder = registry.homeHost(homeId);
+        const own = holder === undefined ? undefined : ledger.all().filter((l) => l.homeId === homeId && l.offerId.startsWith(`${holder}:`)).sort((a, b) => b.createdAt - a.createdAt)[0];
         const grantLive = deps.grants?.all().some((g) => g.homeId === homeId && (g.state === 'active' || g.state === 'approved_waiting')) ?? false;
-        res.json({ leaseId: newest?.leaseId ?? null, offerId: newest?.offerId ?? null, hostKnown: registry.homeHost(homeId) !== undefined, grantLive });
+        res.json({ leaseId: newest?.leaseId ?? null, offerId: own?.offerId ?? null, hostKnown: holder !== undefined, grantLive });
       });
     }
   }

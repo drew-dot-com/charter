@@ -11,7 +11,7 @@ import type { AllowanceState, EndReason, SignedPermission } from '../door/allowa
 import { BASE_USDC, type Answer, type DoorClient } from '../fund/door-client.js';
 import { MAX_TICK_MICRO, tickDue } from '../fund/paymaster.js';
 import { NotSent, type Chain } from './chain.js';
-import type { AllowEntry, AllowState } from './state.js';
+import type { AllowEntry, AllowState, Ending } from './state.js';
 
 /** A pull is at most this many ticks, less the credit already held. */
 export const PULL_TICKS = 24n;
@@ -23,6 +23,11 @@ export const SHORT_RETRY_MS = 3_600_000;
 export const BACKOFF_MS = 5 * 60_000;
 /** A pull with no answer whose spend the chain does not show yet is waited for this long, then dropped. */
 export const PULL_SETTLE_MS = 10 * 60_000;
+/**
+ * No pull starts this close to the end of the permission's period, so a pull never lands in a period other
+ * than the one it was booked to (a pull's receipt wait is 2 minutes).
+ */
+export const PERIOD_EDGE_MS = 5 * 60_000;
 /** The longest the biller goes without reading a running lease. */
 const READ_EVERY_MS = 3_600_000;
 
@@ -173,6 +178,8 @@ class One {
     }
     await this.settleTick();
     await this.settleOpen();
+    // An end already decided: finish it, and pay, open or pull nothing more.
+    if (this.e.ending) return this.finish(this.e.ending);
 
     const stopping = this.a.state === 'stopping';
     if (stopping || this.d.stops.has(this.id)) return this.stop(st, stopping ? 'stopped' : 'operator');
@@ -235,27 +242,42 @@ class One {
     this.e.creditMicro = (micro > c ? 0n : c - micro).toString();
   }
 
-  /** A pull sent last time whose answer never came: the period's spend says whether it landed. */
+  /**
+   * Books every pull the chain shows: any spend this period above what was booked is a pull that landed
+   * unbooked (its answer lost, or given up and landed later), and goes to credit. Then settles the record of
+   * a pull sent last time whose answer never came.
+   */
   private settlePull(st: Status): void {
-    const f = this.e.pullInFlight;
+    const e = this.e;
+    const f = e.pullInFlight;
+    const before = JSON.stringify([e.creditMicro, e.periodPulled]);
+    let pp = e.periodPulled ?? { periodEndsAt: f?.periodEndsAt ?? st.periodEndsAt, micro: f ? (e.periodSpentSeen ?? '0') : st.periodSpentMicro.toString() };
+    const newPeriod = pp.periodEndsAt !== st.periodEndsAt;
+    if (newPeriod) pp = { periodEndsAt: st.periodEndsAt, micro: '0' };
+    const landed = st.periodSpentMicro - BigInt(pp.micro);
+    if (landed > 0n) {
+      e.creditMicro = (this.credit + landed).toString();
+      pp = { ...pp, micro: st.periodSpentMicro.toString() };
+    }
+    e.periodPulled = pp;
+    if (JSON.stringify([e.creditMicro, e.periodPulled]) !== before) this.save();
     if (!f) return;
+
     const micro = BigInt(f.micro);
-    const seen = BigInt(this.e.periodSpentSeen ?? '0');
-    const grew = st.periodSpentMicro - seen;
-    if (f.periodEndsAt !== undefined && f.periodEndsAt !== st.periodEndsAt) {
+    const sentThisPeriod = f.periodEndsAt === undefined || f.periodEndsAt === st.periodEndsAt;
+    if (sentThisPeriod) {
+      const seen = BigInt(e.periodSpentSeen ?? '0');
+      // Not on chain yet and young: it may still be pending, so nothing else is sent for this allowance.
+      if (st.periodSpentMicro - seen < micro && this.t - f.at < PULL_SETTLE_MS) return;
+      // Landed (booked above) or given up: if it lands later, the period's spend books it then.
+    } else if (st.periodSpentMicro < micro) {
       this.problem(
         'pull',
-        `allowance ${this.id}: a pull of ${micro} micro-USDC sent at ${new Date(f.at).toISOString()} got no answer and the permission's period has reset since, so the chain's period spend cannot say whether it landed; not counted. Drew: look for that spend from ${this.p.permission.account} and, if it landed, add it to this allowance's creditMicro by hand.`,
+        `allowance ${this.id}: a pull of ${micro} micro-USDC sent at ${new Date(f.at).toISOString()} got no answer and the permission's period has reset since; if it landed before the reset the chain's period spend cannot show it. Drew: look for that spend from ${this.p.permission.account} and, if it landed, add it to this allowance's creditMicro by hand.`,
       );
-    } else if (grew >= micro) {
-      this.e.creditMicro = (this.credit + micro).toString();
-    } else if (this.t - f.at < PULL_SETTLE_MS) {
-      return; // may still be pending: wait, and send nothing else for this allowance
-    } else if (grew > 0n) {
-      this.problem('pull', `allowance ${this.id}: the period's spend grew by ${grew}, not the ${micro} of a pull sent without an answer; not counted. Drew: check the chain.`);
     }
-    delete this.e.pullInFlight;
-    delete this.e.periodSpentSeen;
+    delete e.pullInFlight;
+    delete e.periodSpentSeen;
     this.save();
   }
 
@@ -303,7 +325,13 @@ class One {
    * Sends the credit back to the permission's account, then posts `patch` (an end). A refund whose answer
    * was lost is never sent again; one that certainly sent nothing (NotSent) is tried again next cycle.
    */
-  private async finish(patch: Record<string, unknown>): Promise<void> {
+  private async finish(decided: Ending): Promise<void> {
+    // Recorded before anything is sent: whatever is lost from here, later cycles only finish this end.
+    if (!this.e.ending) {
+      this.e.ending = decided;
+      this.save();
+    }
+    const ending = this.e.ending;
     const r = this.e.refundInFlight;
     if (r) {
       return this.problem(
@@ -330,7 +358,13 @@ class One {
       delete this.e.refundInFlight;
       this.save();
     }
-    await this.post({ ...patch, creditMicro: '0' });
+    // The door's record may have moved since the end was decided: `refused` is only a move from `approved`,
+    // and `approved -> ended` goes through `stopping` (R1).
+    const patch: Ending = ending.state === 'refused' && this.a.state !== 'approved' ? { state: 'ended', endReason: ending.endReason ?? 'cancelled' } : ending;
+    if (patch.state === 'ended' && this.a.state === 'approved' && !(await this.post({ state: 'stopping' }))) return;
+    const body: Record<string, unknown> = { ...patch, creditMicro: '0' };
+    if (patch.state === 'refused') delete body.endReason; // a refusal carries a reason, not an end reason
+    await this.post(body);
   }
 
   // ---- ending ----
@@ -346,7 +380,7 @@ class One {
   /** The person revoked it on chain (or it expired). */
   private async cancelled(st: Status): Promise<void> {
     if (this.a.state === 'approved') {
-      return this.finish({ state: 'refused', reason: st.isRevoked ? 'cancelled before activation' : 'the permission expired before activation' });
+      return this.finish({ state: 'refused', endReason: 'cancelled', reason: st.isRevoked ? 'cancelled before activation' : 'the permission is not in force (before its start or past its end)' });
     }
     await this.finish({ state: 'ended', endReason: 'cancelled' });
   }
@@ -384,7 +418,7 @@ class One {
   // ---- paying ----
 
   private async tend(st: Status): Promise<void> {
-    await this.post({ remainingMicro: st.remainingMicro.toString(), periodEndsAt: st.periodEndsAt });
+    await this.post({ remainingMicro: st.remainingMicro.toString(), periodEndsAt: st.periodEndsAt, creditMicro: this.e.creditMicro });
     const h = await this.home();
     if (!h.hostKnown) return this.finish({ state: 'ended', endReason: 'home_gone' });
     if (h.grantLive) return; // a grant pays this home; the biller starts at the hour after its last
@@ -444,6 +478,7 @@ class One {
     const credit = this.credit;
     if (credit >= tick) return true;
     if (this.e.nextTryAt !== undefined && this.e.nextTryAt > this.t) return false;
+    if (this.t >= st.periodEndsAt - PERIOD_EDGE_MS) return false; // wait for the next period to pull
     const need = pullNeed(credit, tick, st.remainingMicro);
     if (need === 0n) {
       await this.post({ state: 'spent_for_period', remainingMicro: st.remainingMicro.toString(), periodEndsAt: st.periodEndsAt });
@@ -480,6 +515,8 @@ class One {
       throw new Error(`a pull of ${need} micro-USDC got no answer (${errText(e)}); the period's spend settles it next cycle`);
     }
     this.e.creditMicro = (credit + need).toString();
+    if (this.e.periodPulled?.periodEndsAt === st.periodEndsAt) this.e.periodPulled.micro = (BigInt(this.e.periodPulled.micro) + need).toString();
+    else this.e.periodPulled = { periodEndsAt: st.periodEndsAt, micro: (st.periodSpentMicro + need).toString() };
     delete this.e.pullInFlight;
     delete this.e.periodSpentSeen;
     this.save();

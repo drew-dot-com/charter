@@ -264,7 +264,7 @@ test('GET /v1/biller/homes/:homeId reports newest lease, its offer, host and liv
   s.ledger.open({ leaseId: newer, offerId: 'z:z', createdAt: 99, offer: snapshotOffer(OFFER), homeId: HOME });
   j = (await (await s.bill('GET', url)).json()) as Record<string, unknown>;
   assert.equal(j.leaseId, newer);
-  assert.equal(j.offerId, 'z:z');
+  assert.equal(j.offerId, offerId);
   const g = s.grants.add({ name: 'Ada', pitch: 'p', sshKeys: NKEY, image: 'charter-home' } as never, 't');
   s.grants.update(g.grantId, { state: 'approved_waiting' });
   j = (await (await s.bill('GET', url)).json()) as Record<string, unknown>;
@@ -272,6 +272,24 @@ test('GET /v1/biller/homes/:homeId reports newest lease, its offer, host and liv
   const none = (await (await s.bill('GET', `/v1/biller/homes/${homeIdOf(normalizeSshKeys([KEY2])!)}`)).json()) as Record<string, unknown>;
   assert.deepEqual(none, { leaseId: null, offerId: null, hostKnown: false, grantLive: false });
   s.close();
+});
+
+test('GET /v1/biller/homes/:homeId names the home host\'s own offer when a newer lease is on another host', async () => {
+  const s = await start();
+  try {
+    // The home's host holds an older lease and the fixture's lease (createdAt 5) on offer OFFER.
+    const own = `${OFFER.hostId}:${OFFER.id}`;
+    const url = `/v1/biller/homes/${HOME}`;
+    s.ledger.open({ leaseId: 'a'.repeat(32), offerId: `${OFFER.hostId}:older`, createdAt: 1, offer: snapshotOffer(OFFER), homeId: HOME });
+    const elsewhere = 'b'.repeat(32);
+    s.ledger.open({ leaseId: elsewhere, offerId: 'otherhost:offer9', createdAt: 999, offer: snapshotOffer(OFFER), homeId: HOME });
+    const j = (await (await s.bill('GET', url)).json()) as Record<string, unknown>;
+    assert.equal(j.leaseId, elsewhere);
+    assert.equal(j.offerId, own);
+    assert.equal(j.hostKnown, true);
+  } finally {
+    s.close();
+  }
 });
 
 const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64');

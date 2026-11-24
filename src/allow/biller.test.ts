@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { ALLOWED_MOVES, LIVE_STATES, type AllowanceState, type SignedPermission } from '../door/allowances.js';
 import type { Answer, DoorClient } from '../fund/door-client.js';
 import { cycle, LAPSE_END_MS, pullNeed, SHORT_RETRY_MS, type BillerDeps } from './biller.js';
-import { NotSent, type Chain } from './chain.js';
+import { inForce, NotSent, type Chain } from './chain.js';
 import { loadState, saveState, type AllowState } from './state.js';
 
 const HOUR = 3_600_000;
@@ -166,6 +166,9 @@ class FakeChain implements Chain {
   canPullAnswer?: Awaited<ReturnType<Chain['canPull']>>;
   /** The pull lands on chain but its answer is lost. */
   pullLostAnswer = false;
+  /** The pull is broadcast but still pending: nothing on chain yet, and its answer is lost. */
+  pullPending = false;
+  expired = false;
   savedAtSend: string[] = [];
 
   constructor(readonly saved: { s: string }) {}
@@ -173,7 +176,7 @@ class FakeChain implements Chain {
   async status(_p: SignedPermission) {
     this.calls.push('status');
     const left = this.allowance > this.spent ? this.allowance - this.spent : 0n;
-    return { isRevoked: this.revoked, isExpired: false, remainingMicro: left, periodSpentMicro: this.spent, periodEndsAt: this.periodEndsAt };
+    return { isRevoked: this.revoked, isExpired: this.expired, remainingMicro: left, periodSpentMicro: this.spent, periodEndsAt: this.periodEndsAt };
   }
 
   async canPull(_p: SignedPermission, micro: bigint) {
@@ -184,6 +187,7 @@ class FakeChain implements Chain {
   async pull(_p: SignedPermission, micro: bigint) {
     this.calls.push(`pull:${micro}`);
     this.savedAtSend.push(this.saved.s);
+    if (this.pullPending) throw new Error('receipt wait timed out');
     this.spent += micro;
     if (this.pullLostAnswer) throw new Error('receipt wait timed out');
     return { tx: '0xpull' };
@@ -290,6 +294,7 @@ test('a revoke seen on an approved allowance refuses it as cancelled before acti
   await r.run();
   assert.equal(r.door.stateOf(id), 'refused');
   assert.equal(r.door.a(id).reason, 'cancelled before activation');
+  assert.equal(r.door.a(id).endReason, undefined);
   assert.deepEqual(r.chain.sends(), []);
 });
 
@@ -729,4 +734,106 @@ test('the state file is 0600 and an unreadable one throws', () => {
   assert.throws(() => loadState(file), /refusing to start fresh/);
   writeFileSync(file, JSON.stringify({ version: 1, entries: { a: { allowanceId: 'a', creditMicro: '-5' } } }));
   assert.throws(() => loadState(file), /refusing to start fresh/);
+});
+
+// ---- fix round 1 ----
+
+test('a pull that lands after it was given up is still credited', async () => {
+  const r = rig();
+  const { id } = r.door.home();
+  r.chain.pullPending = true;
+  await r.run();
+  assert.equal(r.state.entries[id]?.pullInFlight?.micro, '168000');
+  // Ten minutes on the first pull is still not on chain: it is given up and a second pull goes out.
+  r.chain.pullPending = false;
+  r.clock.t = T0 + 11 * 60_000;
+  await r.run();
+  assert.deepEqual(r.chain.sends(), ['pull:168000', 'pull:168000']);
+  assert.equal(r.credit(id), '161000');
+  // Then the first one lands after all: it left the account, so it is the allowance's credit.
+  r.chain.spent += 168000n;
+  r.clock.t += 60_000;
+  await r.run();
+  assert.equal(r.credit(id), '329000');
+  assert.deepEqual(r.chain.sends(), ['pull:168000', 'pull:168000']);
+  assert.equal(r.door.a(id).creditMicro, '329000');
+});
+
+test('pulls nothing in the last minutes of a period', async () => {
+  const r = rig();
+  const { id } = r.door.home();
+  r.chain.periodEndsAt = T0 + 2 * 60_000;
+  await r.run();
+  assert.deepEqual(r.chain.calls.filter((c) => !c.startsWith('status')), []);
+  assert.equal(r.door.pays.length, 0);
+  assert.equal(r.credit(id), '0');
+});
+
+test('an end decided by home_host_gone is remembered after a lost refund', async () => {
+  const r = rig();
+  const { id } = r.door.home({}, { state: 'closed' });
+  r.state.entries[id] = { allowanceId: id, creditMicro: '14000' };
+  r.door.onPay = (path) => (path === '/v1/rent' ? { status: 409, body: { error: 'home_host_gone' } } : undefined);
+  r.chain.refund = async (to, micro) => {
+    r.chain.calls.push(`refund:${to}:${micro}`);
+    throw new Error('receipt wait timed out');
+  };
+  await r.run();
+  // The door would now take a re-open: the biller still opens, pulls and pays nothing more.
+  r.door.onPay = undefined;
+  for (let i = 0; i < 3; i++) {
+    r.clock.t += 10 * 60_000;
+    await r.run();
+  }
+  assert.equal(r.door.pays.length, 1);
+  assert.deepEqual(r.chain.sends(), [`refund:${ACCOUNT}:14000`]);
+  assert.equal(r.state.entries[id]?.ending?.endReason, 'home_gone');
+  assert.ok(r.problems.some((p) => /refund/.test(p.msg) && /14000/.test(p.msg)));
+});
+
+test('an end decided by home_host_gone is remembered after a failed ended post', async () => {
+  const r = rig();
+  const { id } = r.door.home({}, { state: 'closed' });
+  r.state.entries[id] = { allowanceId: id, creditMicro: '14000' };
+  r.door.onPay = (path) => (path === '/v1/rent' ? { status: 409, body: { error: 'home_host_gone' } } : undefined);
+  r.door.onFund = (method, _path, json) => (method === 'POST' && json?.state === 'ended' ? { status: 503, body: { error: 'down' } } : undefined);
+  await r.run();
+  assert.equal(r.door.stateOf(id), 'active');
+  assert.equal(r.credit(id), '0');
+  r.door.onPay = undefined;
+  r.door.onFund = undefined;
+  r.clock.t += 10 * 60_000;
+  await r.run();
+  assert.equal(r.door.stateOf(id), 'ended');
+  assert.equal(r.door.a(id).endReason, 'home_gone');
+  assert.equal(r.door.pays.length, 1);
+  assert.deepEqual(r.chain.sends(), [`refund:${ACCOUNT}:14000`]);
+});
+
+test('an expired permission ends the allowance and refunds', async () => {
+  const r = rig();
+  const { id } = r.door.home();
+  r.state.entries[id] = { allowanceId: id, creditMicro: '21000' };
+  r.chain.expired = true;
+  await r.run();
+  assert.deepEqual(r.chain.sends(), [`refund:${ACCOUNT}:21000`]);
+  assert.equal(r.door.stateOf(id), 'ended');
+  assert.equal(r.door.a(id).endReason, 'cancelled');
+  assert.equal(r.door.pays.length, 0);
+  const r2 = rig();
+  const two = r2.door.home({ state: 'approved' });
+  r2.chain.expired = true;
+  await r2.run();
+  assert.equal(r2.door.stateOf(two.id), 'refused');
+  assert.deepEqual(r2.chain.sends(), []);
+});
+
+test('inForce: a permission is in force from its start until its end', () => {
+  const p = signed();
+  p.permission.start = 1000;
+  p.permission.end = 2000;
+  assert.equal(inForce(p, 999), false);
+  assert.equal(inForce(p, 1000), true);
+  assert.equal(inForce(p, 1999), true);
+  assert.equal(inForce(p, 2000), false);
 });
