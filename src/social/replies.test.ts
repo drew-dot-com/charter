@@ -29,7 +29,7 @@ const mention = (o: Partial<Mention> = {}): Mention => ({
 function fresh(): SocialState {
   return new StateStore(join(mkdtempSync(join(tmpdir(), 'social-gate-')), 'state.json'), () => NOW).get();
 }
-const ctx = (blocklist: string[] = []) => ({ selfId: SELF, blocklist: new Set(blocklist), now: NOW });
+const ctx = (blocklist: string[] = []) => ({ selfId: SELF, blocklist: new Set(blocklist), banned: [...DEFAULT_BANNED], now: NOW });
 
 test('MENTION_MAX_AGE_MS is 24 hours', () => {
   assert.equal(MENTION_MAX_AGE_MS, 24 * 3_600_000);
@@ -68,6 +68,21 @@ test('replyGate refuses a mention with no author handle, or a createdAt that is 
   assert.equal(replyGate(mention({ createdAt: Number.NaN }), fresh(), ctx()).ok, false);
   assert.equal(replyGate(mention({ conversationId: '' }), fresh(), ctx()).ok, false);
   assert.equal(replyGate(mention({ authorId: '' }), fresh(), ctx()).ok, false);
+});
+
+test('replyGate refuses a handle that contains a banned word anywhere', () => {
+  for (const h of ['toonprotocol', 'TOONfan', 'my_token_bot', '@toonprotocol']) {
+    assert.deepEqual(replyGate(mention({ authorHandle: h }), fresh(), ctx()), { ok: false, reason: 'banned word in handle' }, h);
+  }
+  assert.deepEqual(replyGate(mention({ authorHandle: 'alice' }), fresh(), ctx()), { ok: true });
+});
+
+test('handleMention refuses a banned-word handle before any model call', async () => {
+  const model = fakeModel({});
+  const { deps, x } = loop({ model });
+  assert.equal(await handleMention(deps, mention({ authorHandle: 'toonfan' })), 'skipped');
+  assert.equal(model.prompts.length, 0);
+  assert.equal(x.posts.length, 0);
 });
 
 test('replyGate refuses everything when the self id is unknown', () => {

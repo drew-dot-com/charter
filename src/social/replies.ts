@@ -26,8 +26,16 @@ export interface LoopDeps extends PublishDeps {
 
 const bare = (h: string): string => String(h ?? '').trim().replace(/^@+/, '').toLowerCase();
 
-/** The hard limits on replying (spec section 5), from the state as read now. */
-export function replyGate(m: Mention, s: SocialState, ctx: { selfId: string; blocklist: Set<string>; now: number }): { ok: true } | { ok: false; reason: string } {
+/**
+ * The hard limits on replying (spec section 5), from the state as read now. `banned` is the rules' banned list: a
+ * handle containing any of those words anywhere is refused, since a reply may address its author by handle and lint
+ * matches banned words only as whole words.
+ */
+export function replyGate(
+  m: Mention,
+  s: SocialState,
+  ctx: { selfId: string; blocklist: Set<string>; banned: readonly string[]; now: number },
+): { ok: true } | { ok: false; reason: string } {
   const no = (reason: string) => ({ ok: false as const, reason });
   if (!ctx.selfId) return no('own user id unknown');
   if (!m.id || !m.authorId || !m.conversationId) return no('incomplete mention');
@@ -35,6 +43,8 @@ export function replyGate(m: Mention, s: SocialState, ctx: { selfId: string; blo
   // X can omit the user expansion; an author we cannot name cannot be checked against the blocklist.
   if (!bare(m.authorHandle)) return no('no author handle');
   if (ctx.blocklist.has(bare(m.authorHandle))) return no('blocklisted author');
+  const handle = bare(m.authorHandle);
+  if (ctx.banned.some((w) => w.trim() && handle.includes(w.trim().toLowerCase()))) return no('banned word in handle');
   if (!Number.isFinite(m.createdAt) || ctx.now - m.createdAt > MENTION_MAX_AGE_MS) return no('too old');
   if (s.repliedConversations.includes(m.conversationId)) return no('conversation already replied');
   if (s.repliesToday >= MAX_REPLIES_DAY) return no('daily reply cap: 20 replies today');
@@ -141,7 +151,7 @@ export async function handleMention(deps: LoopDeps, m: Mention): Promise<'replie
     return skip('skipped', 'config files do not load');
   }
 
-  const gate = replyGate(m, deps.state.get(), { selfId: deps.cfg.x.userId, blocklist: files.blocklist, now });
+  const gate = replyGate(m, deps.state.get(), { selfId: deps.cfg.x.userId, blocklist: files.blocklist, banned: files.rules.banned, now });
   if (!gate.ok) return skip('skipped', gate.reason);
 
   const filtered = preFilter(m.text, files.rules);
