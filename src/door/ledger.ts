@@ -1,6 +1,9 @@
 import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Micro, Offer } from '../types.js';
+
+/** One line per paid exact hour: the Base transaction that settled it. Lives beside the ledger file. */
+export const TICK_TXS_FILE = 'tick-txs.jsonl';
 
 /** The whole offer as it was when a lease opened, kept in the ledger: bigint prices as decimal strings. */
 export interface OfferSnapshot {
@@ -221,6 +224,19 @@ export class DoorLedger {
       l.ticksPaidByRenter++;
       if (payer) l.payer = payer.toLowerCase();
     });
+  }
+
+  /**
+   * The settle transaction of the hour just paid, appended beside the ledger: one JSON line per paid exact hour,
+   * `tick` being the 1-based hour number. A receipt never fails a payment, so a write that fails is dropped.
+   */
+  tickTx(leaseId: string, tx: string, at: number): void {
+    try {
+      const tick = this.leases.get(leaseId)?.ticksPaidByRenter ?? 0;
+      appendFileSync(join(dirname(this.file), TICK_TXS_FILE), JSON.stringify({ leaseId, tick, tx, at }) + '\n');
+    } catch {
+      // Dropped on purpose.
+    }
   }
 
   /**

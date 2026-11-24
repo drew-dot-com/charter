@@ -67,6 +67,8 @@ export interface TestHooks {
   verify?: (leaseId: string) => boolean;
   /** Settlement, after a 2xx. Throw to make it fail. */
   settle?: (info: { leaseId: string; price: Micro }) => void | Promise<void>;
+  /** A transaction hash the stub gate reports in a successful PAYMENT-RESPONSE, as a facilitator does after settling. */
+  settleTx?: string;
 }
 
 const UNITS_PER_USDC = 1_000_000n;
@@ -189,6 +191,20 @@ export function settleReasonOf(res: Response): string | undefined {
   try {
     const r = decodePaymentResponseHeader(h) as { errorReason?: unknown };
     return typeof r.errorReason === 'string' ? r.errorReason : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
+
+/** The Base transaction hash of a settlement that succeeded, from the PAYMENT-RESPONSE header it carried. */
+export function settleTxOf(res: Response): `0x${string}` | undefined {
+  const h = res.getHeader('payment-response');
+  if (typeof h !== 'string') return undefined;
+  try {
+    const r = decodePaymentResponseHeader(h) as { success?: unknown; transaction?: unknown };
+    return r.success === true && typeof r.transaction === 'string' && TX_HASH.test(r.transaction) ? (r.transaction as `0x${string}`) : undefined;
   } catch {
     return undefined;
   }

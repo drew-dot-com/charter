@@ -15,7 +15,7 @@ import { hostRoutes } from './hosts-routes.js';
 import { slidingLimit } from './limit.js';
 import { safeFetch } from './safe-fetch.js';
 import { logRequests, type RequestSink } from './reqlog.js';
-import { MAX_TIMEOUT_SECONDS, MIN_WINDOW_SECONDS, SETTLE_MARGIN_SECONDS, isPayerFault, microToUsdc, paymentIdOf, settleReasonOf, type Gate, type PaymentId, type Schemes, type TestHooks, type X402Config } from '../x402/seller.js';
+import { MAX_TIMEOUT_SECONDS, MIN_WINDOW_SECONDS, SETTLE_MARGIN_SECONDS, isPayerFault, microToUsdc, paymentIdOf, settleReasonOf, settleTxOf, type Gate, type PaymentId, type Schemes, type TestHooks, type X402Config } from '../x402/seller.js';
 import { realGate, stubGate } from './x402.js';
 import { openApiDoc } from './openapi.js';
 
@@ -704,6 +704,10 @@ export function doorApp(deps: DoorDeps): express.Express {
     if (paid) {
       if (!failure && res.statusCode >= 200 && res.statusCode < 300) {
         ledger.renterTick(paid.leaseId, res.locals.payer as string | undefined);
+        // An exact hour is one transaction on Base: keep its hash. A batch voucher settles later, in a batch.
+        const id = paymentIdOf(req);
+        const tx = settleTxOf(res);
+        if (typeof id === 'object' && id.kind === 'exact' && tx) ledger.tickTx(paid.leaseId, tx, now());
       } else {
         // The host has its tick and the renter's payment never settled. Only the payer's own fault counts against them.
         const kind: LossKind = !failure && isPayerFault(settleReasonOf(res)) ? 'settle_failed' : 'settle_failed_transient';

@@ -166,6 +166,9 @@ export function stubGate(priceOf: (leaseId: string) => Micro | undefined, hooks:
         return;
       }
     }
+    if (res.statusCode >= 200 && res.statusCode < 300 && hooks.settleTx) {
+      res.setHeader('PAYMENT-RESPONSE', Buffer.from(JSON.stringify({ success: true, transaction: hooks.settleTx, network: 'eip155:8453' })).toString('base64'));
+    }
     (end as (...a: unknown[]) => unknown)(...held);
   };
 }

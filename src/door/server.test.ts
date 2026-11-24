@@ -865,6 +865,49 @@ test('payer block: a settlement failure is stored as settle_failed', async () =>
   }
 });
 
+const TICK_TX = '0x' + 'ef'.repeat(32);
+const txLines = (d: { dir: string }) => {
+  try {
+    return readFileSync(join(d.dir, 'tick-txs.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  } catch {
+    return [];
+  }
+};
+
+test('a paid exact tick records its tx', async () => {
+  const d = await start(fakeHost(), { testHooks: { settleTx: TICK_TX } });
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': pay('0xe1', '0x01') })).status, 200);
+    assert.deepEqual(txLines(d), [{ leaseId: LEASE, tick: 1, tx: TICK_TX, at: d.clock.t }]);
+  } finally {
+    d.close();
+  }
+});
+
+test('a batch voucher tick records nothing', async () => {
+  const d = await start(fakeHost(), { testHooks: { settleTx: TICK_TX } });
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': voucher('0xe2', '5000') })).status, 200);
+    assert.equal(d.ledger.get(LEASE)!.ticksPaidByRenter, 1);
+    assert.deepEqual(txLines(d), []);
+  } finally {
+    d.close();
+  }
+});
+
+test('a failed settle records nothing', async () => {
+  const d = await start(fakeHost(), { testHooks: { settleTx: TICK_TX, settle: () => { throw new Error(PAYER_FAULT); } } });
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'payment-signature': pay('0xe3', '0x03') })).status, 402);
+    assert.deepEqual(txLines(d), []);
+  } finally {
+    d.close();
+  }
+});
+
 test('a tick on a lease whose cached status is done or closed is refused before the gate with zero host calls', async () => {
   for (const [state, error] of [['done', 'lease_done'], ['closed', 'not_running']] as const) {
     const host = fakeHost({ status: async () => lease({ state }) });
