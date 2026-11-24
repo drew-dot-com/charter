@@ -108,6 +108,9 @@ test('preFilter catches each pattern', () => {
     'to the m o o n',
     'presale soon',
     'ｔｏｋｅｎ',
+    'it escaped the box',
+    'jailbreaking it',
+    'toons everywhere',
   ];
   for (const t of hits) assert.notEqual(preFilter(t, rules), null, t);
   for (const t of ['how much is a home?', 'is it running?', 'what is a grant?', 'priced per hour?', "what's the price per hour?"]) {

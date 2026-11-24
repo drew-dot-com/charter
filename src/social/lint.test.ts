@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { lint, X_MAX_CHARS } from './lint.js';
 import type { FactSheet } from './facts.js';
-import type { Rules } from './files.js';
+import { DEFAULT_BANNED, type Rules } from './files.js';
 
 const HASH = '0x' + 'ab'.repeat(32);
 const facts: FactSheet = {
@@ -122,6 +122,12 @@ test('rejects banned words case-insensitively as whole words', () => {
   rej('a token-gated door', 'banned word');
   rej('TOON rules', 'banned word');
   assert.deepEqual(run('a tokenizer here'), []);
+});
+
+test('rejects inflected banned words: plural, past and -ing forms', () => {
+  const all = { rules: { banned: [...DEFAULT_BANNED] } };
+  for (const t of ['tokens', 'escaped', 'escapes', 'jailbreaking', 'toons', 'airdrops', 'guaranteed']) rej(`a ${t} here`, 'banned word', all);
+  for (const ok of ['tokenizer', 'cartoon', 'cartoons']) assert.deepEqual(run(`a ${ok} here`, all), [], ok);
 });
 
 test('rejects spaced-out and split banned words', () => {

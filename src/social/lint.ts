@@ -75,11 +75,12 @@ function numbersIn(text: string): string[] {
 
 /**
  * A banned word as a whole word in lowercased text, its letters allowed to be split by any run of non-alphanumerics
- * ("t o k e n", "t.o.k.e.n"). Shared by lint and the reply pre-filter.
+ * ("t o k e n", "t.o.k.e.n"), with an optional inflection ("tokens", "escaped", "jailbreaking"). Shared by lint and
+ * the reply pre-filter.
  */
 export function bannedWordRe(word: string): RegExp {
   const letters = Array.from(word.toLowerCase().trim()).filter((c) => /\S/.test(c));
-  return new RegExp('(?<![a-z0-9])' + letters.map(escapeRe).join('[^a-z0-9]*') + '(?![a-z0-9])');
+  return new RegExp('(?<![a-z0-9])' + letters.map(escapeRe).join('[^a-z0-9]*') + '(?:s|es|d|ed|ing)?(?![a-z0-9])');
 }
 
 /** Deterministic gate: returns the reasons a text may not be published. Empty means pass. */
