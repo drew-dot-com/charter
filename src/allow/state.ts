@@ -28,8 +28,12 @@ export interface AllowEntry {
   lapsedSince?: number;
   /** No pull is tried before this time (epoch ms), after the account was short. */
   nextTryAt?: number;
-  /** A tick sent whose answer has not come: counted once the host's paidIntervals passes `index`. */
-  tickInFlight?: { leaseId: string; index: number; micro: string };
+  /**
+   * A tick sent whose answer has not come: counted once the host's paidIntervals passes `index`. `at` is when
+   * it was sent: a record the lease cannot be read for, older than an hour or with an end pending, is
+   * dropped and booked as spent (the person bears at most that one tick, never the pool).
+   */
+  tickInFlight?: { leaseId: string; index: number; micro: string; at?: number };
   /**
    * A re-open sent whose answer has not come: counted when the door's newest lease for the home is no longer
    * `prevLeaseId` and that lease has a paid interval.
@@ -37,7 +41,8 @@ export interface AllowEntry {
   openInFlight?: { offerId: string; prevLeaseId: string; micro: string; at: number };
   /**
    * A refund sent whose answer has not come. It is never sent again: the chain may already hold it. The
-   * allowance stays unended and a problem names it until Drew checks the chain and clears this by hand.
+   * allowance stays unended and a problem names it until Drew checks the chain and runs
+   * `resolve-refund <id> sent|unsent|abandon`.
    */
   refundInFlight?: { to: string; micro: string; at: number };
   /** The lease is not read before this time (epoch ms): a lease read is a host call the door pays for. */
@@ -50,6 +55,11 @@ export interface AllowEntry {
   periodPulled?: { periodEndsAt: number; micro: string };
   /** The end decided for this allowance; set before its refund and kept until the door takes it. */
   ending?: Ending;
+  /**
+   * Credit (decimal micro) Drew wrote off with `resolve-refund <id> abandon`: a refund that can never land
+   * (a blacklisted account, the pool short). It stays in the biller's wallet for Drew to settle by hand.
+   */
+  abandonedMicro?: string;
 }
 
 export interface AllowState {
@@ -78,7 +88,7 @@ function check(s: unknown): string | undefined {
     const p = e.pullInFlight;
     if (p !== undefined && !(isObj(p) && isMicro(p.micro) && isTime(p.at) && optTime(p.periodEndsAt))) return `entry ${id} pullInFlight`;
     const t = e.tickInFlight;
-    if (t !== undefined && !(isObj(t) && typeof t.leaseId === 'string' && isCount(t.index) && isMicro(t.micro))) return `entry ${id} tickInFlight`;
+    if (t !== undefined && !(isObj(t) && typeof t.leaseId === 'string' && isCount(t.index) && isMicro(t.micro) && optTime(t.at))) return `entry ${id} tickInFlight`;
     const o = e.openInFlight;
     if (o !== undefined && !(isObj(o) && typeof o.offerId === 'string' && typeof o.prevLeaseId === 'string' && isMicro(o.micro) && isTime(o.at))) return `entry ${id} openInFlight`;
     const pp = e.periodPulled;
@@ -87,6 +97,7 @@ function check(s: unknown): string | undefined {
     if (en !== undefined && !(isObj(en) && (en.state === 'ended' || en.state === 'refused'))) return `entry ${id} ending`;
     const r = e.refundInFlight;
     if (r !== undefined && !(isObj(r) && typeof r.to === 'string' && isMicro(r.micro) && isTime(r.at))) return `entry ${id} refundInFlight`;
+    if (e.abandonedMicro !== undefined && !isMicro(e.abandonedMicro)) return `entry ${id} abandonedMicro`;
   }
   return undefined;
 }

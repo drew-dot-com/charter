@@ -15,13 +15,13 @@ const T0 = Date.UTC(2026, 10, 24, 0, 10);
 const entry = (id: string, over: Partial<AllowEntry> = {}): AllowEntry => ({ allowanceId: id, creditMicro: '5000', ...over });
 const health = (d: string) => JSON.parse(readFileSync(join(d, 'health.json'), 'utf8'));
 
-function once(d: string, state = loadState(join(d, 'state.json')), o: { eth?: bigint; runCycle?: (b: BillerDeps) => Promise<void>; usdc?: bigint } = {}) {
+function once(d: string, state = loadState(join(d, 'state.json')), o: { eth?: bigint; runCycle?: (b: BillerDeps) => Promise<void>; usdc?: bigint; logs?: string[] } = {}) {
   const seen: BillerDeps[] = [];
   return {
     seen,
     run: () =>
       runOnce({
-        dir: d, state, door: {} as never, address: ADDRESS, now: () => T0,
+        dir: d, state, door: {} as never, address: ADDRESS, now: () => T0, log: (m) => void o.logs?.push(m),
         chain: { usdc: async () => o.usdc ?? 7_000_000n, eth: async () => o.eth ?? 10n ** 15n } as never,
         runCycle: o.runCycle ?? (async (b) => void seen.push(b)),
       }),
@@ -145,7 +145,59 @@ test('a resolution for an allowance with no refund in flight changes nothing and
 test('resolve-refund validates its arguments', () => {
   const d = dir();
   assert.throws(() => resolveRefundCommand(d, 'nope', 'sent'), /32 hex/);
-  assert.throws(() => resolveRefundCommand(d, hex(), 'maybe' as never), /sent or unsent/);
+  assert.throws(() => resolveRefundCommand(d, hex(), 'maybe' as never), /sent, unsent or abandon/);
+});
+
+test('resolve-refund abandon ends a refund that can never land as operator, writes the credit off, logs and raises no problem', async () => {
+  const d = dir();
+  const id = hex();
+  const s = emptyState();
+  s.entries[id] = entry(id, { creditMicro: '7000', refundInFlight: { to: ADDRESS, micro: '7000', at: 1 }, ending: { state: 'ended', endReason: 'home_gone' } });
+  saveState(join(d, 'state.json'), s);
+  resolveRefundCommand(d, id, 'abandon');
+  assert.deepEqual(readResolutions(d), { [id]: 'abandon' });
+  const logs: string[] = [];
+  let seen: AllowEntry | undefined;
+  await once(d, loadState(join(d, 'state.json')), { logs, runCycle: async (b) => void (seen = structuredClone(b.state.entries[id])) }).run();
+  assert.equal(seen?.creditMicro, '0');
+  assert.equal(seen?.refundInFlight, undefined);
+  assert.deepEqual(seen?.ending, { state: 'ended', endReason: 'operator' });
+  const saved = loadState(join(d, 'state.json')).entries[id];
+  assert.equal(saved.abandonedMicro, '7000');
+  assert.deepEqual(saved.ending, { state: 'ended', endReason: 'operator' });
+  assert.deepEqual(readResolutions(d), {});
+  assert.equal(logs.length, 1);
+  assert.match(logs[0]!, /abandon.*7000.*settle it by hand/);
+  assert.deepEqual(health(d).problems, []);
+});
+
+test('resolve-refund abandon works with no refund in flight (a refund that fails before it is sent, every cycle)', async () => {
+  const d = dir();
+  const id = hex();
+  const s = emptyState();
+  s.entries[id] = entry(id, { creditMicro: '9000', ending: { state: 'ended', endReason: 'stopped' } });
+  saveState(join(d, 'state.json'), s);
+  resolveRefundCommand(d, id, 'abandon');
+  await once(d, loadState(join(d, 'state.json'))).run();
+  const saved = loadState(join(d, 'state.json')).entries[id];
+  assert.equal(saved.creditMicro, '0');
+  assert.equal(saved.abandonedMicro, '9000');
+  assert.deepEqual(saved.ending, { state: 'ended', endReason: 'operator' });
+});
+
+test('resolve-refund abandon on an allowance with no end decided changes nothing and is reported', async () => {
+  const d = dir();
+  const id = hex();
+  const s = emptyState();
+  s.entries[id] = entry(id);
+  saveState(join(d, 'state.json'), s);
+  resolveRefundCommand(d, id, 'abandon');
+  await once(d, loadState(join(d, 'state.json'))).run();
+  const saved = loadState(join(d, 'state.json')).entries[id];
+  assert.equal(saved.creditMicro, '5000');
+  assert.equal(saved.abandonedMicro, undefined);
+  assert.ok(health(d).problems.some((p: { key: string; msg: string }) => p.key === 'resolve' && /no end decided/.test(p.msg)));
+  assert.deepEqual(readResolutions(d), {});
 });
 
 test('parseArgs and status', () => {
@@ -153,6 +205,7 @@ test('parseArgs and status', () => {
   assert.deepEqual(parseArgs([]), { cmd: 'run' });
   assert.deepEqual(parseArgs(['stop', id]), { cmd: 'stop', id });
   assert.deepEqual(parseArgs(['resolve-refund', id, 'sent']), { cmd: 'resolve-refund', id, outcome: 'sent' });
+  assert.deepEqual(parseArgs(['resolve-refund', id, 'abandon']), { cmd: 'resolve-refund', id, outcome: 'abandon' });
   assert.deepEqual(parseArgs(['status']), { cmd: 'status' });
   assert.throws(() => parseArgs(['resolve-refund', id]), /usage/);
   assert.throws(() => parseArgs(['bogus']), /usage/);

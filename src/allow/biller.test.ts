@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { ALLOWED_MOVES, LIVE_STATES, type AllowanceState, type SignedPermission } from '../door/allowances.js';
 import type { Answer, DoorClient } from '../fund/door-client.js';
 import { cycle, LAPSE_END_MS, pullNeed, SHORT_RETRY_MS, type BillerDeps } from './biller.js';
-import { inForce, NotSent, type Chain } from './chain.js';
+import { checkEncodable, inForce, judgeRevert, NotSent, Unencodable, type Chain } from './chain.js';
 import { loadState, saveState, type AllowState } from './state.js';
 
 const HOUR = 3_600_000;
@@ -44,6 +44,9 @@ class FakeDoor implements DoorClient {
   onFund?: (method: string, path: string, json: any) => Answer | undefined;
   /** What the saved state looked like when each pay was sent. */
   savedAtPay: string[] = [];
+  /** The spender the door's list names (the address people approve). */
+  listSpender: unknown = SPENDER;
+  onGet?: (path: string) => Answer | undefined;
   private salts = 0;
 
   constructor(readonly clock: { t: number }, readonly saved: { s: string }) {}
@@ -87,6 +90,8 @@ class FakeDoor implements DoorClient {
 
   async get(path: string): Promise<Answer> {
     this.gets.push(path);
+    const o = this.onGet?.(path);
+    if (o) return o;
     const m = /^\/v1\/leases\/([0-9a-f]{32})$/.exec(path);
     if (m && this.leases.has(m[1]!)) return { status: 200, body: { lease: { id: m[1], ...this.leases.get(m[1]!) }, stopped: false, offer: this.offer } };
     return { status: 404, body: { error: 'not_found' } };
@@ -134,7 +139,7 @@ class FakeDoor implements DoorClient {
     const o = this.onFund?.(method, path, json);
     if (o) return o;
     if (method === 'GET' && path === '/v1/biller/allowances') {
-      return { status: 200, body: { allowances: [...this.allowances.values()].filter((a) => LIVE_STATES.includes(a.state)).map((a) => structuredClone(a)) } };
+      return { status: 200, body: { spender: this.listSpender, allowances: [...this.allowances.values()].filter((a) => LIVE_STATES.includes(a.state)).map((a) => structuredClone(a)) } };
     }
     const one = /^\/v1\/biller\/allowances\/([0-9a-f]{32})$/.exec(path);
     if (method === 'POST' && one) {
@@ -171,14 +176,20 @@ class FakeChain implements Chain {
   /** The pull is broadcast but still pending: nothing on chain yet, and its answer is lost. */
   pullPending = false;
   expired = false;
+  /** The permission's start is still ahead of the box clock. */
+  notYet = false;
+  /** status() throws Unencodable with this text. */
+  unencodable?: string;
   savedAtSend: string[] = [];
 
   constructor(readonly saved: { s: string }) {}
 
   async status(_p: SignedPermission) {
     this.calls.push('status');
+    if (this.unencodable) throw new Unencodable(this.unencodable);
+    if (this.notYet) return { isRevoked: this.revoked, isExpired: false, notYet: true, remainingMicro: 0n, periodSpentMicro: 0n, periodEndsAt: T0 + HOUR };
     const left = this.allowance > this.spent ? this.allowance - this.spent : 0n;
-    return { isRevoked: this.revoked, isExpired: this.expired, remainingMicro: left, periodSpentMicro: this.spent, periodEndsAt: this.periodEndsAt };
+    return { isRevoked: this.revoked, isExpired: this.expired, notYet: false, remainingMicro: left, periodSpentMicro: this.spent, periodEndsAt: this.periodEndsAt };
   }
 
   onCanPull?: () => void;
@@ -362,7 +373,7 @@ test('pulls a day of ticks then pays the due tick', async () => {
   assert.equal(a.creditMicro, '161000');
   // The pull and the tick were each sent only after the state that records them was saved.
   assert.equal(JSON.parse(r.chain.savedAtSend[0]!).entries[id].pullInFlight.micro, '168000');
-  assert.deepEqual(JSON.parse(r.door.savedAtPay[0]!).entries[id].tickInFlight, { leaseId, index: 3, micro: '7000' });
+  assert.deepEqual(JSON.parse(r.door.savedAtPay[0]!).entries[id].tickInFlight, { leaseId, index: 3, micro: '7000', at: T0 });
   assert.equal(r.state.entries[id]?.pullInFlight, undefined);
   assert.equal(r.state.entries[id]?.tickInFlight, undefined);
 });
@@ -493,7 +504,7 @@ test('a tick whose answer was lost is counted once the host shows it', async () 
   };
   await r.run();
   assert.equal(r.credit(id), '14000');
-  assert.deepEqual(r.state.entries[id]?.tickInFlight, { leaseId, index: 3, micro: '7000' });
+  assert.deepEqual(r.state.entries[id]?.tickInFlight, { leaseId, index: 3, micro: '7000', at: T0 });
   r.door.onPay = undefined;
   r.clock.t += 10 * 60_000;
   await r.run();
@@ -922,4 +933,207 @@ test('a pull is not sent when the period edge is reached during the checks', asy
   assert.deepEqual(r.chain.sends(), []);
   assert.equal(r.state.entries[id]?.pullInFlight, undefined);
   assert.equal(r.door.pays.length, 0);
+});
+
+// ---- final review fixes ----
+
+test('I1: a stopping allowance with a tick in flight and an unreadable lease still revokes and refunds', async () => {
+  const r = rig();
+  const { id, leaseId } = r.door.home({ state: 'stopping' });
+  r.state.entries[id] = { allowanceId: id, creditMicro: '21000', tickInFlight: { leaseId, index: 3, micro: '7000', at: T0 - 60_000 } };
+  // The host is dead: every lease read answers 502.
+  r.door.onGet = () => ({ status: 502, body: { error: 'host_unreachable' } });
+  await r.run();
+  // The person bears the one tick that may have been paid; the rest goes back.
+  assert.deepEqual(r.chain.sends(), ['revoke', `refund:${ACCOUNT}:14000`]);
+  assert.equal(r.door.stateOf(id), 'ended');
+  assert.equal(r.state.entries[id]?.tickInFlight, undefined);
+  assert.ok(r.problems.some((p) => p.key === 'tick' && /booked as spent/.test(p.msg)));
+});
+
+test('I1: a revoked allowance with an open in flight and an unreadable home still ends', async () => {
+  const r = rig();
+  const { id, leaseId } = r.door.home();
+  r.state.entries[id] = { allowanceId: id, creditMicro: '7000', openInFlight: { offerId: OFFER, prevLeaseId: leaseId, micro: '7000', at: T0 - 60_000 } };
+  r.chain.revoked = true;
+  r.door.onFund = (m, path) => (m === 'GET' && path.startsWith('/v1/biller/homes/') ? { status: 429, body: { error: 'rate_limited' } } : undefined);
+  await r.run();
+  assert.deepEqual(r.chain.sends(), []);
+  assert.equal(r.door.stateOf(id), 'ended');
+  assert.equal(r.door.a(id).endReason, 'cancelled');
+  assert.equal(r.credit(id), '0');
+});
+
+test('I1: an unreadable lease with a young tick in flight and no end waits; an hour-old one is dropped as spent', async () => {
+  const r = rig();
+  const { id, leaseId } = r.door.home();
+  r.state.entries[id] = { allowanceId: id, creditMicro: '21000', tickInFlight: { leaseId, index: 3, micro: '7000', at: T0 - 60_000 } };
+  r.door.onGet = () => ({ status: 502, body: { error: 'host_unreachable' } });
+  await r.run();
+  assert.ok(r.state.entries[id]?.tickInFlight, 'kept while young');
+  assert.equal(r.credit(id), '21000');
+  assert.equal(r.door.pays.length, 0);
+  r.clock.t += HOUR + 1;
+  await r.run();
+  assert.equal(r.state.entries[id]?.tickInFlight, undefined);
+  assert.equal(r.credit(id), '14000');
+});
+
+test('I2: checkEncodable names a permission viem cannot encode', () => {
+  assert.equal(checkEncodable(signed()), undefined);
+  const big = signed();
+  big.permission.allowance = (2n ** 160n).toString();
+  assert.match(checkEncodable(big) ?? '', /cannot be encoded/);
+  const late = signed();
+  late.permission.end = 2 ** 48;
+  assert.match(checkEncodable(late) ?? '', /cannot be encoded/);
+  const salty = signed();
+  salty.permission.salt = '0x1' + '00'.repeat(32);
+  assert.match(checkEncodable(salty) ?? '', /cannot be encoded/);
+});
+
+test('I2: an unencodable permission refuses an approved allowance instead of failing every cycle', async () => {
+  const r = rig();
+  const { id } = r.door.home({ state: 'approved' });
+  r.chain.unencodable = 'the permission cannot be encoded: allowance out of range';
+  await r.run();
+  assert.equal(r.door.stateOf(id), 'refused');
+  assert.match(r.door.a(id).reason, /cannot be encoded/);
+  assert.deepEqual(r.chain.sends(), []);
+});
+
+test('I2: an unencodable permission lets a stop finish: no revoke, credit refunded, ended', async () => {
+  const r = rig();
+  const { id } = r.door.home({ state: 'stopping' });
+  r.state.entries[id] = { allowanceId: id, creditMicro: '7000' };
+  r.chain.unencodable = 'the permission cannot be encoded: salt out of range';
+  await r.run();
+  assert.deepEqual(r.chain.sends(), [`refund:${ACCOUNT}:7000`]);
+  assert.equal(r.door.stateOf(id), 'ended');
+  assert.equal(r.door.a(id).endReason, 'stopped');
+});
+
+test('I4: a permission not yet in force is waited for, not refused', async () => {
+  const r = rig();
+  const { id } = r.door.home({ state: 'approved' });
+  r.chain.notYet = true;
+  await r.run();
+  assert.equal(r.door.stateOf(id), 'approved');
+  assert.deepEqual(r.chain.calls, ['status']);
+  r.chain.notYet = false;
+  r.clock.t += 60_000;
+  await r.run();
+  assert.equal(r.door.stateOf(id), 'active');
+});
+
+test('I4: inForce and the not-yet rule: before start is not in force and not expired', () => {
+  const p = signed();
+  p.permission.start = 1000;
+  p.permission.end = 2000;
+  assert.equal(inForce(p, 999), false);
+  assert.equal(inForce(p, 2000), false);
+});
+
+test('T4: a revert with no data keeps an approved allowance approved, with a problem', async () => {
+  const r = rig();
+  const { id } = r.door.home({ state: 'approved' });
+  r.chain.canPullAnswer = { ok: false, why: 'unknown', detail: 'the pull reverted with no reason (0x)' };
+  await r.run();
+  assert.equal(r.door.stateOf(id), 'approved');
+  assert.ok(r.problems.some((p) => p.key === 'pull' && /0x/.test(p.msg)));
+  r.chain.canPullAnswer = undefined;
+  r.clock.t += 60_000;
+  await r.run();
+  assert.equal(r.door.stateOf(id), 'active');
+});
+
+test('T4: judgeRevert refuses only on decoded known errors', () => {
+  assert.equal((judgeRevert('0x') as { why: string }).why, 'unknown');
+  assert.equal((judgeRevert('0xdeadbeef') as { why: string }).why, 'unknown');
+  assert.equal((judgeRevert('0xfd1ebc88') as { why: string }).why, 'over_limit');
+  assert.equal((judgeRevert('0x282b9f97') as { why: string }).why, 'revoked');
+  assert.equal((judgeRevert('0x8baa579f') as { why: string }).why, 'invalid', 'InvalidSignature()');
+  assert.equal((judgeRevert('0x8e01c48b') as { why: string }).why, 'invalid', 'ZeroAllowance()');
+  // BeforeSpendPermissionStart: wait, do not refuse.
+  assert.equal((judgeRevert(('0x00a170cd' + '0'.repeat(63) + '1' + '0'.repeat(63) + '2') as `0x${string}`) as { why: string }).why, 'unknown');
+  // Error("ERC20: transfer amount exceeds balance")
+  const err = '0x08c379a0' + '0'.repeat(62) + '20' + '0'.repeat(62) + '26' + Buffer.from('ERC20: transfer amount exceeds balance').toString('hex').padEnd(128, '0');
+  assert.equal((judgeRevert(err as `0x${string}`) as { why: string }).why, 'short');
+  const other = '0x08c379a0' + '0'.repeat(62) + '20' + '0'.repeat(62) + '04' + Buffer.from('nope').toString('hex').padEnd(64, '0');
+  assert.equal((judgeRevert(other as `0x${string}`) as { why: string }).why, 'unknown');
+});
+
+test('M1: the biller pays only the lease the door names on the home host', async () => {
+  // The door's homes route names the newest lease on the home's own host (route test); the biller pays it.
+  const r = rig();
+  const { leaseId } = r.door.home();
+  await r.run();
+  assert.deepEqual(r.door.tickPays().map((p) => p.path), [`/v1/leases/${leaseId}/ticks`]);
+});
+
+test('M2: a tick price above what the person approved is not paid', async () => {
+  const r = rig();
+  const { id, homeId } = r.door.home();
+  r.state.entries[id] = { allowanceId: id, creditMicro: '21000' };
+  r.door.offer = { ...r.door.offer, tickPrice: '7001' };
+  await r.run();
+  assert.equal(r.door.pays.length, 0);
+  assert.deepEqual(r.chain.sends(), []);
+  assert.equal(r.door.a(id).reason, 'price rose above what was approved');
+  assert.ok(r.problems.some((p) => p.key === 'price' && /7001/.test(p.msg)));
+  // A closed lease at the higher price is not re-opened either.
+  const r2 = rig();
+  const two = r2.door.home({}, { state: 'closed' });
+  r2.state.entries[two.id] = { allowanceId: two.id, creditMicro: '21000' };
+  r2.door.offer = { ...r2.door.offer, tickPrice: '8000' };
+  await r2.run();
+  assert.equal(r2.door.pays.length, 0);
+  // Back at the approved price: paid again and the reason cleared.
+  r.door.offer = { ...r.door.offer, tickPrice: '7000' };
+  r.clock.t += 6 * 60_000;
+  r.door.leases.get(r.door.homes.get(homeId)!.leaseId!)!.paidThrough = r.clock.t + 10 * 60_000;
+  await r.run();
+  assert.equal(r.door.tickPays().length, 1);
+  assert.equal(r.door.a(id).reason, '');
+});
+
+test('M7: a door that names another spender gets nothing done but a spender_mismatch problem', async () => {
+  const r = rig();
+  const { id } = r.door.home({ state: 'approved' });
+  r.door.home();
+  r.door.listSpender = '0x9999999999999999999999999999999999999999';
+  await r.run();
+  assert.deepEqual(r.chain.calls, []);
+  assert.equal(r.door.posts.length, 0);
+  assert.equal(r.door.pays.length, 0);
+  assert.equal(r.door.stateOf(id), 'approved');
+  assert.deepEqual(r.problems.map((p) => p.key), ['spender_mismatch']);
+  r.door.listSpender = undefined;
+  await r.run();
+  assert.deepEqual(r.chain.calls, []);
+  r.door.listSpender = SPENDER.toUpperCase().replace('0X', '0x');
+  await r.run();
+  assert.equal(r.door.stateOf(id), 'active');
+});
+
+test('I7: operator messages name the command, never a bare state-file edit', async () => {
+  const r = rig();
+  const { id } = r.door.home({ state: 'stopping' });
+  r.state.entries[id] = { allowanceId: id, creditMicro: '7000', refundInFlight: { to: ACCOUNT, micro: '7000', at: T0 - HOUR }, ending: { state: 'ended', endReason: 'stopped' } };
+  await r.run();
+  const m = r.problems.find((p) => p.key === 'refund')!.msg;
+  assert.match(m, new RegExp(`resolve-refund ${id} sent\\|unsent\\|abandon`));
+  assert.doesNotMatch(m, /clear refundInFlight/);
+});
+
+test('I7: an abandoned refund ends the allowance as operator with no refund sent', async () => {
+  const r = rig();
+  const { id } = r.door.home({ state: 'stopping' });
+  // What resolve-refund abandon leaves: credit written off, the end set to operator.
+  r.state.entries[id] = { allowanceId: id, creditMicro: '0', abandonedMicro: '7000', ending: { state: 'ended', endReason: 'operator' } };
+  r.chain.revoked = true;
+  await r.run();
+  assert.deepEqual(r.chain.sends(), []);
+  assert.equal(r.door.stateOf(id), 'ended');
+  assert.equal(r.door.a(id).endReason, 'operator');
 });

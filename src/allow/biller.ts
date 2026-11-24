@@ -10,7 +10,7 @@
 import { permissionKey, type AllowanceState, type EndReason, type SignedPermission } from '../door/allowances.js';
 import { BASE_USDC, type Answer, type DoorClient } from '../fund/door-client.js';
 import { MAX_TICK_MICRO, tickDue } from '../fund/paymaster.js';
-import { NotSent, type Chain } from './chain.js';
+import { NotSent, Unencodable, type Chain } from './chain.js';
 import type { AllowEntry, AllowState, Ending } from './state.js';
 
 /** A pull is at most this many ticks, less the credit already held. */
@@ -30,6 +30,12 @@ export const PULL_SETTLE_MS = 10 * 60_000;
 export const PERIOD_EDGE_MS = 5 * 60_000;
 /** The longest the biller goes without reading a running lease. */
 const READ_EVERY_MS = 3_600_000;
+/** A tick or re-open with no answer whose lease or home cannot be read is dropped (booked as spent) after this. */
+export const IN_FLIGHT_GIVE_UP_MS = 3_600_000;
+/** The door record's reason while the home's price is above what the person approved. */
+export const PRICE_ROSE = 'price rose above what was approved';
+/** The operator's commands, run on the box. */
+const CMD = 'docker exec charter-allow node dist/allow/main.js';
 
 const ID = /^[0-9a-f]{32}$/;
 const HOME_ID = /^[0-9a-f]{16}$/;
@@ -90,6 +96,12 @@ export async function cycle(d: BillerDeps): Promise<void> {
     return problem('door', `listing allowances: ${errText(e)}`);
   }
   if (a.status !== 200 || !isObj(a.body) || !Array.isArray(a.body.allowances)) return problem('door', `listing allowances answered ${a.status}`);
+  // People approve the address the door names. A biller holding another key could never pull from them, and
+  // what it did would not match what they approved: it does nothing until the two agree.
+  const named = a.body.spender;
+  if (typeof named !== 'string' || named.toLowerCase() !== d.chain.spender.toLowerCase()) {
+    return problem('spender_mismatch', `the door names ${typeof named === 'string' ? named.slice(0, 42) : 'no'} spender (CHARTER_ALLOW_ADDRESS) but this biller's key is ${d.chain.spender}; nothing done. Set CHARTER_ALLOW_ADDRESS to the biller's address, or mount the right key (docs/ops.md, Allowances).`);
+  }
   // One permission on chain held by two allowances would book each one's pulls to both: act on neither.
   const holders = new Map<string, number>();
   const keyOf = (raw: unknown): string | undefined => {
@@ -108,7 +120,7 @@ export async function cycle(d: BillerDeps): Promise<void> {
     if (!HANDLED.includes(raw.state)) continue;
     const k = keyOf(raw);
     if (k && (holders.get(k) ?? 0) > 1) {
-      problem('allowance', `allowance ${raw.allowanceId} carries the same permission as another live allowance; neither is acted on. Drew: look at both.`);
+      problem('allowance', `allowance ${raw.allowanceId} carries the same permission as another live allowance; neither is acted on. Drew: look at both with \`${CMD} status\` and end the wrong one with \`${CMD} stop <allowanceId>\` (docs/ops.md, Allowances).`);
       continue;
     }
     try {
@@ -186,21 +198,46 @@ class One {
     if (bad) return this.problem('allowance', `allowance ${this.id}: ${bad}; not acted on`);
     this.e = this.d.state.entries[this.id] ??= { allowanceId: this.id, creditMicro: '0' };
 
-    const st = await this.d.chain.status(this.p);
+    let st: Status;
+    try {
+      st = await this.d.chain.status(this.p);
+    } catch (e) {
+      if (e instanceof Unencodable) return this.unusable(errText(e));
+      throw e;
+    }
     this.settlePull(st);
     if (this.e.pullInFlight) {
       return this.problem('pull', `allowance ${short(this.id)}: a pull of ${this.e.pullInFlight.micro} micro-USDC sent without an answer is not on chain yet; nothing more until it is, or until ${PULL_SETTLE_MS / 60_000} minutes pass`);
     }
-    await this.settleTick();
-    await this.settleOpen();
+    const stopping = this.a.state === 'stopping';
+    // An end is pending: a send whose answer was lost and cannot be read back is given up rather than holding
+    // the end up (a dead host or an exhausted read budget would otherwise wedge the stop for good).
+    const endPending = this.e.ending !== undefined || stopping || this.d.stops.has(this.id) || st.isRevoked || st.isExpired;
+    await this.settleTick(endPending);
+    await this.settleOpen(endPending);
     // An end already decided: finish it, and pay, open or pull nothing more.
     if (this.e.ending) return this.finish(this.e.ending, st);
 
-    const stopping = this.a.state === 'stopping';
     if (stopping || this.d.stops.has(this.id)) return this.stop(st, stopping ? 'stopped' : 'operator');
     if (st.isRevoked || st.isExpired) return this.cancelled(st);
+    // Signed with a start still ahead of this box's clock: wait for it, refuse nothing.
+    if (st.notYet) return;
     if (this.a.state === 'approved') return this.activate(st);
     return this.tend(st);
+  }
+
+  /**
+   * The permission cannot be encoded for the contract, so it can never pull, revoke or be read: an approved
+   * one is refused, any other ends (no revoke is possible or needed; any credit is refunded).
+   */
+  private async unusable(why: string): Promise<void> {
+    const st: Status = { isRevoked: false, isExpired: true, notYet: false, remainingMicro: 0n, periodSpentMicro: 0n, periodEndsAt: this.t };
+    if (this.e.ending) return this.finish(this.e.ending, st);
+    if (this.a.state === 'approved') return this.finish({ state: 'refused', endReason: 'cancelled', reason: why }, st);
+    const stopping = this.a.state === 'stopping';
+    const endReason: EndReason = stopping ? 'stopped' : 'operator';
+    if (!stopping && !this.d.stops.has(this.id)) this.problem('allowance', `allowance ${this.id}: ${why}; ended as operator`);
+    return this.finish({ state: 'ended', endReason }, st);
   }
 
   // ---- the door's record ----
@@ -293,7 +330,7 @@ class One {
     } else if (st.periodSpentMicro < micro) {
       this.problem(
         'pull',
-        `allowance ${this.id}: a pull of ${micro} micro-USDC sent at ${new Date(f.at).toISOString()} got no answer and the permission's period has reset since; if it landed before the reset the chain's period spend cannot show it. Drew: look for that spend from ${this.p.permission.account} and, if it landed, add it to this allowance's creditMicro by hand.`,
+        `allowance ${this.id}: a pull of ${micro} micro-USDC sent at ${new Date(f.at).toISOString()} got no answer and the permission's period has reset since; if it landed before the reset the chain's period spend cannot show it. Drew: look for that spend from ${this.p.permission.account}; if it landed, stop the container (docker compose stop charter-allow), add it to this allowance's creditMicro in data/state.json, then start it again (docs/ops.md, Allowances).`,
       );
     }
     delete e.pullInFlight;
@@ -301,12 +338,33 @@ class One {
     this.save();
   }
 
+  /**
+   * A send with no answer whose lease or home cannot be read. Kept (and the error thrown, so it is a problem
+   * this cycle) while it is young and no end is pending; otherwise dropped and booked as spent, so an end
+   * is never held up by a host that will not answer: the person bears at most this one tick, never the pool.
+   */
+  private unreadable(what: 'tick' | 'open', micro: string, at: number | undefined, endPending: boolean, e: unknown): boolean {
+    if (!endPending && (at === undefined || this.t - at < IN_FLIGHT_GIVE_UP_MS)) throw e;
+    this.spend(BigInt(micro));
+    if (what === 'tick') delete this.e.tickInFlight;
+    else delete this.e.openInFlight;
+    this.save();
+    this.problem(what, `allowance ${short(this.id)}: a ${what} of ${micro} micro-USDC got no answer and cannot be checked (${errText(e)}); booked as spent${endPending ? ' so the end can finish' : ' after an hour'}`);
+    return true;
+  }
+
   /** A tick sent last time whose answer never came: counted once the host's count passed its index. */
-  private async settleTick(): Promise<void> {
+  private async settleTick(endPending: boolean): Promise<void> {
     const f = this.e.tickInFlight;
     if (!f) return;
     if (ID.test(f.leaseId)) {
-      const { lease } = await this.readLease(f.leaseId);
+      let lease: Record<string, any>;
+      try {
+        ({ lease } = await this.readLease(f.leaseId));
+      } catch (e) {
+        if (this.unreadable('tick', f.micro, f.at, endPending, e)) await this.post({ creditMicro: this.e.creditMicro });
+        return;
+      }
       if (lease.paidIntervals > f.index) {
         this.spend(BigInt(f.micro));
         this.hours += 1;
@@ -321,21 +379,26 @@ class One {
   }
 
   /** A re-open sent last time whose answer never came: counted when the home's newest lease is a new, paid one. */
-  private async settleOpen(): Promise<void> {
+  private async settleOpen(endPending: boolean): Promise<void> {
     const f = this.e.openInFlight;
     if (!f) return;
-    const h = await this.home();
-    if (h.leaseId !== null && h.leaseId !== f.prevLeaseId) {
-      const { lease } = await this.readLease(h.leaseId);
-      if (lease.paidIntervals >= 1) {
-        this.spend(BigInt(f.micro));
-        this.hours += 1;
-        delete this.e.lapsedSince;
-        delete this.e.openInFlight;
-        this.save();
-        await this.post({ leaseId: h.leaseId, hoursPaid: this.hours, creditMicro: this.e.creditMicro });
-        return;
-      }
+    let h: Home;
+    let lease: Record<string, any> | undefined;
+    try {
+      h = await this.home();
+      if (h.leaseId !== null && h.leaseId !== f.prevLeaseId) ({ lease } = await this.readLease(h.leaseId));
+    } catch (e) {
+      if (this.unreadable('open', f.micro, f.at, endPending, e)) await this.post({ creditMicro: this.e.creditMicro });
+      return;
+    }
+    if (lease && lease.paidIntervals >= 1) {
+      this.spend(BigInt(f.micro));
+      this.hours += 1;
+      delete this.e.lapsedSince;
+      delete this.e.openInFlight;
+      this.save();
+      await this.post({ leaseId: h.leaseId, hoursPaid: this.hours, creditMicro: this.e.creditMicro });
+      return;
     }
     delete this.e.openInFlight;
     this.save();
@@ -356,7 +419,7 @@ class One {
     if (r) {
       return this.problem(
         'refund',
-        `allowance ${this.id}: a refund of ${r.micro} micro-USDC to ${r.to} sent at ${new Date(r.at).toISOString()} got no answer and is not sent again. Drew: check the chain for it, then clear refundInFlight in the state file; the allowance does not end until then.`,
+        `allowance ${this.id}: a refund of ${r.micro} micro-USDC to ${r.to} sent at ${new Date(r.at).toISOString()} got no answer and is not sent again. Drew: check the chain for a USDC transfer from the biller to ${r.to}, then run \`${CMD} resolve-refund ${this.id} sent|unsent|abandon\` (docs/ops.md, Allowances); the allowance does not end until then.`,
       );
     }
     if (!st.isRevoked && !st.isExpired) {
@@ -376,7 +439,7 @@ class One {
         if (e instanceof NotSent) {
           delete this.e.refundInFlight;
           this.save();
-          throw new Error(`the refund of ${credit} micro-USDC was not sent (${errText(e)}); trying again next cycle`);
+          throw new Error(`the refund of ${credit} micro-USDC was not sent (${errText(e)}); trying again next cycle. If it can never land (the account is blacklisted, or the biller lacks the USDC), end it with \`${CMD} resolve-refund ${this.id} abandon\` and settle by hand (docs/ops.md, Allowances)`);
         }
         throw new Error(`the refund of ${credit} micro-USDC to ${to} got no answer (${errText(e)}); not sent again`);
       }
@@ -427,6 +490,8 @@ class One {
       await this.post({ state: 'refused', reason: 'cancelled before activation', ...seen });
       return;
     }
+    // A refusal the biller cannot read is no reason to refuse a person's approval: keep it and try again.
+    if (c.why === 'unknown') return this.problem('pull', `allowance ${short(this.id)}: not activated yet: ${c.detail}`);
     // The approval stands; there is just nothing to pull yet.
     if (!(await this.post({ state: 'active', ...seen }))) return;
     if (c.why === 'short') {
@@ -453,6 +518,12 @@ class One {
     const { lease, body } = await this.readLease(leaseId);
     const interval = isObj(body.offer) && Number.isSafeInteger(body.offer.intervalSeconds) && body.offer.intervalSeconds > 0 ? (body.offer.intervalSeconds as number) : 3600;
     const tick = isObj(body.offer) ? priceOf(body.offer.tickPrice) : undefined;
+    // Never more an hour than the price the person saw when they approved.
+    const approved = priceOf(this.a.tickMicro);
+    if (tick !== undefined && (approved === undefined || tick > approved)) {
+      await this.post({ reason: PRICE_ROSE });
+      return this.backOff('price', `lease ${short(leaseId)} asks ${tick} micro-USDC an hour, above the ${String(this.a.tickMicro)} the person approved; nothing paid or re-opened`);
+    }
 
     if (lease.state === 'closed' || lease.state === 'done') {
       if (this.e.lapsedSince === undefined) {
@@ -558,7 +629,7 @@ class One {
 
   private async payTick(leaseId: string, index: number, tick: bigint, interval: number): Promise<void> {
     // Saved before the send: if the answer is lost, the host's count settles it next cycle.
-    this.e.tickInFlight = { leaseId, index, micro: tick.toString() };
+    this.e.tickInFlight = { leaseId, index, micro: tick.toString(), at: this.t };
     this.save();
     let a: Answer;
     try {
@@ -574,7 +645,7 @@ class One {
       this.hours += 1;
       this.readAgainAt(isObj(a.body) ? a.body.paidThrough : undefined, interval);
       this.save();
-      await this.post({ hoursPaid: this.hours, creditMicro: this.e.creditMicro });
+      await this.post({ hoursPaid: this.hours, creditMicro: this.e.creditMicro, ...(this.a.reason === PRICE_ROSE ? { reason: '' } : {}) });
       return;
     }
     // duplicate: the host already counted this index. out_of_order: someone else paid it between the read
@@ -615,7 +686,7 @@ class One {
       this.save();
       const leaseId = isObj(a.body) && typeof a.body.leaseId === 'string' && ID.test(a.body.leaseId) ? a.body.leaseId : undefined;
       if (!leaseId) this.problem('open', `allowance ${short(this.id)}: the re-open was paid but answered no usable lease id`);
-      await this.post({ leaseId, hoursPaid: this.hours, creditMicro: this.e.creditMicro });
+      await this.post({ leaseId, hoursPaid: this.hours, creditMicro: this.e.creditMicro, ...(this.a.reason === PRICE_ROSE ? { reason: '' } : {}) });
       return;
     }
     if (a.status === 409 && errOf(a) === 'home_host_gone') {
