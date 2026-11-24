@@ -13,7 +13,9 @@ export interface Telegram {
 }
 
 /** Telegram Bot API over fetch. The token sits in the URL path, so no URL or token ever goes into an error. */
-export function telegramClient(token: string, fetchFn: typeof fetch = fetch, chatId = ''): Telegram {
+export function telegramClient(token: string, chatId: string, fetchFn: typeof fetch = fetch): Telegram {
+  if (!token) throw new Error('telegram: token is required');
+  if (!chatId) throw new Error('telegram: chatId is required');
   const base = `https://api.telegram.org/bot${token}`;
   async function call(method: string, init?: RequestInit, query = ''): Promise<unknown> {
     let res: Response;
@@ -77,14 +79,22 @@ export async function handleCommand(cmd: { text: string; chatId: string; date: n
 
   // /pause always works, however old.
   if (name === '/pause') {
-    deps.state.update((s) => void (s.paused = true));
+    try {
+      deps.state.update((s) => void (s.paused = true));
+    } catch {
+      return 'PAUSE FAILED, retry /pause';
+    }
     return 'Paused. Nothing will post or reply until /resume.';
   }
   if (deps.now - cmd.date * 1000 > COMMAND_MAX_AGE_MS) return 'stale command, resend';
 
   switch (name) {
     case '/resume':
-      deps.state.update((s) => void (s.paused = false));
+      try {
+        deps.state.update((s) => void (s.paused = false));
+      } catch {
+        return 'RESUME FAILED';
+      }
       return 'Resumed.';
     case '/status':
       return deps.status();
@@ -113,6 +123,8 @@ export interface BotDeps {
   signal: AbortSignal;
   /** Wait after a failed poll. Default 5000. */
   retryMs?: number;
+  /** One line per failure, error message only. Default console.error. */
+  log?: (line: string) => void;
 }
 
 const wait = (ms: number, signal: AbortSignal): Promise<void> =>
@@ -130,6 +142,8 @@ const wait = (ms: number, signal: AbortSignal): Promise<void> =>
 /** Long-polls until aborted. The heartbeat is written after every successful poll, even an empty one. */
 export async function runBot(deps: BotDeps): Promise<void> {
   const { tg, state, signal } = deps;
+  const log = deps.log ?? ((l: string) => console.error(l));
+  const msg = (e: unknown): string => (e instanceof Error ? e.message : 'unknown error');
   const aborted = new Promise<'abort'>((resolve) => {
     if (signal.aborted) resolve('abort');
     else signal.addEventListener('abort', () => resolve('abort'), { once: true });
@@ -143,14 +157,16 @@ export async function runBot(deps: BotDeps): Promise<void> {
       const r = await Promise.race([poll, aborted]);
       if (r === 'abort') return;
       batch = r;
-    } catch {
+    } catch (e) {
+      log(`telegram poll failed: ${msg(e)}`);
       await wait(deps.retryMs ?? 5000, signal);
       continue;
     }
     try {
       state.update((s) => void (s.heartbeatAt = deps.now()));
-    } catch {
+    } catch (e) {
       // A failed write must not stop the bot; the next poll retries it.
+      log(`heartbeat write failed: ${msg(e)}`);
     }
     for (const u of batch) {
       // Move past this update first, so a bad one is never re-processed.
@@ -158,8 +174,9 @@ export async function runBot(deps: BotDeps): Promise<void> {
       try {
         const reply = await handleCommand(u, { state, x: deps.x, chatId: deps.chatId, now: deps.now(), status: deps.status });
         if (reply !== null) await tg.send(reply);
-      } catch {
+      } catch (e) {
         // One bad update never stops the loop.
+        log(`telegram update ${u.updateId} failed: ${msg(e)}`);
       }
     }
   }

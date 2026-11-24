@@ -187,11 +187,11 @@ test('telegramClient never leaks the token in errors', async () => {
   const bad = (async () => {
     throw new Error('connect failed https://api.telegram.org/botSECRET/getUpdates');
   }) as unknown as typeof fetch;
-  const tg = telegramClient('SECRET', bad);
+  const tg = telegramClient('SECRET', '42', bad);
   await assert.rejects(tg.updates(), (e: Error) => !e.message.includes('SECRET'));
   await assert.rejects(tg.send('x'), (e: Error) => !e.message.includes('SECRET'));
   const notOk = (async () => new Response('{}', { status: 401 })) as unknown as typeof fetch;
-  await assert.rejects(telegramClient('SECRET', notOk).send('x'), (e: Error) => !e.message.includes('SECRET') && /401/.test(e.message));
+  await assert.rejects(telegramClient('SECRET', '42', notOk).send('x'), (e: Error) => !e.message.includes('SECRET') && /401/.test(e.message));
 });
 
 test('telegramClient parses updates and keeps non-text ones as empty text', async () => {
@@ -208,11 +208,66 @@ test('telegramClient parses updates and keeps non-text ones as empty text', asyn
       }),
     );
   }) as unknown as typeof fetch;
-  const out = await telegramClient('T', f).updates(5, 30);
+  const out = await telegramClient('T', '42', f).updates(5, 30);
   assert.deepEqual(out, [
     { updateId: 1, chatId: '42', text: '/pause', date: 100 },
     { updateId: 2, chatId: '', text: '', date: 0 },
   ]);
   assert.match(url, /offset=5/);
   assert.match(url, /timeout=30/);
+});
+
+test('telegramClient.send posts the right chat_id and text; empty token or chatId throws', async () => {
+  let body = '';
+  const f = (async (_u: string, init?: RequestInit) => {
+    body = String(init?.body);
+    return new Response('{}');
+  }) as unknown as typeof fetch;
+  await telegramClient('T', '42', f).send('hi');
+  assert.deepEqual(JSON.parse(body), { chat_id: '42', text: 'hi' });
+  assert.throws(() => telegramClient('T', '', f));
+  assert.throws(() => telegramClient('', '42', f));
+});
+
+test('a failing state write answers PAUSE FAILED / RESUME FAILED instead of throwing', async () => {
+  const state = store();
+  state.update = () => {
+    throw new Error('disk full');
+  };
+  const d = deps(state);
+  assert.equal(await handleCommand({ text: '/pause', chatId: '42', date: secs(0) }, d), 'PAUSE FAILED, retry /pause');
+  assert.equal(await handleCommand({ text: '/resume', chatId: '42', date: secs(0) }, d), 'RESUME FAILED');
+});
+
+test('runBot logs one line per failed poll and per failed handler, without the token', async () => {
+  const state = store();
+  const ac = new AbortController();
+  const lines: string[] = [];
+  const { tg } = fakeTg(
+    [
+      async () => {
+        throw new Error('telegram getUpdates: HTTP 502');
+      },
+      async () => [{ updateId: 1, chatId: '42', text: '/status', date: secs(0) }],
+    ],
+    ac,
+    true,
+  );
+  await runBot({
+    tg,
+    state,
+    x: { delete: async () => {} },
+    chatId: '42',
+    now: () => NOW,
+    status: () => {
+      throw new Error('status broke');
+    },
+    signal: ac.signal,
+    retryMs: 0,
+    log: (l) => lines.push(l),
+  });
+  assert.equal(lines.length, 3);
+  assert.ok(lines.some((l) => l.includes('HTTP 502')));
+  assert.ok(lines.some((l) => l.includes('status broke')));
+  assert.ok(lines.every((l) => !l.includes('SECRET')));
 });
