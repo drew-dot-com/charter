@@ -13,14 +13,13 @@ export interface LintCtx {
   selfHandle?: string;
 }
 
-const LINK_CHARS = "A-Za-z0-9\\-._~:/?#\\[\\]@!$&'()*+,;=%";
+const LINK_CHARS = "A-Za-z0-9\\-._~:/?#@!$&'*+,;=%";
 const SCHEME_URL = new RegExp(`https?://[${LINK_CHARS}]*`, 'gi');
 const BARE_DOMAIN = new RegExp(`(?<![\\w@.-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,}(?::\\d+)?(?:/[${LINK_CHARS}]*)?`, 'gi');
 /** What may directly follow a link token: whitespace, end of text, or sentence punctuation. */
-const AFTER_LINK = /^(?:\s|$|[.,!?:;)'])/;
+const AFTER_LINK = /^(?:\s|$|[.,!?:;)']+(?:\s|$))/;
 const TRAILING_PUNCT = /[.,!?:;)']+$/;
 const PLACEHOLDER = '\u0001';
-const WORD = '\\p{L}\\p{N}_';
 
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -42,7 +41,7 @@ function extractLinks(text: string): { links: string[]; stripped: string; proble
     const clean = m.replace(TRAILING_PUNCT, '');
     if (!AFTER_LINK.test(whole.slice(offset + m.length))) problems.push(`link followed by text: ${clean}`);
     const rest = clean.replace(/^https?:\/\//i, '');
-    if (rest.includes('://') || rest.includes('@')) {
+    if (rest.includes('://') || rest.includes('@') || /[!',;*+=](?:[a-z0-9-]+\.)+[a-z]{2,}/i.test(rest.replace(/^[^/?#]*/, ''))) {
       problems.push(`malformed link: ${clean}`);
     }
     links.push(clean);
@@ -106,16 +105,9 @@ export function lint(text: string, ctx: LintCtx): string[] {
   for (const word of ctx.rules.banned) {
     const w = word.toLowerCase().trim();
     if (!w) continue;
-    const pre = `(?<![${WORD}])`;
-    const post = `(?![${WORD}])`;
-    if (new RegExp(pre + escapeRe(w) + post, 'u').test(folded)) {
-      out.push(`banned word: ${w}`);
-      continue;
-    }
-    const letters = Array.from(w).filter((c) => /\S/u.test(c));
-    if (letters.length > 1 && new RegExp(pre + letters.map(escapeRe).join('[\\s.\\-_/*]+') + post, 'u').test(folded)) {
-      out.push(`banned word spelled out: ${w}`);
-    }
+    const letters = Array.from(w).filter((c) => /\S/.test(c));
+    const pattern = '(?<![a-z0-9])' + letters.map(escapeRe).join('[^a-z0-9]*') + '(?![a-z0-9])';
+    if (new RegExp(pattern).test(folded)) out.push(`banned word: ${w}`);
   }
 
   const known = new Set(ctx.facts.facts.flatMap((f) => numbersIn(f.text)));

@@ -99,6 +99,11 @@ test('rejects userinfo and a nested scheme inside a link', () => {
   rej('https://charter.example/x?u=https://evil.com', 'malformed link');
 });
 
+test('rejects a domain hidden after punctuation inside a link path', () => {
+  for (const t of ["https://charter.example/a!evil.com", "https://charter.example/a'evil.com", 'https://charter.example/?u=evil.com']) rej(t, 'malformed link');
+  assert.deepEqual(run('https://charter.example/a/b.html?x=1'), []);
+});
+
 test('rejects forbidden characters anywhere', () => {
   for (const c of ['<', '>', '`', '{', '}', '|', '\\', '^']) rej(`a ${c} b`, 'forbidden character');
 });
@@ -119,10 +124,24 @@ test('rejects banned words case-insensitively as whole words', () => {
   assert.deepEqual(run('a tokenizer here'), []);
 });
 
-test('rejects spaced-out banned words', () => {
-  for (const t of ['t o k e n', 't.o.k.e.n', 't  o  k  e  n', 't-o-k-e-n', 't_o_k_e_n', 't/o/k/e/n', 't*o*k*e*n']) {
-    rej(`a ${t} here`, 'banned word');
-  }
+test('rejects spaced-out and split banned words', () => {
+  const forms = ['t o k e n', 't.o.k.e.n', 't  o  k  e  n', 't-o-k-e-n', 't_o_k_e_n', 't/o/k/e/n', 't*o*k*e*n',
+    't,o,k,e,n', 't+o+k+e+n', 't~o~k~e~n', "t'o'k'e'n", 't:o:k:e:n', 't;o;k;e;n', 't=o=k=e=n', 't!o!k!e!n',
+    't(o)k(e)n', 't"o"k"e"n', 't&o&k&e&n', 't%o%k%e%n', 'to ken', 't oken', 'to-ken', 'token_x'];
+  for (const t of forms) rej(`a ${t} here`, 'banned word');
+  for (const ok of ['tokenizer', 'go to kensington', 'cartoon']) assert.deepEqual(run(ok), [], ok);
+});
+
+test('rejects a second link hidden behind a bracket or parenthesis', () => {
+  for (const t of [
+    'https://charter.example/a)evil.com',
+    'https://charter.example/a(evil.com',
+    'charter.example/a)evil.com',
+    'charter.example/a(evil.com',
+    'see https://charter.example/a)evil.com/x now',
+    'https://charter.example/x]',
+    'https://charter.example/x[y',
+  ]) rej(t, 'link followed by text');
 });
 
 test('rejects non-ASCII look-alike and fullwidth characters in domains and sigils', () => {
