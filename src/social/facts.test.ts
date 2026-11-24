@@ -14,7 +14,7 @@ const lease = (o: Record<string, unknown> = {}) => ({ leaseId: 'L1', payer: WALL
 const src = (o: Partial<Record<keyof Sources, unknown[]>> = {}): Sources => ({ leases: [], grants: [], hosts: [], tickTxs: [], ...o }) as unknown as Sources;
 const returned: SocialEvent = { id: 'returned:L1', kind: 'renter_returned', at: NOW, leaseId: 'L1', payer: WALLET, hoursPaid: 5 };
 const build = (event: SocialEvent | undefined, s: Sources, optins: Optins = none, factsMd = '') =>
-  buildFactSheet({ event, src: s, offers, factsMd, optins, siteUrl: 'https://charter.example', now: NOW });
+  buildFactSheet({ event, src: s, offers, factsMd, optins, siteUrl: 'https://charter.example', now: NOW, excludePayers: new Set() });
 const all = (f: { facts: { text: string }[] }) => f.facts.map((x) => x.text).join('\n');
 
 test('an unnamed renter is "a renter" and gets no tx link or address in any fact', () => {
@@ -122,6 +122,21 @@ test('totals count running leases, outside hours, listed hosts and approved gran
   assert.match(byId['totals:hours'], /\b10\b/);
   assert.match(byId['totals:hosts'], /\b1\b/);
   assert.match(byId['totals:grants'], /\b1\b/);
+});
+
+test('leases running leaves out first-party and probe payers but counts grant leases', () => {
+  const s = src({
+    leases: [
+      lease({ leaseId: 'A' }),
+      lease({ leaseId: 'F', payer: '0xfund' }),
+      lease({ leaseId: 'P', payer: '0xProbe' }),
+      lease({ leaseId: 'G', payer: '0xfund' }),
+    ],
+    grants: [{ grantId: 'G1', state: 'active', leaseId: 'G', updatedAt: 1 }],
+  });
+  const sheet = buildFactSheet({ event: undefined, src: s, offers, factsMd: '', optins: none, siteUrl: 'u', now: NOW, excludePayers: new Set(['0xfund', '0xprobe']) });
+  const byId = Object.fromEntries(sheet.facts.map((f) => [f.id, f.text]));
+  assert.match(byId['totals:running'], /\b2\b/);
 });
 
 test('fetchOffers maps the live shape', async () => {

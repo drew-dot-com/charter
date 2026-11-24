@@ -52,9 +52,11 @@ const hoursText = (h: number): string => `${h} ${h === 1 ? 'hour' : 'hours'}`;
 
 /**
  * Everything the writer may state. No wallet address, unopted name, pitch name or host url is ever put in a fact.
- * `excludePayers` (first-party and probe wallets, lowercased) are left out of the outside-renter hour total.
+ * `excludePayers` is required (lowercased wallets; Task 10 passes firstParty union probes). Those payers are left out of
+ * every outside-facing total: leases running and hours paid. Grant leases count as outside tenants for leases running
+ * (even when the fund pays) but never for hours paid by outside renters.
  */
-export function buildFactSheet(input: { event?: SocialEvent; src: Sources; offers: OfferLite[]; factsMd: string; optins: Optins; siteUrl: string; now: number; excludePayers?: ReadonlySet<string> }): FactSheet {
+export function buildFactSheet(input: { event?: SocialEvent; src: Sources; offers: OfferLite[]; factsMd: string; optins: Optins; siteUrl: string; now: number; excludePayers: ReadonlySet<string> }): FactSheet {
   const { event, src, offers, factsMd, optins, siteUrl, now } = input;
   const facts: Fact[] = [];
   const txLinks: string[] = [];
@@ -66,9 +68,9 @@ export function buildFactSheet(input: { event?: SocialEvent; src: Sources; offer
     if (o.home) facts.push({ id: `offer:${o.offerId}:home`, text: `A home has ${o.home.diskGiB} GiB of disk, with ${o.home.slots} ${o.home.slots === 1 ? 'slot' : 'slots'}.` });
   }
 
-  const excluded = input.excludePayers ?? new Set<string>();
+  const excluded = input.excludePayers;
   const grantLeases = new Set(src.grants.map((g) => g.leaseId).filter((x): x is string => !!x));
-  const running = src.leases.filter((l) => !l.stopped && l.lastTickAt !== undefined && now - l.lastTickAt <= 2 * l.offer.intervalSeconds * 1000).length;
+  const running = src.leases.filter((l) => (grantLeases.has(l.leaseId) || !l.payer || !excluded.has(l.payer.toLowerCase())) && !l.stopped && l.lastTickAt !== undefined && now - l.lastTickAt <= 2 * l.offer.intervalSeconds * 1000).length;
   const outsideHours = src.leases
     .filter((l) => l.payer && !excluded.has(l.payer.toLowerCase()) && !grantLeases.has(l.leaseId))
     .reduce((n, l) => n + l.ticksPaidByRenter, 0);
