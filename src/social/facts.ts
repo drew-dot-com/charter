@@ -1,6 +1,7 @@
 import type { Sources } from './sources.js';
 import type { SocialEvent } from './events.js';
 import type { Optins } from './files.js';
+import { JOB_IMAGES } from '../images.js';
 
 export interface Fact { id: string; text: string }
 export interface OfferLite { offerId: string; tickPrice: string; intervalSeconds: number; images: string[]; home?: { diskGiB: number; slots: number; free: number; root: boolean } }
@@ -48,6 +49,14 @@ export function subjectOf(e: SocialEvent, _src: Sources, optins: Optins): Subjec
   return hit.handle ? { named: true, name: hit.name, handle: hit.handle } : { named: true, name: hit.name };
 }
 
+/** Price per hour when the interval divides an hour's cost evenly, else per interval. */
+function priceText(noun: string, o: OfferLite): string {
+  const total = BigInt(o.tickPrice) * 3600n;
+  const iv = BigInt(o.intervalSeconds);
+  if (iv > 0n && total % iv === 0n) return `${noun} costs ${microToUsdcText((total / iv).toString())} USDC per hour.`;
+  return `${noun} costs ${microToUsdcText(o.tickPrice)} USDC per ${o.intervalSeconds} seconds.`;
+}
+
 const hoursText = (h: number): string => `${h} ${h === 1 ? 'hour' : 'hours'}`;
 
 /**
@@ -62,11 +71,15 @@ export function buildFactSheet(input: { event?: SocialEvent; src: Sources; offer
   const txLinks: string[] = [];
   const mentionable: string[] = [];
 
-  for (const o of offers) {
-    facts.push({ id: `offer:${o.offerId}:price`, text: `A home costs ${microToUsdcText(o.tickPrice)} USDC per hour.` });
-    if (o.images.length) facts.push({ id: `offer:${o.offerId}:images`, text: `Images offered: ${o.images.join(', ')}.` });
-    if (o.home) facts.push({ id: `offer:${o.offerId}:home`, text: `A home has ${o.home.diskGiB} GiB of disk, with ${o.home.slots} ${o.home.slots === 1 ? 'slot' : 'slots'}.` });
-  }
+  // Offers come from self-registered hosts: only their numbers and known image names are published, and the
+  // fact id uses the position, never the host-chosen offerId.
+  offers.forEach((o, n) => {
+    const noun = o.home ? 'A home' : 'A job';
+    facts.push({ id: `offer:${n}:price`, text: priceText(noun, o) });
+    const images = o.images.filter((i) => JOB_IMAGES.includes(i));
+    if (images.length) facts.push({ id: `offer:${n}:images`, text: `Images offered: ${images.join(', ')}.` });
+    if (o.home) facts.push({ id: `offer:${n}:home`, text: `A home has ${o.home.diskGiB} GiB of disk, with ${o.home.slots} ${o.home.slots === 1 ? 'slot' : 'slots'}.` });
+  });
 
   const excluded = input.excludePayers;
   const grantLeases = new Set(src.grants.map((g) => g.leaseId).filter((x): x is string => !!x));
@@ -74,7 +87,7 @@ export function buildFactSheet(input: { event?: SocialEvent; src: Sources; offer
   const outsideHours = src.leases
     .filter((l) => l.payer && !excluded.has(l.payer.toLowerCase()) && !grantLeases.has(l.leaseId))
     .reduce((n, l) => n + l.ticksPaidByRenter, 0);
-  const hostsListed = src.hosts.filter((h) => h.probes?.passed > 0).length;
+  const hostsListed = src.hosts.filter((h) => h.state === 'listed').length;
   const grantsApproved = src.grants.filter((g) => g.state !== 'queued' && g.state !== 'declined').length;
   facts.push({ id: 'totals:running', text: `Leases running now: ${running}.` });
   facts.push({ id: 'totals:hours', text: `Hours paid by outside renters so far: ${outsideHours}.` });
