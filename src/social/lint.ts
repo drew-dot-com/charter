@@ -74,7 +74,7 @@ export function lint(text: string, ctx: LintCtx): string[] {
   const out: string[] = [];
   if (text.trim() === '') return ['empty text'];
 
-  if (/[‒–—―]|--/.test(text)) out.push('contains a dash');
+  if (/[\u2012\u2013\u2014\u2015]|--/.test(text)) out.push('contains a dash');
   if (/\$\p{L}/u.test(text)) out.push('contains a $ticker');
   if (/#[\p{L}\p{N}_]/u.test(text)) out.push('contains a hashtag');
 

@@ -19,7 +19,7 @@ test('passes a clean post', () => {
 });
 
 test('rejects every dash code point', () => {
-  for (const d of ['‒', '–', '—', '―', '--']) {
+  for (const d of ['\u2012', '\u2013', '\u2014', '\u2015', '--']) {
     assert.ok(run(`a ${d} b`).length > 0, `dash ${JSON.stringify(d)}`);
   }
 });
