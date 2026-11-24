@@ -30,7 +30,7 @@ test('a corrupt file is set aside and the bot comes up paused', () => {
   assert.equal(s.paused, true);
   assert.equal(s.initialized, false);
   assert.ok(readdirSync(d).some((n) => n.startsWith('state.json.corrupt-')));
-  assert.equal(existsSync(f), false);
+  assert.equal(JSON.parse(readFileSync(f, 'utf8')).paused, true);
 });
 
 test('a wrong root type is treated as corrupt', () => {
@@ -127,4 +127,15 @@ test('StateStore keeps only the last 500 log rows', () => {
   assert.equal(s.log.length, 500);
   assert.equal(s.log[0]?.text, 't20');
   assert.equal(s.log[499]?.text, 't519');
+});
+
+test('the paused state written after a corrupt file survives further reads and new stores', () => {
+  const d = dir();
+  const f = join(d, 'state.json');
+  writeFileSync(f, '{nope');
+  const st = new StateStore(f, () => D1);
+  assert.equal(st.get().paused, true);
+  assert.equal(st.get().paused, true);
+  assert.equal(new StateStore(f, () => D1).get().paused, true);
+  assert.ok(readdirSync(d).some((n) => n.startsWith('state.json.corrupt-')));
 });

@@ -113,6 +113,14 @@ export class StateStore {
     }
     const s = fresh(day);
     s.paused = true;
+    try {
+      mkdirSync(dirname(this.file), { recursive: true });
+      const tmp = `${this.file}.tmp`;
+      writeFileSync(tmp, JSON.stringify(s, null, 2), { mode: 0o600 });
+      renameSync(tmp, this.file);
+    } catch {
+      // Best effort: the next update writes it.
+    }
     return s;
   }
 }
