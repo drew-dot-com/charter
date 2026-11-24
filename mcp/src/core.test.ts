@@ -15,6 +15,9 @@ import {
   onlyDoorExact,
   output,
   pitch,
+  allowanceLink,
+  allowanceStatus,
+  allowanceStop,
   rent,
   sshHow,
   runJob,
@@ -49,6 +52,7 @@ interface Fake extends Deps {
   gets: string[];
   posts: { path: string; json: any }[];
   grantHeaders: (Record<string, string> | undefined)[];
+  postHeaders: (Record<string, string> | undefined)[];
   postAnswer: Answer;
   spend: ReturnType<typeof book>;
 }
@@ -61,13 +65,15 @@ function fake(routes: Record<string, Answer | (() => Answer)>, onPay?: (path: st
     gets: [],
     posts: [],
     grantHeaders: [],
+    postHeaders: [],
     postAnswer: { status: 201, body: { grantId: 'g1', grantToken: 'tok', state: 'queued', next: 'wait' } },
     spend: book(o.maxDay),
     maxHour: o.maxHour ?? 10_000n,
     now: () => t,
     sleep: async (ms) => void (t += ms),
-    post: async (path, json) => {
+    post: async (path, json, headers) => {
       f.posts.push({ path, json });
+      f.postHeaders.push(headers);
       return f.postAnswer;
     },
     get: async (path, headers) => {
@@ -413,4 +419,65 @@ test('grantStatus reads GET /v1/grants/:id with the token header', async () => {
   const bad = fake({ '/v1/grants/g1': { status: 403, body: { error: 'bad_token' } } });
   await assert.rejects(grantStatus(bad, 'g1', 'wrong'), /the token does not match this grant/);
   await assert.rejects(grantStatus(d, '../x', 'tok'), /grantId/);
+});
+
+const AID = 'a'.repeat(32);
+const LINK = { allowanceId: AID, ownerToken: 'owner-tok', approveUrl: 'https://charterhome.dev/allow/' + AID, state: 'waiting', next: 'wait' };
+
+test('allowanceLink posts the keys, returns the token and a message for the person', async () => {
+  const d = fake({});
+  d.postAnswer = { status: 201, body: LINK };
+  const r = await allowanceLink(d, { sshKeys: [KEY], image: 'charter-hermes' });
+  assert.deepEqual(d.posts, [{ path: '/v1/allowances', json: { sshKeys: [KEY], image: 'charter-hermes' } }]);
+  assert.equal(r.allowanceId, AID);
+  assert.equal(r.ownerToken, 'owner-tok');
+  assert.equal(r.approveUrl, LINK.approveUrl);
+  for (const w of [/keeps this home paid/, /per 30 days/, /Coinbase/, /email/, /pop-up/, /one signature/, new RegExp(LINK.approveUrl)]) assert.match(r.message, w);
+  assert.ok(!r.message.includes('owner-tok'), 'the token is for the agent, not the person');
+  assert.match(r.forAgent, /ownerToken/);
+  assert.match(r.forAgent, /active/);
+  assert.ok(!r.message.includes(String.fromCharCode(0x2014)) && !r.forAgent.includes(String.fromCharCode(0x2014)));
+  assert.equal(d.paid.length, 0);
+});
+
+test('allowanceLink checks keys before any request, refuses private keys, and maps door errors', async () => {
+  const d = fake({});
+  for (const keys of [[], [KEY, KEY, KEY, KEY, KEY, KEY, KEY, KEY, KEY], ['-----BEGIN OPENSSH PRIVATE KEY-----'], ['nonsense']]) {
+    await assert.rejects(allowanceLink(d, { sshKeys: keys }), Error);
+  }
+  await assert.rejects(allowanceLink(d, { sshKeys: ['-----BEGIN OPENSSH PRIVATE KEY-----'] }), /private key/);
+  await assert.rejects(allowanceLink(d, { sshKeys: [KEY], image: 'other' as any }), /image/);
+  assert.deepEqual(d.posts, []);
+  d.postAnswer = { status: 404, body: { error: 'no_home' } };
+  await assert.rejects(allowanceLink(d, { sshKeys: [KEY] }), /open the home and pay its first hour first/);
+  d.postAnswer = { status: 409, body: { error: 'already_live', allowanceId: AID } };
+  await assert.rejects(allowanceLink(d, { sshKeys: [KEY] }), new RegExp(`already_live.*${AID}|${AID}.*already_live`));
+  d.postAnswer = { status: 429, body: { error: 'rate_limited' } };
+  await assert.rejects(allowanceLink(d, { sshKeys: [KEY] }), /rate_limited/);
+});
+
+test('allowanceStatus reads the owner view with the token header', async () => {
+  const d = fake({ [`/v1/allowances/${AID}`]: { status: 200, body: { allowanceId: AID, state: 'active' } } });
+  const r = await allowanceStatus(d, AID, 'owner-tok');
+  assert.equal((r as any).state, 'active');
+  assert.deepEqual(d.grantHeaders, [{ 'x-allowance-token': 'owner-tok' }]);
+  await assert.rejects(allowanceStatus(d, '../x', 'owner-tok'), /allowanceId/);
+  await assert.rejects(allowanceStatus(d, AID, ' '), /ownerToken/);
+  const bad = fake({ [`/v1/allowances/${AID}`]: { status: 403, body: { error: 'bad_token' } } });
+  await assert.rejects(allowanceStatus(bad, AID, 'x'), /the token does not match this allowance/);
+  await assert.rejects(allowanceStatus(fake({}), AID, 'x'), /does not know this allowance/);
+});
+
+test('allowanceStop posts with the token header and maps not_live', async () => {
+  const d = fake({});
+  d.postAnswer = { status: 200, body: { allowanceId: AID, state: 'stopping' } };
+  const r = await allowanceStop(d, AID, 'owner-tok');
+  assert.equal((r as any).state, 'stopping');
+  assert.deepEqual(d.posts, [{ path: `/v1/allowances/${AID}/stop`, json: {} }]);
+  assert.deepEqual(d.postHeaders, [{ 'x-allowance-token': 'owner-tok' }]);
+  d.postAnswer = { status: 409, body: { error: 'not_live' } };
+  await assert.rejects(allowanceStop(d, AID, 'owner-tok'), /not live/);
+  d.postAnswer = { status: 403, body: { error: 'bad_token' } };
+  await assert.rejects(allowanceStop(d, AID, 'x'), /the token does not match this allowance/);
+  await assert.rejects(allowanceStop(d, '../x', 'x'), /allowanceId/);
 });

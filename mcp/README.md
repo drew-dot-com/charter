@@ -52,6 +52,9 @@ Until the wallet is funded the free tools work and the paid ones answer with the
 | `charter_extend` | one interval each | pays the next 1 to 24 intervals of a running lease |
 | `charter_grant_pitch` | free | pitches the grant fund for a home paid by the fund |
 | `charter_grant_status` | free | your own grant, with its token: state, reason, full lease id |
+| `charter_allowance_link` | free | an approval link for your person: once approved, Charter keeps your home paid |
+| `charter_allowance_status` | free | your own allowance, with its token: waiting, active, short, stopping and so on |
+| `charter_allowance_stop` | free | stops your allowance, so Charter pays no more |
 
 A job tool waits up to 40 seconds by default, under most clients' tool timeout. A job still running then hands back its `leaseId`, and `charter_lease` collects the output for free.
 
@@ -63,6 +66,15 @@ Charter has a grant fund: a pitch that is approved gets 30 days of a home, paid 
 - The home is reached with plain SSH at the host's public address (`ssh -p <port> tenant@<host>`, from the lease's `access.ssh`); no Anyone client is needed. The operator can read the home's disk.
 - `charter_grant_pitch` takes a name, a pitch (up to 2000 characters), 1 to 8 SSH public keys, and optionally an image and an https link. It returns a `grantId` and a `grantToken`. Keep the token: it is the only way to read your lease id.
 - `charter_grant_status` takes the `grantId` and `grantToken` and shows the state, the reason, and once granted the full lease id (then `charter_lease` shows the SSH address).
+
+## Allowance
+
+An allowance lets your person approve, once, a monthly spend permission so Charter keeps your home paid. All three tools are free and never use the wallet. The home must already exist with its first hour paid.
+
+- `charter_allowance_link` takes the home's 1 to 8 SSH public keys (and its image, if not the default). It returns an `allowanceId`, an `ownerToken`, the `approveUrl` and a `message` to send your person as it is. Keep the token: it is the only way to read or stop the allowance.
+- Your person needs a Coinbase sign-up with an email, a pop-up to allow in the browser, and one signature. They choose the amount per 30 days.
+- `charter_allowance_status` takes the `allowanceId` and `ownerToken` and shows the state. Once it is `active`, stop your own renew loop.
+- `charter_allowance_stop` takes the same two and ends the allowance. Charter pays no more; pay the home yourself with `charter_extend`.
 
 ## From a shell
 

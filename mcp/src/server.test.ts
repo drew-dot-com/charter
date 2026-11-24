@@ -93,15 +93,15 @@ const done = (stdout: string) => ({
   [`/v1/leases/${ID}/output/0`]: { part: 0, parts: 1, data: Buffer.from(JSON.stringify({ kind: 'python', exitCode: 0, stdout, stderr: '' })).toString('base64') },
 });
 
-test('the server lists its nine tools, and every paid one says PAID first', async () => {
+test('the server lists its twelve tools, and every paid one says PAID first', async () => {
   const { client } = await connect(options(), door({}).fetchFn);
   const { tools } = await client.listTools();
-  assert.deepEqual(tools.map((t) => t.name).sort(), ['charter_extend', 'charter_fetch_pages', 'charter_grant_pitch', 'charter_grant_status', 'charter_lease', 'charter_offers', 'charter_rent_home', 'charter_run_python', 'charter_wallet']);
+  assert.deepEqual(tools.map((t) => t.name).sort(), ['charter_allowance_link', 'charter_allowance_status', 'charter_allowance_stop', 'charter_extend', 'charter_fetch_pages', 'charter_grant_pitch', 'charter_grant_status', 'charter_lease', 'charter_offers', 'charter_rent_home', 'charter_run_python', 'charter_wallet']);
   for (const t of tools) {
     const paid = ['charter_extend', 'charter_fetch_pages', 'charter_rent_home', 'charter_run_python'].includes(t.name);
     assert.equal(t.description!.startsWith('PAID.'), paid, t.name);
     assert.equal(t.description!.startsWith('Free.'), !paid, t.name);
-    assert.equal(t.annotations?.readOnlyHint, t.name === 'charter_grant_pitch' ? false : !paid, t.name);
+    assert.equal(t.annotations?.readOnlyHint, ['charter_grant_pitch', 'charter_allowance_link', 'charter_allowance_stop'].includes(t.name) ? false : !paid, t.name);
     assert.ok(!t.description!.includes(String.fromCharCode(0x2014)), `${t.name} has an em dash`);
   }
 });
@@ -389,4 +389,51 @@ test('charter_grant_status with a token the door refuses says the token does not
   const r = await call('charter_grant_status', { grantId: 'g9', grantToken: 'wrong-token' });
   assert.equal(r.isError, true);
   assert.match(r.text, /the token does not match this grant/);
+});
+
+const AKEY = 'ssh-ed25519 AAAA one';
+const AID = 'b'.repeat(32);
+
+test('charter_allowance_link is a free POST and hands back the message and token', async () => {
+  let posted: any;
+  const fetchFn = (async (i: RequestInfo | URL, init?: RequestInit) => {
+    const req = new Request(i, init);
+    posted = { url: req.url, pay: req.headers.has('payment-signature'), body: await req.clone().json() };
+    return new Response(JSON.stringify({ allowanceId: AID, ownerToken: 'tok9', approveUrl: 'https://charterhome.dev/allow/' + AID, state: 'waiting', next: 'x' }), { status: 201 });
+  }) as typeof fetch;
+  const { client, call } = await connect(options(), fetchFn);
+  const t = (await client.listTools()).tools.find((x) => x.name === 'charter_allowance_link')!;
+  assert.ok(t.description!.startsWith('Free.'));
+  const r = await call('charter_allowance_link', { sshKeys: [AKEY] });
+  assert.equal(r.isError, false, r.text);
+  const b = JSON.parse(r.text);
+  assert.equal(b.ownerToken, 'tok9');
+  assert.match(b.message, /Coinbase/);
+  assert.deepEqual(posted, { url: `${DOOR}/v1/allowances`, pay: false, body: { sshKeys: [AKEY] } });
+});
+
+test('charter_allowance_link says to open the home first when the door has none', async () => {
+  const fetchFn = (async () => new Response(JSON.stringify({ error: 'no_home' }), { status: 404 })) as typeof fetch;
+  const { call } = await connect(options(), fetchFn);
+  const r = await call('charter_allowance_link', { sshKeys: [AKEY] });
+  assert.equal(r.isError, true);
+  assert.match(r.text, /open the home and pay its first hour first/);
+});
+
+test('charter_allowance_status and stop send the owner token as a header', async () => {
+  const seen: { method: string; url: string; token: string | null }[] = [];
+  const fetchFn = (async (i: RequestInfo | URL, init?: RequestInit) => {
+    const req = new Request(i, init);
+    seen.push({ method: req.method, url: req.url, token: req.headers.get('x-allowance-token') });
+    return new Response(JSON.stringify({ allowanceId: AID, state: req.method === 'POST' ? 'stopping' : 'active' }), { status: 200 });
+  }) as typeof fetch;
+  const { call } = await connect(options(), fetchFn);
+  const s = await call('charter_allowance_status', { allowanceId: AID, ownerToken: 'tok9' });
+  assert.equal(JSON.parse(s.text).state, 'active');
+  const p = await call('charter_allowance_stop', { allowanceId: AID, ownerToken: 'tok9' });
+  assert.equal(JSON.parse(p.text).state, 'stopping');
+  assert.deepEqual(seen, [
+    { method: 'GET', url: `${DOOR}/v1/allowances/${AID}`, token: 'tok9' },
+    { method: 'POST', url: `${DOOR}/v1/allowances/${AID}/stop`, token: 'tok9' },
+  ]);
 });

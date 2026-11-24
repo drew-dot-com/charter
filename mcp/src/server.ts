@@ -27,6 +27,9 @@ import {
   PayError,
   extend,
   grantStatus,
+  allowanceLink,
+  allowanceStatus,
+  allowanceStop,
   lease,
   microToUsdc,
   onlyDoorExact,
@@ -37,11 +40,12 @@ import {
   usdcToMicro,
   type Answer,
   type Deps,
+  type AllowanceRequest,
   type Pitch,
   type SpendBook,
 } from './core.js';
 
-export const VERSION = '0.4.1';
+export const VERSION = '0.5.0';
 
 export interface Options {
   door: string;
@@ -196,6 +200,9 @@ export interface Actions {
   extend(leaseId: string, hours: number): Promise<unknown>;
   pitch(p: Pitch): Promise<unknown>;
   grantStatus(grantId: string, grantToken: string): Promise<unknown>;
+  allowanceLink(p: AllowanceRequest): Promise<unknown>;
+  allowanceStatus(allowanceId: string, ownerToken: string): Promise<unknown>;
+  allowanceStop(allowanceId: string, ownerToken: string): Promise<unknown>;
 }
 
 export interface Built {
@@ -231,8 +238,8 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
   };
 
   // Free: same guard as `get` (door origin only, no redirect, 30 s) and no payment wrapper, so nothing is ever signed.
-  const post = async (path: string, json: unknown): Promise<Answer> => {
-    const res = await guarded(GET_TIMEOUT_MS)(`${o.door}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', ...agent }, body: JSON.stringify(json) });
+  const post = async (path: string, json: unknown, headers: Record<string, string> = {}): Promise<Answer> => {
+    const res = await guarded(GET_TIMEOUT_MS)(`${o.door}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', ...agent, ...headers }, body: JSON.stringify(json) });
     return { status: res.status, body: await body(res) };
   };
 
@@ -402,6 +409,9 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
     },
     pitch: (p) => pitch(deps, p),
     grantStatus: (grantId, grantToken) => grantStatus(deps, grantId, grantToken),
+    allowanceLink: (p) => allowanceLink(deps, p),
+    allowanceStatus: (id, tok) => allowanceStatus(deps, id, tok),
+    allowanceStop: (id, tok) => allowanceStop(deps, id, tok),
   };
 
   const answer = async (run: () => Promise<unknown>) => {
@@ -539,6 +549,51 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     ({ grantId, grantToken }) => answer(() => actions.grantStatus(grantId, grantToken)),
+  );
+
+  server.registerTool(
+    'charter_allowance_link',
+    {
+      title: 'Get a link your person approves to keep this home paid',
+      description:
+        'Free. Asks Charter for an approval link for a monthly spend allowance on a home you already rent: your person opens it, approves once, and Charter keeps the home paid, up to the amount they choose per 30 days. No payment is made and this server\'s wallet is not used. The home must exist and have its first hour paid. Send the returned message to your person as it is. Keep the ownerToken: it is the only way to read or stop the allowance. Once charter_allowance_status shows active, stop your own renew loop. Pass the same 1 to 8 SSH PUBLIC keys the home was rented with.',
+      inputSchema: {
+        sshKeys: z.array(z.string().max(1023)).min(1).max(8).describe('the SSH public key lines of the home. Public keys only: never a private key.'),
+        image: z.enum(['charter-home', 'charter-hermes']).optional().describe('the home\'s image, when it is not the default charter-home'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    (p) => answer(() => actions.allowanceLink(p)),
+  );
+
+  server.registerTool(
+    'charter_allowance_status',
+    {
+      title: 'Read your own allowance',
+      description:
+        'Free. Your own allowance with its token: waiting (not yet approved), approved, active (Charter keeps the home paid), short, spent_for_period, stopping, ended or expired. Needs the allowanceId and ownerToken that charter_allowance_link returned.',
+      inputSchema: {
+        allowanceId: z.string().regex(/^[0-9a-f]{32}$/).describe('the allowanceId the link returned'),
+        ownerToken: z.string().min(1).max(200).describe('the ownerToken the link returned'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    ({ allowanceId, ownerToken }) => answer(() => actions.allowanceStatus(allowanceId, ownerToken)),
+  );
+
+  server.registerTool(
+    'charter_allowance_stop',
+    {
+      title: 'Stop your own allowance',
+      description:
+        'Free. Stops the allowance: Charter pays no more for the home, which then runs to the time already paid. An allowance never approved just expires. Needs the allowanceId and ownerToken that charter_allowance_link returned. After this, pay for the home yourself with charter_extend.',
+      inputSchema: {
+        allowanceId: z.string().regex(/^[0-9a-f]{32}$/).describe('the allowanceId the link returned'),
+        ownerToken: z.string().min(1).max(200).describe('the ownerToken the link returned'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    ({ allowanceId, ownerToken }) => answer(() => actions.allowanceStop(allowanceId, ownerToken)),
   );
 
   return { server, address: account?.address, actions };

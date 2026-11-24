@@ -52,8 +52,8 @@ export class PayError extends Error {
 export interface Deps {
   /** A free read of the door. `headers` is for the one read that carries a token (a grant's owner view). */
   get(path: string, headers?: Record<string, string>): Promise<Answer>;
-  /** A free POST of JSON to the door (a grant pitch). Never carries a payment; same origin, redirect and timeout rules as `get`. */
-  post(path: string, json: unknown): Promise<Answer>;
+  /** A free POST of JSON to the door (a grant pitch). `headers` is for the one POST that carries a token (stopping an allowance). Never carries a payment; same origin, redirect and timeout rules as `get`. */
+  post(path: string, json: unknown, headers?: Record<string, string>): Promise<Answer>;
   /**
    * A paid POST that signs at most `limit` micro-USDC. Throws PayError when no answer came back.
    * Undefined when the server has no wallet.
@@ -471,5 +471,91 @@ export async function grantStatus(d: Pick<Deps, 'get'>, grantId: string, grantTo
   if (r.status === 403) throw new Error('the token does not match this grant (status 403). Use the grantToken the pitch returned.');
   if (r.status === 404) throw new Error('the door does not know this grant (status 404)');
   if (r.status !== 200) throw new Error(`the grant read answered ${r.status}`);
+  return r.body;
+}
+
+const ALLOWANCE_ID = /^[0-9a-f]{32}$/;
+
+export interface AllowanceRequest {
+  sshKeys: string[];
+  image?: 'charter-home' | 'charter-hermes';
+}
+
+export interface AllowanceLink {
+  allowanceId: string;
+  ownerToken: string;
+  approveUrl: string;
+  /** Text for the agent to pass to its person as it is. */
+  message: string;
+  /** For the agent only: what to keep and when to stop its own paying. */
+  forAgent: string;
+}
+
+const ALLOWANCE_ERRORS: Record<string, string> = {
+  rate_limited: 'the door is rate limiting allowance requests; wait and try again later',
+};
+
+/** The message the agent forwards to its person: what approving does, what they will meet, and the link. */
+export function allowanceMessage(approveUrl: string): string {
+  return [
+    'I would like your OK to keep my Charter home paid. If you approve, Charter keeps this home paid, up to the amount you choose per 30 days, and you can stop it at any time.',
+    'What you will need: a Coinbase sign-up with an email address, a pop-up to allow in your browser, and one signature.',
+    `Approve here: ${approveUrl}`,
+  ].join('\n\n');
+}
+
+function allowanceRefusal(r: Answer): Error {
+  const code = typeof r.body?.error === 'string' ? r.body.error.slice(0, 60) : `status ${r.status}`;
+  if (code === 'no_home') return new Error('this key set has no home yet: open the home and pay its first hour first (charter_rent_home), then ask for the link again (no_home). Nothing was paid.');
+  if (code === 'already_live') {
+    const id = typeof r.body?.allowanceId === 'string' ? r.body.allowanceId.slice(0, 64) : 'unknown';
+    return new Error(`this home already has a live allowance, ${id} (already_live). Read it with charter_allowance_status, or stop it with charter_allowance_stop; the ownerToken is the one its first link returned.`);
+  }
+  return new Error(`${ALLOWANCE_ERRORS[code] ?? 'the door refused the allowance request'} (${code}). Nothing was paid.`);
+}
+
+function allowanceArgs(allowanceId: string, ownerToken: string): string {
+  if (typeof allowanceId !== 'string' || !ALLOWANCE_ID.test(allowanceId)) throw new Error('an allowanceId is 32 lowercase hex digits');
+  if (typeof ownerToken !== 'string' || ownerToken.trim().length < 1) throw new Error('the ownerToken is the one charter_allowance_link returned');
+  return ownerToken.trim();
+}
+
+/** Asks the door for an approval link for a home's monthly allowance: one free POST, checked first so a mistake costs no request. */
+export async function allowanceLink(d: Pick<Deps, 'post'>, p: AllowanceRequest): Promise<AllowanceLink> {
+  const keys = (Array.isArray(p.sshKeys) ? p.sshKeys : []).map((k) => String(k).trim()).filter(Boolean);
+  if (keys.length < 1 || keys.length > 8) throw new Error('give 1 to 8 SSH public keys');
+  const bad = keys.find((k) => k.length > 1023 || !SSH_KEY.test(k));
+  if (bad !== undefined) throw new Error(/PRIVATE KEY/.test(bad) ? 'that is a private key. Pass the PUBLIC key line only (the .pub file); nothing was sent' : 'each key must be one public key line starting with ssh-ed25519, ecdsa-sha2-nistp256/384/521 or ssh-rsa');
+  if (p.image !== undefined && p.image !== 'charter-home' && p.image !== 'charter-hermes') throw new Error('the image is charter-home or charter-hermes');
+  const r = await d.post('/v1/allowances', { sshKeys: keys, ...(p.image ? { image: p.image } : {}) });
+  const b = r.body;
+  if (r.status !== 201 || typeof b?.allowanceId !== 'string' || typeof b?.ownerToken !== 'string' || typeof b?.approveUrl !== 'string') throw allowanceRefusal(r);
+  return {
+    allowanceId: b.allowanceId,
+    ownerToken: b.ownerToken,
+    approveUrl: b.approveUrl,
+    message: allowanceMessage(b.approveUrl),
+    forAgent: 'Send the message to your person as it is. Keep the ownerToken: it is the only way to read or stop this allowance (charter_allowance_status, charter_allowance_stop). Read the status now and then; once the state is active, Charter keeps the home paid, so stop your own renew loop.',
+  };
+}
+
+/** The owner's view of one allowance (free). */
+export async function allowanceStatus(d: Pick<Deps, 'get'>, allowanceId: string, ownerToken: string): Promise<unknown> {
+  const token = allowanceArgs(allowanceId, ownerToken);
+  const r = await d.get(`/v1/allowances/${allowanceId}`, { 'x-allowance-token': token });
+  if (r.status === 403) throw new Error('the token does not match this allowance (status 403). Use the ownerToken charter_allowance_link returned.');
+  if (r.status === 404) throw new Error('the door does not know this allowance (status 404)');
+  if (r.status !== 200) throw new Error(`the allowance read answered ${r.status}`);
+  return r.body;
+}
+
+/** Stops one allowance (free): its state becomes stopping, or expired when it was never approved. */
+export async function allowanceStop(d: Pick<Deps, 'post'>, allowanceId: string, ownerToken: string): Promise<unknown> {
+  const token = allowanceArgs(allowanceId, ownerToken);
+  const r = await d.post(`/v1/allowances/${allowanceId}/stop`, {}, { 'x-allowance-token': token });
+  if (r.status === 403) throw new Error('the token does not match this allowance (status 403). Use the ownerToken charter_allowance_link returned.');
+  if (r.status === 404) throw new Error('the door does not know this allowance (status 404)');
+  if (r.status === 409) throw new Error('this allowance is not live (not_live), so there is nothing to stop');
+  if (r.status !== 200) throw new Error(`the allowance stop answered ${r.status}`);
   return r.body;
 }
