@@ -596,3 +596,138 @@ test('Ruling R17: a week with no outside hours paid sends the report but posts n
   await at(Date.UTC(2026, 10, 23, 15, 10));
   assert.equal(t.x.posts.length, 0);
 });
+
+// Transient failures: a model call that throws is retried, never a permanent drop on the first try.
+
+/** fakeModel, but every call whose prompt starts with `prefix` throws while `down.on` is true. */
+function flakyModel(prefix: string, down: { on: boolean }): Model & { prompts: string[] } {
+  const base = fakeModel();
+  return {
+    prompts: base.prompts,
+    async json<T>(m: string, prompt: string, system?: string): Promise<T> {
+      if (down.on && prompt.startsWith(prefix)) {
+        base.prompts.push(prompt);
+        throw new Error('gemini 503');
+      }
+      return base.json<T>(m, prompt, system);
+    },
+  };
+}
+
+test('a writer 5xx leaves the event unseen and counts an attempt; it posts once the model is back', async () => {
+  const down = { on: true };
+  const t = setup({ leases: [lease()], model: flakyModel('Draft three', down) });
+  await eventTick(t.deps);
+  t.write({ leases: [lease({ ticksPaidByRenter: 2 })] });
+  await eventTick(t.deps);
+  let s = t.state.get();
+  assert.ok(!s.seen.includes('returned:L1'));
+  assert.equal(s.attempts['returned:L1'], 1);
+  assert.ok(!t.tg.sent.some((m) => m.startsWith('post dropped')));
+  down.on = false;
+  await eventTick(t.deps);
+  s = t.state.get();
+  assert.ok(s.seen.includes('returned:L1'));
+  assert.deepEqual(t.x.posts, [{ text: POST, replyTo: undefined }]);
+});
+
+test('a checker call error is transient too; at MAX_ATTEMPTS the event is marked seen and Drew is told once', async () => {
+  const t = setup({ leases: [lease()], model: flakyModel('Check every claim', { on: true }) });
+  await eventTick(t.deps);
+  t.write({ leases: [lease({ ticksPaidByRenter: 2 })] });
+  await eventTick(t.deps);
+  await eventTick(t.deps);
+  assert.ok(!t.state.get().seen.includes('returned:L1'));
+  assert.equal(t.state.get().attempts['returned:L1'], 2);
+  await eventTick(t.deps);
+  assert.ok(t.state.get().seen.includes('returned:L1'));
+  await eventTick(t.deps);
+  const told = t.tg.sent.filter((m) => m.startsWith('post dropped: returned:L1: gave up after 3 attempts'));
+  assert.equal(told.length, 1, JSON.stringify(t.tg.sent));
+  assert.equal(t.x.posts.length, 0);
+});
+
+const initMentions = (t: ReturnType<typeof setup>) =>
+  t.state.update((s) => {
+    s.mentionsInitialized = true;
+    s.mentionSinceId = '100';
+  });
+
+test('config files that do not load keep the mention cursor, and the mention is answered once they load', async () => {
+  let broken = true;
+  const t = setup({ files: () => { if (broken) throw new SyntaxError('bad optins.json'); return files(); } });
+  initMentions(t);
+  t.x.setMentions({ mentions: [mention('200')], newestId: '200' });
+  await mentionTick(t.deps);
+  assert.equal(t.state.get().mentionSinceId, '100');
+  broken = false;
+  await mentionTick(t.deps);
+  assert.deepEqual(t.x.posts, [{ text: REPLY, replyTo: '200' }]);
+  assert.equal(t.state.get().mentionSinceId, '200');
+});
+
+test('an offers or sources failure keeps the mention cursor', async () => {
+  const t = setup({});
+  initMentions(t);
+  t.x.setMentions({ mentions: [mention('200')], newestId: '200' });
+  await mentionTick({ ...t.deps, offers: async () => { throw new Error('GET /v1/offers answered 502'); } });
+  assert.equal(t.state.get().mentionSinceId, '100');
+  await mentionTick({ ...t.deps, sources: () => ({ error: 'door-ledger.json is truncated' }) });
+  assert.equal(t.state.get().mentionSinceId, '100');
+  assert.equal(t.model.prompts.length, 0);
+  await mentionTick(t.deps);
+  assert.equal(t.state.get().mentionSinceId, '200');
+  assert.equal(t.x.posts.length, 1);
+});
+
+test('a transient writer failure keeps the cursor; after MAX_ATTEMPTS the mention is left silent and the cursor moves', async () => {
+  const t = setup({ model: flakyModel('Draft three', { on: true }) });
+  initMentions(t);
+  t.x.setMentions({ mentions: [mention('200'), mention('300')], newestId: '300' });
+  await mentionTick(t.deps);
+  assert.equal(t.state.get().mentionSinceId, '100');
+  assert.equal(t.state.get().attempts['reply:200'], 1);
+  assert.ok(!t.tg.sent.some((m) => m.startsWith('reply dropped')));
+  await mentionTick(t.deps);
+  assert.equal(t.state.get().mentionSinceId, '100');
+  await mentionTick(t.deps);
+  // The third failure gives 200 up; 300 then fails its first try and holds the cursor.
+  assert.equal(t.state.get().mentionSinceId, '200');
+  assert.equal(t.state.get().attempts['reply:300'], 1);
+  assert.equal(t.tg.sent.filter((m) => m.startsWith('reply dropped: gave up after 3 attempts')).length, 1);
+  assert.equal(t.x.posts.length, 0);
+});
+
+test('a transient classifier failure keeps the cursor and is answered once the model is back', async () => {
+  const down = { on: true };
+  const t = setup({ model: flakyModel('Label the mention', down) });
+  initMentions(t);
+  t.x.setMentions({ mentions: [mention('200')], newestId: '200' });
+  await mentionTick(t.deps);
+  assert.equal(t.state.get().mentionSinceId, '100');
+  assert.equal(t.state.get().attempts['reply:200'], 1);
+  down.on = false;
+  await mentionTick(t.deps);
+  assert.deepEqual(t.x.posts, [{ text: REPLY, replyTo: '200' }]);
+  assert.equal(t.state.get().mentionSinceId, '200');
+});
+
+test('a transient writer failure on the weekly summary is tried again on the next tick', async () => {
+  const down = { on: true };
+  const t = setup({ leases: [lease({ ticksPaidByRenter: 5 })], model: flakyModel('Draft three', down) });
+  const at = async (ms: number) => {
+    t.clock.now = ms;
+    t.beat();
+    await weeklyTick(t.deps);
+  };
+  await at(Date.UTC(2026, 10, 22, 12));
+  t.write({ leases: [lease({ ticksPaidByRenter: 9 })] });
+  await at(Date.UTC(2026, 10, 23, 15, 5));
+  assert.equal(t.state.get().week.summaryPosted, false);
+  assert.equal(t.state.get().attempts['summary:2026-W48'], 1);
+  assert.ok(!t.tg.sent.some((m) => m.startsWith('summary dropped')));
+  down.on = false;
+  await at(Date.UTC(2026, 10, 23, 15, 10));
+  assert.deepEqual(t.x.posts, [{ text: SUMMARY, replyTo: undefined }]);
+  assert.equal(t.state.get().week.summaryPosted, true);
+});

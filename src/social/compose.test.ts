@@ -128,6 +128,39 @@ test('compose never throws on a malformed checker answer', async () => {
   }
 });
 
+test('a writer call that throws is a transient drop; a writer verdict is not', async () => {
+  const w = await compose(deps(fake({ write: new Error('gemini 503') })), post);
+  assert.deepEqual(w, { dropped: ['writer: gemini 503'], transient: true });
+  for (const write of [{ candidates: [] }, { candidates: 'nope' }]) {
+    const r = await compose(deps(fake({ write, check: sourced })), post);
+    assert.ok('dropped' in r && !('transient' in r), JSON.stringify(write));
+  }
+});
+
+test('a checker call that throws makes the drop transient; lint and checker verdicts do not', async () => {
+  const thrown = await compose(deps(fake({ write: { candidates: ['Leases running now: 7.', 'Two running.'] }, check: new Error('timeout') })), post);
+  assert.ok('dropped' in thrown && thrown.transient === true, JSON.stringify(thrown));
+  const verdict = await compose(deps(fake({ write: { candidates: ['Leases running now: 7.', 'Two running.'] }, check: { claims: [{ claim: 'x', factId: null }] } })), post);
+  assert.ok('dropped' in verdict && !('transient' in verdict), JSON.stringify(verdict));
+});
+
+test('a Gemini cap is never transient: the cap waits for the next day', async () => {
+  const w = await compose(deps(fake({ write: new GeminiCapError() })), post);
+  assert.ok('dropped' in w && !('transient' in w));
+  const c = await compose(deps(fake({ write: { candidates: ['Two running.'] }, check: new GeminiCapError() })), post);
+  assert.ok('dropped' in c && !('transient' in c));
+});
+
+test('classify tells its note whether a failure was a transient call failure', async () => {
+  const notes: [string, boolean | undefined][] = [];
+  const note = (r: string, transient?: boolean) => notes.push([r, transient]);
+  const m: MentionInput = { text: 'hi', authorHandle: 'bob' };
+  await classify(fake({ label: new Error('gemini 500') }), 'gemini-check', m, facts, note);
+  await classify(fake({ label: { label: 'nope' } }), 'gemini-check', m, facts, note);
+  await classify(fake({ label: new GeminiCapError() }), 'gemini-check', m, facts, note);
+  assert.deepEqual(notes, [['classify: gemini 500', true], ['classify: no known label', false], ['classify: gemini cap', false]]);
+});
+
 test('compose names a Gemini cap in the dropped reasons', async () => {
   const w = await compose(deps(fake({ write: new GeminiCapError() })), post);
   assert.ok('dropped' in w && w.dropped.some((d) => d.includes('gemini cap')));

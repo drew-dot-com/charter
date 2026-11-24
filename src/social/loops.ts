@@ -2,7 +2,7 @@ import { compose } from './compose.js';
 import { impliedSeen, detectEvents, STALE_EVENT_MS, type SocialEvent } from './events.js';
 import { buildFactSheet, outsideHoursPaid, type OfferLite } from './facts.js';
 import type { ConfigFiles } from './files.js';
-import { hourlyAlertDue, MAX_ATTEMPTS, MAX_EVENT_POSTS_DAY, publish, tell } from './publish.js';
+import { countAttempt, hourlyAlertDue, MAX_ATTEMPTS, MAX_EVENT_POSTS_DAY, publish, tell } from './publish.js';
 import { handleMention, type LoopDeps } from './replies.js';
 import type { Sources } from './sources.js';
 import type { LogRow, SocialState } from './state.js';
@@ -204,6 +204,17 @@ export async function eventTick(deps: LoopDeps): Promise<void> {
       // A refused Gemini call is not a verdict on the draft: the event waits for the next UTC day.
       if (geminiCapped(composed.dropped)) return;
       const reasons = composed.dropped.join('; ');
+      if (composed.transient) {
+        // A model call threw: no verdict on the drafts. The event waits, at most MAX_ATTEMPTS tries in all.
+        const tries = countAttempt(deps.state, e.id);
+        if (tries < MAX_ATTEMPTS) {
+          log(deps, { at: now, kind: 'error', text: `event ${e.id}: try ${tries} of ${MAX_ATTEMPTS}: ${reasons}` });
+          return;
+        }
+        await tell(deps.tg, `post dropped: ${e.id}: gave up after ${MAX_ATTEMPTS} attempts: ${reasons}`);
+        markSeen(deps, e, now, `gave up after ${MAX_ATTEMPTS} attempts: ${reasons}`);
+        continue;
+      }
       await tell(deps.tg, `post dropped: ${e.id}: ${reasons}`);
       markSeen(deps, e, now, `dropped: ${reasons}`);
       continue;
@@ -265,6 +276,8 @@ export async function mentionTick(deps: LoopDeps): Promise<void> {
   for (const m of ordered) {
     if (await blocked(deps, deps.now())) return;
     const result = await handleMention(deps, m);
+    // Config files or door data unreadable, or a model call that threw: read this mention again next tick.
+    if (result === 'retry') return;
     // A pause, dead kill switch, spend cap or Gemini cap that landed during this mention: keep the cursor before it.
     // Any cap now in force counts, so a mention left silent by a refused Gemini call is read again tomorrow.
     if (result !== 'replied' && (refusedForNow(deps, m.id) || (await blocked(deps, deps.now())))) return;
@@ -398,14 +411,15 @@ export async function weeklyTick(deps: LoopDeps): Promise<void> {
     { model: deps.model, writeModel: deps.cfg.gemini.modelWrite, checkModel: deps.cfg.gemini.modelCheck, files, siteHost: deps.cfg.siteUrl },
     { facts, task: 'post', brief: SUMMARY_BRIEF },
   );
+  const key = `summary:${week}`;
   if ('dropped' in composed) {
     if (geminiCapped(composed.dropped)) return;
     const reasons = composed.dropped.join('; ');
+    if (composed.transient && countAttempt(deps.state, key) < MAX_ATTEMPTS) return; // a model call threw: next tick
     await tell(deps.tg, `summary dropped: ${week}: ${reasons}`);
     log(deps, { at: now, kind: 'skip', text: `weekly ${week}: dropped: ${reasons}` });
     return done(h);
   }
-  const key = `summary:${week}`;
   const result = await publish(deps, { kind: 'summary', key, text: composed.text });
   if (result === 'posted' || result === 'dry_run') return done(h);
   if (result === 'failed' && (deps.state.get().attempts[key] ?? 0) >= MAX_ATTEMPTS) return done(h);

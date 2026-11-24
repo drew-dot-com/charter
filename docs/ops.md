@@ -632,7 +632,8 @@ image (`charter-door:local`, entry `dist/social/main.js`; compose `deploy/door/d
 no healthcheck. It reads the door's `data/` read-only, never sees the door's `secrets/`, and calls only the
 door's free `GET /v1/offers`. One process: the Telegram bot (always polling, the kill switch), the event loop
 (every 5 minutes), the mention loop (every 10 minutes) and the weekly loop (every 5 minutes, acts on
-Mondays: a report to Drew at 13:00 UTC, the summary post at 15:00 UTC). The loops start a minute after boot.
+Mondays: a report to Drew at 13:00 UTC, the summary post at 15:00 UTC; a week with no outside hours paid gets
+the report but no public summary). The loops start a minute after boot.
 
 **Files.** Under `/root/charter-social`, owned by uid 1000 (the image's `node` user), mode 700:
 
@@ -722,7 +723,12 @@ heartbeat older than 15 minutes blocks every post and reply and alerts `kill swi
 
 **Alerts and failures.** Every post and reply, every dropped draft set (`post dropped: <event id>: <why>`),
 `loop error: <loop>: <message>` at most once an hour per loop, unreadable door data or config once an hour.
-A failed X post is retried on later ticks, at most 3 attempts, then given up with a message. A post whose call
+A failed X post is retried on later ticks, at most 3 attempts, then given up with a message. A Gemini call that
+throws (a 5xx, a timeout, a blocked or unparsable answer) is not a verdict: the event or mention waits for the
+next tick, counted under the same 3 attempts, then `post dropped: <id>: gave up after 3 attempts` or
+`reply dropped: gave up after 3 attempts`. Unreadable config files or door data keep the mention cursor where
+it is, so nothing is lost (the 24 hour age limit still applies). Hours in every post are whole hours paid
+(ticks times the lease's interval), not ticks. A host is announced only while it is listed. A post whose call
 timed out or failed after X accepted it can be posted again on the next attempt; X refuses an exact
 duplicate text, so at worst a reworded second post goes out: `/delete` it. The Monday report lists posts,
 replies, mentions seen and skipped by reason, and spend; the state keeps only today's spend, not the week's.

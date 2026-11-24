@@ -64,6 +64,19 @@ export function hourlyAlertDue(s: SocialState, key: string, now: number): boolea
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e)).slice(0, 200);
 
 /**
+ * Counts one failed try under `key` and returns the new count. The loops count a transient compose failure here,
+ * under the same key `publish` counts a failed X call, so MAX_ATTEMPTS bounds both together.
+ */
+export function countAttempt(state: StateStore, key: string): number {
+  let n = 0;
+  state.update((s) => {
+    n = (s.attempts[key] ?? 0) + 1;
+    s.attempts[key] = n;
+  });
+  return n;
+}
+
+/**
  * The one function that may call X's write endpoint. Every check reads the state file fresh, inside one atomic update,
  * in this order: paused, heartbeat (at most 15 minutes old), a key that already used its attempts, the caps for its
  * kind (a summary is exempt from the event cap), the day's spend cap. A reply then reserves its conversation and bumps

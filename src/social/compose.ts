@@ -24,6 +24,15 @@ const CANDIDATES = 3;
 const MAX_MENTION_CHARS = 2000;
 const LABELS: ReadonlySet<string> = new Set<Label>(['question', 'tenant', 'other']);
 
+/**
+ * A drop. `transient` marks a model call that threw (a 5xx, a timeout, a blocked or unparsable answer), not a
+ * verdict on the drafts: the caller may try again later. A spent Gemini budget ("gemini cap") is never transient.
+ */
+export interface Dropped { dropped: string[]; transient?: true }
+
+/** A model call failure worth trying again: anything thrown but the day's Gemini cap. */
+const isTransient = (e: unknown): boolean => !(e instanceof GeminiCapError);
+
 /** A short reason for a failed model call; a spent call budget reads "gemini cap". */
 function why(e: unknown): string {
   if (e instanceof GeminiCapError) return 'gemini cap';
@@ -127,9 +136,10 @@ function unsourced(res: unknown, ids: ReadonlySet<string>): string | undefined {
 /**
  * Draft, lint, check. The writer drafts three candidates; each must pass lint, then the checker (a different
  * model) must name a fact on the sheet for every claim. Returns the first survivor, or one reason per candidate.
- * Never throws: any failure, a spent Gemini budget included ("gemini cap"), is a drop.
+ * Never throws: any failure, a spent Gemini budget included ("gemini cap"), is a drop. A drop where a model call
+ * threw (not for the cap) is `transient`.
  */
-export async function compose(deps: ComposeDeps, input: ComposeInput): Promise<{ text: string } | { dropped: string[] }> {
+export async function compose(deps: ComposeDeps, input: ComposeInput): Promise<{ text: string } | Dropped> {
   try {
     if (deps.writeModel === deps.checkModel) return { dropped: ['the writer and checker models must differ'] };
     if (input.task === 'reply' && !input.mention) return { dropped: ['a reply needs a mention'] };
@@ -140,7 +150,7 @@ export async function compose(deps: ComposeDeps, input: ComposeInput): Promise<{
     try {
       written = await deps.model.json<unknown>(deps.writeModel, writerPrompt(input, allowed), writerSystem(deps.files, input.task));
     } catch (e) {
-      return { dropped: [`writer: ${why(e)}`] };
+      return isTransient(e) ? { dropped: [`writer: ${why(e)}`], transient: true } : { dropped: [`writer: ${why(e)}`] };
     }
     const raw = (written as { candidates?: unknown } | null)?.candidates;
     if (!Array.isArray(raw)) return { dropped: ['writer: no candidates array'] };
@@ -150,6 +160,7 @@ export async function compose(deps: ComposeDeps, input: ComposeInput): Promise<{
     const ctx = { facts: input.facts, rules: deps.files.rules, siteHost: deps.siteHost, replyToHandle: replyTo || undefined, selfHandle: deps.selfHandle };
     const ids = new Set(input.facts.facts.map((f) => f.id));
     const dropped: string[] = [];
+    let transient = false;
     for (const [i, text] of candidates.entries()) {
       const tag = `candidate ${i + 1}`;
       const problems = lint(text, ctx);
@@ -161,6 +172,7 @@ export async function compose(deps: ComposeDeps, input: ComposeInput): Promise<{
       try {
         checked = await deps.model.json<unknown>(deps.checkModel, checkerPrompt(input.facts, text), CHECKER_SYSTEM);
       } catch (e) {
+        if (isTransient(e)) transient = true;
         dropped.push(`${tag}: checker: ${why(e)}`);
         continue;
       }
@@ -171,7 +183,7 @@ export async function compose(deps: ComposeDeps, input: ComposeInput): Promise<{
       }
       return { text };
     }
-    return { dropped };
+    return transient ? { dropped, transient: true } : { dropped };
   } catch (e) {
     return { dropped: [`compose: ${why(e)}`] };
   }
@@ -189,12 +201,19 @@ const CLASSIFIER_SYSTEM = [
 
 /**
  * One label for a mention. Anything but an exact known label, a malformed answer or a failed call is 'other'.
- * Never throws. `note` is told why a call failed or answered badly ("gemini cap" when the budget is spent).
+ * Never throws. `note` is told why a call failed or answered badly ("gemini cap" when the budget is spent), and
+ * whether it was a transient call failure (a throw other than the cap) rather than an answer.
  */
-export async function classify(m: Model, modelName: string, mention: MentionInput, facts: FactSheet, note?: (reason: string) => void): Promise<Label> {
-  const tell = (reason: string): void => {
+export async function classify(
+  m: Model,
+  modelName: string,
+  mention: MentionInput,
+  facts: FactSheet,
+  note?: (reason: string, transient?: boolean) => void,
+): Promise<Label> {
+  const tell = (reason: string, transient = false): void => {
     try {
-      note?.(reason);
+      note?.(reason, transient);
     } catch {
       // a failing note never changes the label
     }
@@ -207,7 +226,7 @@ export async function classify(m: Model, modelName: string, mention: MentionInpu
     tell('classify: no known label');
     return 'other';
   } catch (e) {
-    tell(`classify: ${why(e)}`);
+    tell(`classify: ${why(e)}`, isTransient(e));
     return 'other';
   }
 }

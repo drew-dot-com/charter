@@ -268,20 +268,20 @@ test('a question the composer cannot answer is silent, never a refusal text', as
   assert.equal(state.get().log.at(-1)?.kind, 'skip');
 });
 
-test('unreadable sources or offers are silent, with no model call', async () => {
+test('unreadable sources or offers ask for a retry, with no model call', async () => {
   const model = fakeModel({});
   const a = loop({ model, sources: () => ({ error: 'door-ledger.json is truncated' }) });
-  assert.equal(await handleMention(a.deps, mention()), 'silent');
+  assert.equal(await handleMention(a.deps, mention()), 'retry');
   const b = loop({ model, offers: async () => { throw new Error('GET /v1/offers answered 502'); } });
-  assert.equal(await handleMention(b.deps, mention()), 'silent');
+  assert.equal(await handleMention(b.deps, mention()), 'retry');
   assert.equal(model.prompts.length, 0);
   assert.equal(a.x.posts.length + b.x.posts.length, 0);
 });
 
-test('config files that fail to load skip the mention', async () => {
+test('config files that fail to load ask for a retry', async () => {
   const model = fakeModel({});
   const { deps, x } = loop({ model });
-  assert.equal(await handleMention({ ...deps, files: () => { throw new SyntaxError('bad optins.json'); } }, mention()), 'skipped');
+  assert.equal(await handleMention({ ...deps, files: () => { throw new SyntaxError('bad optins.json'); } }, mention()), 'retry');
   assert.equal(x.posts.length, 0);
 });
 

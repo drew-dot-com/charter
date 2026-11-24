@@ -5,7 +5,7 @@ import { buildFactSheet, type FactSheet, type OfferLite } from './facts.js';
 import type { ConfigFiles, Optins, Rules } from './files.js';
 import { bannedWordRe } from './lint.js';
 import type { Model } from './model.js';
-import { hourlyAlertDue, MAX_REPLIES_AUTHOR_DAY, MAX_REPLIES_DAY, publish, tell, type PublishDeps } from './publish.js';
+import { countAttempt, hourlyAlertDue, MAX_ATTEMPTS, MAX_REPLIES_AUTHOR_DAY, MAX_REPLIES_DAY, publish, tell, type PublishDeps } from './publish.js';
 import type { Sources } from './sources.js';
 import type { LogRow, SocialState } from './state.js';
 import type { Mention, XClient } from './x.js';
@@ -134,21 +134,34 @@ async function alertHourly(deps: LoopDeps, key: string, text: string, now: numbe
 /**
  * The reply pipeline for one untrusted mention: hard limits, pre-filter, fact sheet, classifier (a `tenant` label
  * stands only for an opted-in handle), writer and checker, then `publish`. Every way out that is not a reply is
- * silence on X. 'skipped' = a hard rule, the pre-filter or publish refused it; 'silent' = it was read and left alone.
+ * silence on X. 'skipped' = a hard rule, the pre-filter or publish refused it; 'silent' = it was read and left alone;
+ * 'retry' = nothing was decided (config files or door data unreadable, or a model call that threw, at most
+ * MAX_ATTEMPTS times per mention): the caller keeps its cursor before this mention.
  */
-export async function handleMention(deps: LoopDeps, m: Mention): Promise<'replied' | 'silent' | 'skipped'> {
+export async function handleMention(deps: LoopDeps, m: Mention): Promise<'replied' | 'silent' | 'skipped' | 'retry'> {
   const now = deps.now();
   const skip = (kind: 'skipped' | 'silent', reason: string): 'skipped' | 'silent' => {
     log(deps, { at: now, kind: 'skip', text: `mention ${m.id}: ${reason}`, id: m.id });
     return kind;
+  };
+  const key = `reply:${m.id}`;
+  /** A model call threw: try again on a later tick, until MAX_ATTEMPTS, then leave the mention silent. */
+  const transient = async (reason: string): Promise<'silent' | 'skipped' | 'retry'> => {
+    const tries = countAttempt(deps.state, key);
+    if (tries < MAX_ATTEMPTS) {
+      log(deps, { at: now, kind: 'error', text: `mention ${m.id}: try ${tries} of ${MAX_ATTEMPTS}: ${reason}` });
+      return 'retry';
+    }
+    await tell(deps.tg, `reply dropped: gave up after ${MAX_ATTEMPTS} attempts: ${reason} (mention ${m.id})`);
+    return skip('silent', `gave up after ${MAX_ATTEMPTS} attempts: ${reason}`);
   };
 
   let files: ConfigFiles;
   try {
     files = deps.files();
   } catch (e) {
-    await alertHourly(deps, 'reply_config', `replies off: config files do not load: ${(e as Error)?.message ?? e}`, now);
-    return skip('skipped', 'config files do not load');
+    await alertHourly(deps, 'reply_config', `replies wait: config files do not load: ${(e as Error)?.message ?? e}`, now);
+    return 'retry';
   }
 
   const gate = replyGate(m, deps.state.get(), { selfId: deps.cfg.x.userId, blocklist: files.blocklist, banned: files.rules.banned, now });
@@ -171,13 +184,18 @@ export async function handleMention(deps: LoopDeps, m: Mention): Promise<'replie
     facts = factsFor();
   } catch (e) {
     const why = String((e as Error)?.message ?? e).slice(0, 200);
-    await alertHourly(deps, 'reply_facts', `replies silent: no fact sheet: ${why}`, now);
-    return skip('silent', `no fact sheet: ${why}`);
+    await alertHourly(deps, 'reply_facts', `replies wait: no fact sheet: ${why}`, now);
+    return 'retry';
   }
 
   const input = { text: m.text, authorHandle: m.authorHandle };
   const notes: string[] = [];
-  let label = await classify(deps.model, deps.cfg.gemini.modelCheck, input, facts, (r) => notes.push(r));
+  let classifyFailed = false;
+  let label = await classify(deps.model, deps.cfg.gemini.modelCheck, input, facts, (r, t) => {
+    notes.push(r);
+    if (t) classifyFailed = true;
+  });
+  if (classifyFailed) return transient(notes.join('; '));
   if (notes.length) log(deps, { at: now, kind: 'error', text: `mention ${m.id}: ${notes.join('; ')}` });
   if (label === 'tenant' && !optedInHandles(files.optins).has(bare(m.authorHandle))) label = 'other';
   if (label === 'other') return skip('silent', 'other');
@@ -199,13 +217,14 @@ export async function handleMention(deps: LoopDeps, m: Mention): Promise<'replie
   );
   if ('dropped' in composed) {
     const reasons = composed.dropped.join('; ');
+    if (composed.transient) return transient(reasons);
     await tell(deps.tg, `reply dropped: ${reasons} (mention ${m.id})`);
     return skip('silent', `reply dropped: ${reasons}`);
   }
 
   const result = await publish(deps, {
     kind: 'reply',
-    key: `reply:${m.id}`,
+    key,
     text: composed.text,
     replyTo: m.id,
     author: m.authorId,
