@@ -13,11 +13,12 @@ export interface Mention {
 
 /**
  * X pay-per-use prices in USD per call. Source: docs.x.com pricing page, read 2026-11-24.
- * Create post 0.015, create post with URL 0.20. readPost is the "owned reads" rate that
- * applies to GET /2/users/:id/mentions (0.001 per returned post); the general Posts: Read
- * rate on that page is 0.005. Prices change: recheck the Developer Console.
+ * Create post 0.015, create post with URL 0.20, read 0.005 per returned post (the general
+ * Posts: Read rate; mentions are other accounts' posts, and over-estimating keeps the spend
+ * cap safe. The owned-reads rate of 0.001 is deliberately not used). Prices change: recheck
+ * the Developer Console.
  */
-export const X_PRICE_USD = { post: 0.015, postWithUrl: 0.2, readPost: 0.001 };
+export const X_PRICE_USD = { post: 0.015, postWithUrl: 0.2, readPost: 0.005 };
 
 export function costOf(kind: 'post' | 'read', opts: { hasUrl?: boolean; count?: number } = {}): number {
   if (kind === 'post') return opts.hasUrl ? X_PRICE_USD.postWithUrl : X_PRICE_USD.post;
