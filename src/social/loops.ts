@@ -139,8 +139,8 @@ const briefFor = (e: SocialEvent): string =>
 
 /**
  * Every 5 minutes. Unreadable door data or config skips the tick (one Telegram note an hour) and changes nothing
- * else. The first run marks everything seen and posts nothing. Then, oldest first: a stale event, a host no longer
- * listed, or an event past the day's cap is marked seen unposted; anything else is composed and published. Paused,
+ * else. The first run marks everything seen and posts nothing. Then, oldest first: a stale event, a host not
+ * listed now, or an event past the day's cap is marked seen unposted; anything else is composed and published. Paused,
  * a dead kill switch or the spend cap stops the tick before any Gemini call and leaves the event for later.
  */
 export async function eventTick(deps: LoopDeps): Promise<void> {
@@ -173,9 +173,10 @@ export async function eventTick(deps: LoopDeps): Promise<void> {
       continue;
     }
     if (e.kind === 'host_listed') {
+      // Only a host listed right now is announced; probing, hidden, dropped or unknown is marked seen unposted.
       const hs = hostState.get(e.hostId);
-      if (hs === 'dropped' || hs === 'hidden') {
-        markSeen(deps, e, now, `host is ${hs}`);
+      if (hs !== 'listed') {
+        markSeen(deps, e, now, `host is ${hs ?? 'not listed'}`);
         continue;
       }
     }
@@ -307,7 +308,8 @@ const SUMMARY_BRIEF =
 /**
  * Every 5 minutes; acts on Mondays, once per ISO week: the report to Drew from 13:00 UTC, the summary post from
  * 15:00 UTC. `week.hoursPaidAtStart` is the outside hours paid when the last summary went out (or when the service
- * first ran), so "this week" is a diff. A Monday missed entirely, or one that ends before the summary could post,
+ * first ran), so "this week" is a diff. A week with no outside hours paid gets the report but no public summary
+ * (Ruling R17), and the week still moves on. A Monday missed entirely, or one that ends before the summary could post,
  * skips that week's summary and takes a new snapshot.
  */
 export async function weeklyTick(deps: LoopDeps): Promise<void> {
@@ -371,11 +373,17 @@ export async function weeklyTick(deps: LoopDeps): Promise<void> {
     });
   };
 
+  const h = await hoursNow();
+  if (h === undefined || !src) return;
+  const weekHours = Math.max(0, h - s.week.hoursPaidAtStart);
+  if (weekHours === 0) {
+    // Ruling R17: a public "0 hours" post says nothing; Drew still had the report.
+    log(deps, { at: now, kind: 'skip', text: `weekly ${week}: no outside hours paid this week, no summary` });
+    return done(h);
+  }
   if (await blocked(deps, now)) return;
   const files = await loadFiles(deps, now);
   if (!files) return;
-  const h = await hoursNow();
-  if (h === undefined || !src) return;
   let offers: OfferLite[];
   try {
     offers = await deps.offers();
@@ -384,7 +392,7 @@ export async function weeklyTick(deps: LoopDeps): Promise<void> {
     return;
   }
   const facts = buildFactSheet({ src, offers, factsMd: files.factsMd, optins: files.optins, siteUrl: deps.cfg.siteUrl, now, excludePayers: excluded });
-  facts.facts.push({ id: 'week:hours', text: `Hours paid by outside renters this week: ${Math.max(0, h - s.week.hoursPaidAtStart)}.` });
+  facts.facts.push({ id: 'week:hours', text: `Hours paid by outside renters this week: ${weekHours}.` });
 
   const composed = await compose(
     { model: deps.model, writeModel: deps.cfg.gemini.modelWrite, checkModel: deps.cfg.gemini.modelCheck, files, siteHost: deps.cfg.siteUrl },

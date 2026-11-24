@@ -263,6 +263,18 @@ test('a first listing of a host that is now dropped or hidden is marked seen, no
   assert.equal(t.x.posts.length, 1, 'only the listed host is posted');
 });
 
+test('a host that passed a probe but is not listed now (probing, no state) is marked seen, not posted', async () => {
+  const host = (id: string, state?: string) => ({ hostId: id, url: 'https://h', state, registeredAt: NOW - HOUR, probes: { passed: 1, failed: 0, consecutiveFailed: 0, lastAt: NOW - 60_000 }, leases: { opened: 0, finished: 0, hostFailed: 0, consecutiveHostFailed: 0 }, intervalsPaid: 0, homeTested: false });
+  const t = setup({});
+  await eventTick(t.deps);
+  t.write({ hosts: [host('H1', 'probing'), host('H2')] });
+  await eventTick(t.deps);
+  const s = t.state.get();
+  assert.ok(s.seen.includes('host:H1') && s.seen.includes('host:H2'));
+  assert.equal(t.x.posts.length, 0);
+  assert.equal(t.model.prompts.length, 0, 'no Gemini call');
+});
+
 test('config files that do not load skip the event tick with one hourly alert', async () => {
   const t = setup({ leases: [lease()], files: () => { throw new SyntaxError('Unexpected token in optins.json'); } });
   await eventTick(t.deps);
@@ -407,6 +419,8 @@ test('weeklyTick posts one summary per ISO week and sends one report', async () 
   assert.equal(t.x.posts.length, 1);
   assert.equal(t.state.get().week.hoursPaidAtStart, 9);
 
+  // Ruling R17: the next week needs outside hours of its own to get a summary.
+  t.write({ leases: [lease({ ticksPaidByRenter: 12 }), lease({ leaseId: 'LF', payer: '0xfund', ticksPaidByRenter: 80 })] });
   await at(Date.UTC(2026, 10, 30, 16));
   assert.equal(reports(), 2);
   assert.equal(t.x.posts.length, 2);
@@ -559,4 +573,26 @@ test('outsideHoursPaid counts whole hours from each lease interval', () => {
   const src = { leases: [lease({ ticksPaidByRenter: 9, offer: { intervalSeconds: 600, tickPrice: '7000' } }), lease({ leaseId: 'L2', ticksPaidByRenter: 2 })], grants: [], hosts: [], tickTxs: [] };
   // 1.5 + 2 hours
   assert.equal(outsideHoursPaid(src as never, new Set()), 3);
+});
+
+test('Ruling R17: a week with no outside hours paid sends the report but posts no summary, and still advances the week', async () => {
+  const t = setup({ leases: [lease({ ticksPaidByRenter: 5 }), lease({ leaseId: 'LF', payer: '0xfund', ticksPaidByRenter: 50 })] });
+  const at = async (ms: number) => {
+    t.clock.now = ms;
+    t.beat();
+    await weeklyTick(t.deps);
+  };
+  await at(Date.UTC(2026, 10, 22, 12)); // Sunday snapshot: 5 outside hours
+  t.write({ leases: [lease({ ticksPaidByRenter: 5 }), lease({ leaseId: 'LF', payer: '0xfund', ticksPaidByRenter: 80 })] });
+  await at(Date.UTC(2026, 10, 23, 13, 5));
+  await at(Date.UTC(2026, 10, 23, 15, 5));
+  assert.equal(t.tg.sent.filter((m) => m.startsWith('Weekly report')).length, 1, 'the report still goes to Drew');
+  assert.equal(t.x.posts.length, 0, 'no public summary');
+  assert.equal(t.model.prompts.length, 0, 'no Gemini call');
+  const s = t.state.get();
+  assert.equal(s.week.summaryPosted, true);
+  assert.equal(s.week.hoursPaidAtStart, 5);
+  assert.ok(s.log.some((r) => r.kind === 'skip' && r.text === 'weekly 2026-W48: no outside hours paid this week, no summary'));
+  await at(Date.UTC(2026, 10, 23, 15, 10));
+  assert.equal(t.x.posts.length, 0);
 });
