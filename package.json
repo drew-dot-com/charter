@@ -29,6 +29,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@base-org/account": "2.6.0",
     "@coinbase/cdp-sdk": "1.60.0",
     "@coinbase/x402": "2.1.0",
     "@google/genai": "^3.6.1",
