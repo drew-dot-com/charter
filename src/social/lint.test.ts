@@ -13,89 +13,148 @@ const facts: FactSheet = {
 const rules: Rules = { banned: ['token', 'toon', 'airdrop'] };
 const ctx = { facts, rules, siteHost: 'charter.example', selfHandle: 'charterhq' };
 const run = (text: string, o: Partial<typeof ctx & { replyToHandle: string }> = {}) => lint(text, { ...ctx, ...o });
+/** The text must be rejected and some reason must name the expected rule. */
+const rej = (text: string, reason: string, o: Partial<typeof ctx & { replyToHandle: string }> = {}) => {
+  const r = run(text, o);
+  assert.ok(r.some((x) => x.includes(reason)), `${JSON.stringify(text)} expected "${reason}", got ${JSON.stringify(r)}`);
+};
 
 test('passes a clean post', () => {
   assert.deepEqual(run('A home costs 0.007 USDC per hour.'), []);
+  assert.deepEqual(run('line one\nline two'), []);
 });
 
-test('rejects every dash code point', () => {
-  for (const d of ['\u2012', '\u2013', '\u2014', '\u2015', '--']) {
-    assert.ok(run(`a ${d} b`).length > 0, `dash ${JSON.stringify(d)}`);
-  }
+test('rejects every dash code point and --', () => {
+  for (const d of ['\u2012', '\u2013', '\u2014', '\u2015', '--']) rej(`a ${d} b`, 'contains a dash');
 });
 
 test('rejects $ followed by letters', () => {
-  assert.ok(run('buy $USDC now').length > 0);
+  rej('buy $USDC now', '$ticker');
 });
 
 test('rejects any hashtag', () => {
-  assert.ok(run('hello #base').length > 0);
+  rej('hello #base', 'hashtag');
 });
 
 test('rejects over 280 characters, counting any URL as 23', () => {
   assert.equal(X_MAX_CHARS, 280);
-  assert.ok(run('a'.repeat(281)).length > 0);
+  rej('a'.repeat(281), 'over 280');
   assert.deepEqual(run('a'.repeat(280)), []);
   const url = 'https://charter.example/some/very/long/path/that/is/longer/than/twenty-three/chars';
   assert.deepEqual(run('a'.repeat(256) + ' ' + url), []);
-  assert.ok(run('a'.repeat(258) + ' ' + url).length > 0);
+  rej('a'.repeat(258) + ' ' + url, 'over 280');
 });
 
 test('rejects two links', () => {
-  assert.ok(run('https://charter.example/a https://charter.example/b').length > 0);
+  rej('https://charter.example/a https://charter.example/b', 'more than one link');
 });
 
 test('allows one link to siteHost, a listed basescan tx, or own x.com status', () => {
   assert.deepEqual(run('see https://charter.example/x'), []);
   assert.deepEqual(run('see https://www.charter.example'), []);
+  assert.deepEqual(run('see https://charter.example/x.'), []);
+  assert.deepEqual(run('(https://charter.example/x)'), []);
   assert.deepEqual(run(`tx https://basescan.org/tx/${HASH}`), []);
   assert.deepEqual(run('https://x.com/charterhq/status/1234567890'), []);
   assert.deepEqual(run('https://twitter.com/CharterHQ/status/1234567890'), []);
 });
 
 test('rejects basescan link whose hash is not in txLinks', () => {
-  assert.ok(run(`https://basescan.org/tx/0x${'cd'.repeat(32)}`).length > 0);
-  assert.ok(run('https://basescan.org/address/0x1').length > 0);
+  rej(`https://basescan.org/tx/0x${'cd'.repeat(32)}`, 'basescan link not in the fact sheet');
+  rej('https://basescan.org/address/0x1', 'basescan link not in the fact sheet');
 });
 
 test('rejects x.com links without selfHandle or for another handle', () => {
-  assert.ok(run('https://x.com/charterhq/status/1', { selfHandle: undefined }).length > 0);
-  assert.ok(run('https://x.com/someoneelse/status/1').length > 0);
-  assert.ok(run('https://x.com/charterhq').length > 0);
+  rej('https://x.com/charterhq/status/1', 'x.com link', { selfHandle: undefined });
+  rej('https://x.com/someoneelse/status/1', 'x.com link');
+  rej('https://x.com/charterhq', 'x.com link');
 });
 
 test('rejects any other host, including bare domains', () => {
-  assert.ok(run('https://evil.com/x').length > 0);
-  assert.ok(run('go to evil.com/x').length > 0);
-  assert.ok(run('go to charter.example.evil.com').length > 0);
-  assert.ok(run('charter.example/a and evil.com').length > 0);
+  rej('https://evil.com/x', 'host that is not allowed');
+  rej('go to evil.com/x', 'host that is not allowed');
+  rej('go to charter.example.evil.com', 'host that is not allowed');
+  rej('charter.example/a and evil.com', 'more than one link');
   assert.deepEqual(run('go to charter.example/a'), []);
+});
+
+test('rejects a second link hidden inside a link token', () => {
+  for (const t of [
+    'https://charter.example/a<evil.com',
+    'https://charter.example/a"evil.com',
+    'https://charter.example/a`evil.com',
+    'https://charter.example/a>https://evil.com',
+    'charter.example/a<evil.com',
+    'charter.example/a"evil.com',
+  ]) {
+    const r = run(t);
+    assert.ok(r.length > 0 && r.some((x) => /link followed by text|more than one link|forbidden character/.test(x)), t);
+  }
+  rej('https://charter.example/a"evil.com', 'link followed by text');
+  rej('https://charter.example/a<evil.com', 'forbidden character');
+});
+
+test('rejects userinfo and a nested scheme inside a link', () => {
+  rej('https://charter.example@evil.com/x', 'malformed link');
+  rej('https://charter.example/x?u=https://evil.com', 'malformed link');
+});
+
+test('rejects forbidden characters anywhere', () => {
+  for (const c of ['<', '>', '`', '{', '}', '|', '\\', '^']) rej(`a ${c} b`, 'forbidden character');
 });
 
 test('rejects @handles not in mentionable and not replyToHandle', () => {
   assert.deepEqual(run('thanks @alice'), []);
   assert.deepEqual(run('thanks @ALICE'), []);
-  assert.ok(run('thanks @bob').length > 0);
+  rej('thanks @bob', 'not allowed to be mentioned');
   assert.deepEqual(run('thanks @bob', { replyToHandle: 'Bob' }), []);
-  assert.ok(run('mail me@evil.com').length > 0);
+  rej('mail me@evil.com', 'not allowed to be mentioned');
 });
 
 test('rejects banned words case-insensitively as whole words', () => {
-  assert.ok(run('a Token here').length > 0);
-  assert.ok(run('a TOKEN here').length > 0);
-  assert.ok(run('a token-gated door').length > 0);
-  assert.ok(run('TOON rules').length > 0);
+  rej('a Token here', 'banned word');
+  rej('a TOKEN here', 'banned word');
+  rej('a token-gated door', 'banned word');
+  rej('TOON rules', 'banned word');
   assert.deepEqual(run('a tokenizer here'), []);
 });
 
 test('rejects spaced-out banned words', () => {
-  assert.ok(run('a t o k e n here').length > 0);
-  assert.ok(run('a t.o.k.e.n here').length > 0);
-  assert.ok(run('a t​o​k​e​n here').length > 0);
+  for (const t of ['t o k e n', 't.o.k.e.n', 't  o  k  e  n', 't-o-k-e-n', 't_o_k_e_n', 't/o/k/e/n', 't*o*k*e*n']) {
+    rej(`a ${t} here`, 'banned word');
+  }
+});
+
+test('rejects non-ASCII look-alike and fullwidth characters in domains and sigils', () => {
+  rej('go to \u0430charter.example', 'non-ASCII character');
+  rej('go to charter.example.\u0440\u0444', 'non-ASCII character');
+  rej('go to \u043F\u0440\u0438\u043C\u0435\u0440.\u0440\u0444', 'non-ASCII character');
+  for (const c of ['\uFF20', '\uFF03', '\uFF04', '\uFE69']) rej(`a ${c}x b`, 'non-ASCII character');
+});
+
+test('rejects non-ASCII digits', () => {
+  for (const d of ['\u0661\u0662', '\uFF11\uFF12', '\u00B9\u00B2', '\u246B']) rej(`I hold ${d} homes`, 'non-ASCII character');
+});
+
+test('rejects look-alike and accented banned words', () => {
+  rej('a t\u043Eken here', 'non-ASCII character');
+  rej('a a\u0131rdrop here', 'non-ASCII character');
+  rej('a t\u00F3ken here', 'non-ASCII character');
+});
+
+test('rejects invisible characters, including invisible-only text', () => {
+  for (const c of ['\u200B', '\u034F', '\uFE0F', '\u2061', '\u{E0041}']) {
+    rej(`a${c}b`, 'non-ASCII character');
+    rej(c, 'non-ASCII character');
+  }
+});
+
+test('rejects all non-ASCII dash look-alikes', () => {
+  for (const c of ['\uFE58', '\uFE31', '\uFE32', '\u2E3A', '\u2E3B', '\u2212', '\uFF0D']) rej(`a ${c} b`, 'non-ASCII character');
 });
 
 test('rejects a number not in any fact', () => {
-  assert.ok(run('I hold 12 homes').length > 0);
+  rej('I hold 12 homes', 'number not in the facts');
 });
 
 test('ignores digits inside allowed links', () => {
@@ -103,14 +162,21 @@ test('ignores digits inside allowed links', () => {
   assert.deepEqual(run('https://x.com/charterhq/status/98765'), []);
 });
 
-test('accepts numbers present in facts, comparing without thousands commas', () => {
+test('numbers: thousands commas only in proper groups', () => {
   assert.deepEqual(run('0.007 per hour'), []);
   assert.deepEqual(run('1200 hours'), []);
   assert.deepEqual(run('1,200 hours'), []);
-  assert.ok(run('0.008 per hour').length > 0);
+  rej('0.008 per hour', 'number not in the facts');
+  rej('only 12,00 hours', 'number not in the facts');
+  rej('only 1,2 hours', 'number not in the facts');
+  const sheet: FactSheet = { ...facts, facts: [{ id: 'f', text: '1200 hours' }] };
+  assert.deepEqual(lint('1,200 hours', { ...ctx, facts: sheet }), []);
+  const sheet2: FactSheet = { ...facts, facts: [{ id: 'f', text: '1,200 hours' }] };
+  const r = lint('only 12,00 hours', { ...ctx, facts: sheet2 });
+  assert.ok(r.some((x) => x.includes('number not in the facts')));
 });
 
 test('fails closed on empty output', () => {
-  assert.ok(run('').length > 0);
-  assert.ok(run('   ').length > 0);
+  rej('', 'empty text');
+  rej('   ', 'empty text');
 });

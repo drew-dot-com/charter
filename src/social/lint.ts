@@ -13,9 +13,12 @@ export interface LintCtx {
   selfHandle?: string;
 }
 
-const SCHEME_URL = /https?:\/\/[^\s]+/gi;
-const BARE_DOMAIN = /(?<![\w@.-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s]*)?/gi;
-const TRAILING_PUNCT = /[.,;:!?)\]}'"]+$/;
+const LINK_CHARS = "A-Za-z0-9\\-._~:/?#\\[\\]@!$&'()*+,;=%";
+const SCHEME_URL = new RegExp(`https?://[${LINK_CHARS}]*`, 'gi');
+const BARE_DOMAIN = new RegExp(`(?<![\\w@.-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,}(?::\\d+)?(?:/[${LINK_CHARS}]*)?`, 'gi');
+/** What may directly follow a link token: whitespace, end of text, or sentence punctuation. */
+const AFTER_LINK = /^(?:\s|$|[.,!?:;)'])/;
+const TRAILING_PUNCT = /[.,!?:;)']+$/;
 const PLACEHOLDER = '\u0001';
 const WORD = '\\p{L}\\p{N}_';
 
@@ -31,16 +34,22 @@ function canonical(raw: string): string {
   return raw.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/+$/, '');
 }
 
-/** Every link in the text (with or without scheme), plus the text with each replaced by a placeholder. */
-function extractLinks(text: string): { links: string[]; stripped: string } {
+/** Every link in the text (with or without scheme), the text with each replaced by a placeholder, and token-level problems. */
+function extractLinks(text: string): { links: string[]; stripped: string; problems: string[] } {
   const links: string[] = [];
-  const take = (m: string): string => {
+  const problems: string[] = [];
+  const take = (m: string, offset: number, whole: string): string => {
     const clean = m.replace(TRAILING_PUNCT, '');
+    if (!AFTER_LINK.test(whole.slice(offset + m.length))) problems.push(`link followed by text: ${clean}`);
+    const rest = clean.replace(/^https?:\/\//i, '');
+    if (rest.includes('://') || rest.includes('@')) {
+      problems.push(`malformed link: ${clean}`);
+    }
     links.push(clean);
     return PLACEHOLDER + m.slice(clean.length);
   };
   const stripped = text.replace(SCHEME_URL, take).replace(BARE_DOMAIN, take);
-  return { links, stripped };
+  return { links, stripped, problems };
 }
 
 function linkProblem(link: string, ctx: LintCtx): string | undefined {
@@ -59,14 +68,10 @@ function linkProblem(link: string, ctx: LintCtx): string | undefined {
   return `link to a host that is not allowed: ${host}`;
 }
 
-/** Digits with thousands commas removed. */
+/** Numbers; commas are removed only inside proper thousands groups, any other comma separates numbers. */
 function numbersIn(text: string): string[] {
-  return (text.match(/\d[\d,]*(?:\.\d+)?/g) ?? []).map((n) => n.replace(/,/g, ''));
-}
-
-/** Lowercase, compatibility-fold, drop zero-width characters, so disguised words still match. */
-function foldForWords(text: string): string {
-  return text.normalize('NFKC').replace(/[​-‏⁠﻿­]/g, '').toLowerCase();
+  const re = /\d{1,3}(?:,\d{3})+(?!\d)(?:\.\d+)?|\d+(?:\.\d+)?/g;
+  return (text.match(re) ?? []).map((n) => n.replace(/,/g, ''));
 }
 
 /** Deterministic gate: returns the reasons a text may not be published. Empty means pass. */
@@ -74,11 +79,14 @@ export function lint(text: string, ctx: LintCtx): string[] {
   const out: string[] = [];
   if (text.trim() === '') return ['empty text'];
 
+  if (/[^\x20-\x7E\n]/.test(text)) out.push('non-ASCII character');
   if (/[\u2012\u2013\u2014\u2015]|--/.test(text)) out.push('contains a dash');
+  if (/[<>`{}|\\^]/.test(text)) out.push('forbidden character');
   if (/\$\p{L}/u.test(text)) out.push('contains a $ticker');
   if (/#[\p{L}\p{N}_]/u.test(text)) out.push('contains a hashtag');
 
-  const { links, stripped } = extractLinks(text);
+  const { links, stripped, problems } = extractLinks(text);
+  out.push(...problems);
   if (links.length > 1) out.push(`more than one link (${links.length})`);
   for (const l of links) {
     const p = linkProblem(l, ctx);
@@ -94,9 +102,9 @@ export function lint(text: string, ctx: LintCtx): string[] {
     if (!allowed.has(m[1]!.toLowerCase())) out.push(`@${m[1]} is not allowed to be mentioned`);
   }
 
-  const folded = foldForWords(text);
+  const folded = text.toLowerCase();
   for (const word of ctx.rules.banned) {
-    const w = foldForWords(word).trim();
+    const w = word.toLowerCase().trim();
     if (!w) continue;
     const pre = `(?<![${WORD}])`;
     const post = `(?![${WORD}])`;
@@ -105,7 +113,7 @@ export function lint(text: string, ctx: LintCtx): string[] {
       continue;
     }
     const letters = Array.from(w).filter((c) => /\S/u.test(c));
-    if (letters.length > 1 && new RegExp(pre + letters.map(escapeRe).join('[ .]') + post, 'u').test(folded)) {
+    if (letters.length > 1 && new RegExp(pre + letters.map(escapeRe).join('[\\s.\\-_/*]+') + post, 'u').test(folded)) {
       out.push(`banned word spelled out: ${w}`);
     }
   }
