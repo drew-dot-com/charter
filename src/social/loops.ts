@@ -1,6 +1,6 @@
 import { compose } from './compose.js';
 import { impliedSeen, detectEvents, STALE_EVENT_MS, type SocialEvent } from './events.js';
-import { buildFactSheet, type OfferLite } from './facts.js';
+import { buildFactSheet, outsideHoursPaid, type OfferLite } from './facts.js';
 import type { ConfigFiles } from './files.js';
 import { hourlyAlertDue, MAX_ATTEMPTS, MAX_EVENT_POSTS_DAY, publish, tell } from './publish.js';
 import { handleMention, type LoopDeps } from './replies.js';
@@ -34,13 +34,7 @@ export function isoWeekKey(ms: number): string {
   return `${year}-W${String(week).padStart(2, '0')}`;
 }
 
-/** Hours paid by outside renters: the same rule as the fact sheet's `totals:hours` (no excluded payer, no grant lease). */
-export function outsideHoursPaid(src: Sources, excluded: ReadonlySet<string>): number {
-  const grantLeases = new Set(src.grants.map((g) => g.leaseId).filter((x): x is string => !!x));
-  return src.leases
-    .filter((l) => l.payer && !excluded.has(l.payer.toLowerCase()) && !grantLeases.has(l.leaseId))
-    .reduce((n, l) => n + l.ticksPaidByRenter, 0);
-}
+export { outsideHoursPaid };
 
 const excludedPayers = (deps: LoopDeps): ReadonlySet<string> => new Set([...deps.cfg.firstParty, ...deps.cfg.probes]);
 
@@ -134,7 +128,7 @@ function markSeen(deps: LoopDeps, e: SocialEvent, now: number, reason?: string):
 
 /** Trusted text written by code: the event's kind, never anything from the data. */
 const EVENT_BRIEF: Record<SocialEvent['kind'], string> = {
-  renter_returned: 'A renter paid for another hour of the same lease: they came back.',
+  renter_returned: 'A renter paid again for the same lease: they came back.',
   milestone: 'A lease reached a milestone of hours paid.',
   grant_approved: 'A grant was approved: a free home for its grantee.',
   host_listed: 'A new host joined and was listed on the network.',

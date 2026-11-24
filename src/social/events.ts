@@ -11,6 +11,22 @@ export type SocialEvent =
 
 const milestoneId = (leaseId: string, hours: number): string => `milestone:${leaseId}:${hours}`;
 
+type Lease = Sources['leases'][number];
+
+/** Seconds of service a lease's renter has paid for: settled ticks times the lease's own interval (0 if unknown). */
+export function secondsPaid(l: Lease): number {
+  const iv = Number(l.offer?.intervalSeconds);
+  const ticks = Number(l.ticksPaidByRenter);
+  if (!Number.isFinite(iv) || iv <= 0 || !Number.isFinite(ticks) || ticks <= 0) return 0;
+  return ticks * iv;
+}
+
+/** Whole hours a lease's renter has paid for. A tick is an hour only at a 3600 s interval. */
+export const hoursPaid = (l: Lease): number => Math.floor(secondsPaid(l) / 3600);
+
+/** Whole hours paid across leases (summed before rounding down). */
+export const totalHoursPaid = (leases: readonly Lease[]): number => Math.floor(leases.reduce((n, l) => n + secondsPaid(l), 0) / 3600);
+
 /** Ids of the lower milestones of the same lease: a lease that jumped past several marks them all seen. */
 export function impliedSeen(e: SocialEvent): string[] {
   if (e.kind !== 'milestone') return [];
@@ -25,7 +41,7 @@ export function detectEvents(src: Sources, seen: ReadonlySet<string>, cfg: { fir
 
   for (const l of src.leases) {
     const at = l.lastTickAt ?? l.createdAt;
-    const hours = l.ticksPaidByRenter;
+    const hours = hoursPaid(l);
     const grantId = grantOfLease.get(l.leaseId);
     const payer = l.payer?.toLowerCase();
     let outsider: string | undefined;
@@ -36,7 +52,8 @@ export function detectEvents(src: Sources, seen: ReadonlySet<string>, cfg: { fir
       if (!payer || cfg.firstParty.has(payer)) continue;
       outsider = payer;
       const id = `returned:${l.leaseId}`;
-      if (hours >= 2 && !seen.has(id)) out.push({ id, kind: 'renter_returned', at, leaseId: l.leaseId, payer, hoursPaid: hours });
+      // The trigger is the second paid tick, whatever the interval; the event states whole hours paid.
+      if (l.ticksPaidByRenter >= 2 && !seen.has(id)) out.push({ id, kind: 'renter_returned', at, leaseId: l.leaseId, payer, hoursPaid: hours });
     }
     // Only the highest milestone reached counts; the lower ones are implied.
     const reached = MILESTONES.filter((m) => hours >= m).pop();

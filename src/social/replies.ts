@@ -1,6 +1,6 @@
 import { classify, compose } from './compose.js';
 import type { SocialConfig } from './config.js';
-import type { SocialEvent } from './events.js';
+import { hoursPaid, type SocialEvent } from './events.js';
 import { buildFactSheet, type FactSheet, type OfferLite } from './facts.js';
 import type { ConfigFiles, Optins, Rules } from './files.js';
 import { bannedWordRe } from './lint.js';
@@ -104,7 +104,7 @@ function receiptEvent(m: Mention, src: Sources, optins: Optins, excluded: Readon
     .filter((l) => l.payer && wallets.has(l.payer.toLowerCase()))
     .sort((a, b) => b.createdAt - a.createdAt)[0];
   if (!lease?.payer) return undefined;
-  return { id: `reply:${m.id}`, kind: 'renter_returned', at: now, leaseId: lease.leaseId, payer: lease.payer, hoursPaid: lease.ticksPaidByRenter };
+  return { id: `reply:${m.id}`, kind: 'renter_returned', at: now, leaseId: lease.leaseId, payer: lease.payer, hoursPaid: hoursPaid(lease) };
 }
 
 const BRIEF = {

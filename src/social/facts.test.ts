@@ -183,3 +183,22 @@ test('fetchOffers throws on a non-ok response', async () => {
   const fetchFn = (async () => new Response('no', { status: 500 })) as unknown as typeof fetch;
   await assert.rejects(fetchOffers('https://door.example', fetchFn));
 });
+
+test('a 600 s lease: totals and event facts state whole hours paid, not ticks', () => {
+  const s = src({
+    leases: [
+      lease({ leaseId: 'A', ticksPaidByRenter: 9, offer: { intervalSeconds: 600 } }),
+      lease({ leaseId: 'B', ticksPaidByRenter: 5 }),
+    ],
+  });
+  const sheet = build(undefined, s);
+  const byId = Object.fromEntries(sheet.facts.map((f) => [f.id, f.text]));
+  // 9 x 600 s + 5 x 3600 s = 6.5 hours: 6 whole hours.
+  assert.equal(byId['totals:hours'], 'Hours paid by outside renters so far: 6.');
+});
+
+test('renter_returned under an hour says less than an hour', () => {
+  const ev: SocialEvent = { ...returned, hoursPaid: 0 };
+  const byId = Object.fromEntries(build(ev, src({ leases: [lease()] })).facts.map((f) => [f.id, f.text]));
+  assert.equal(byId['event:hours'], 'a renter has paid for less than an hour in total, and came back for more.');
+});

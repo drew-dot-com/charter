@@ -1,5 +1,5 @@
 import type { Sources } from './sources.js';
-import type { SocialEvent } from './events.js';
+import { totalHoursPaid, type SocialEvent } from './events.js';
 import type { Optins } from './files.js';
 import { JOB_IMAGES } from '../images.js';
 
@@ -57,7 +57,16 @@ function priceText(noun: string, o: OfferLite): string {
   return `${noun} costs ${microToUsdcText(o.tickPrice)} USDC per ${o.intervalSeconds} seconds.`;
 }
 
-const hoursText = (h: number): string => `${h} ${h === 1 ? 'hour' : 'hours'}`;
+const hoursText = (h: number): string => (h < 1 ? 'less than an hour' : `${h} ${h === 1 ? 'hour' : 'hours'}`);
+
+/**
+ * Whole hours paid by outside renters: no excluded payer, no grant lease. The fact sheet's `totals:hours` and the
+ * weekly summary's diff both use it.
+ */
+export function outsideHoursPaid(src: Sources, excluded: ReadonlySet<string>): number {
+  const grantLeases = new Set(src.grants.map((g) => g.leaseId).filter((x): x is string => !!x));
+  return totalHoursPaid(src.leases.filter((l) => l.payer && !excluded.has(l.payer.toLowerCase()) && !grantLeases.has(l.leaseId)));
+}
 
 /**
  * Everything the writer may state. No wallet address, unopted name, pitch name or host url is ever put in a fact.
@@ -84,9 +93,7 @@ export function buildFactSheet(input: { event?: SocialEvent; src: Sources; offer
   const excluded = input.excludePayers;
   const grantLeases = new Set(src.grants.map((g) => g.leaseId).filter((x): x is string => !!x));
   const running = src.leases.filter((l) => (grantLeases.has(l.leaseId) || !l.payer || !excluded.has(l.payer.toLowerCase())) && !l.stopped && l.lastTickAt !== undefined && now - l.lastTickAt <= 2 * l.offer.intervalSeconds * 1000).length;
-  const outsideHours = src.leases
-    .filter((l) => l.payer && !excluded.has(l.payer.toLowerCase()) && !grantLeases.has(l.leaseId))
-    .reduce((n, l) => n + l.ticksPaidByRenter, 0);
+  const outsideHours = outsideHoursPaid(src, excluded);
   const hostsListed = src.hosts.filter((h) => h.state === 'listed').length;
   const grantsApproved = src.grants.filter((g) => g.state !== 'queued' && g.state !== 'declined').length;
   facts.push({ id: 'totals:running', text: `Leases running now: ${running}.` });

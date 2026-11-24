@@ -11,7 +11,7 @@ import type { SocialConfig } from './config.js';
 import { DEFAULT_BANNED, type ConfigFiles } from './files.js';
 import { readSources } from './sources.js';
 import type { LoopDeps } from './replies.js';
-import { eventTick, isoWeekKey, mentionTick, weeklyTick } from './loops.js';
+import { eventTick, isoWeekKey, mentionTick, outsideHoursPaid, weeklyTick } from './loops.js';
 
 const HOUR = 3_600_000;
 const NOW = Date.UTC(2026, 10, 24, 12); // Tuesday
@@ -553,4 +553,10 @@ test('the Gemini cap reached during a mention keeps the cursor before it', async
   await mentionTick(t.deps);
   assert.equal(t.x.posts.length, 0);
   assert.equal(t.state.get().mentionSinceId, '100');
+});
+
+test('outsideHoursPaid counts whole hours from each lease interval', () => {
+  const src = { leases: [lease({ ticksPaidByRenter: 9, offer: { intervalSeconds: 600, tickPrice: '7000' } }), lease({ leaseId: 'L2', ticksPaidByRenter: 2 })], grants: [], hosts: [], tickTxs: [] };
+  // 1.5 + 2 hours
+  assert.equal(outsideHoursPaid(src as never, new Set()), 3);
 });

@@ -322,7 +322,21 @@ test("an opted-in renter's tenant mention reaches compose with that lease's newe
   assert.ok(w?.includes(link), 'the newest tx of the newest lease is a fact');
   assert.ok(!w?.includes('0xold9') && !w?.includes('0xother'));
   assert.ok(w?.includes('Teeny'));
+  assert.ok(w?.includes('Teeny has paid for 5 hours in total'), 'hours from ticks and the 3600 s interval');
   assert.deepEqual(x.posts, [{ text: `Rent's current. ${link}`, replyTo: 'm1' }]);
+});
+
+test("a receipt for a 600 s lease states whole hours, not ticks", async () => {
+  const link = 'https://basescan.org/tx/0xaaa2';
+  const model = fakeModel({ label: { label: 'tenant' }, write: { candidates: [`Rent's current. ${link}`] }, check: { claims: [{ claim: 'receipt', factId: 'event:tx' }] } });
+  const sources = (): Sources => {
+    const s = receiptSources();
+    s.leases = s.leases.map((l) => (l.leaseId === 'NEW' ? { ...l, ticksPaidByRenter: 13, offer: { ...l.offer, intervalSeconds: 600 } } : l));
+    return s;
+  };
+  const { deps } = loop({ model, optins: { renters: { [WALLET]: { name: 'Teeny', handle: 'Teeny' } }, grants: {}, hosts: {} }, sources });
+  assert.equal(await handleMention(deps, mention({ authorHandle: 'teeny', text: 'my box is up' })), 'replied');
+  assert.ok(writerPrompts(model)[0]?.includes('Teeny has paid for 2 hours in total'));
 });
 
 test('a grants-only tenant gets no receipt', async () => {

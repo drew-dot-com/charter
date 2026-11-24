@@ -5,7 +5,9 @@ import type { Sources } from './sources.js';
 
 const cfg = { firstParty: new Set(['0xfund']), probes: new Set(['0xprobe']) };
 const none = new Set<string>();
-const lease = (o: Record<string, unknown>) => ({ leaseId: 'L1', payer: '0xrenter', ticksPaidByRenter: 1, createdAt: 100, ...o });
+const lease = (o: Record<string, unknown>) => ({ leaseId: 'L1', payer: '0xrenter', ticksPaidByRenter: 1, createdAt: 100, offer: { intervalSeconds: 3600 }, ...o });
+/** A lease paid every 600 s: six ticks make an hour. */
+const short = (o: Record<string, unknown>) => lease({ offer: { intervalSeconds: 600 }, ...o });
 const src = (o: Partial<Record<keyof Sources, unknown[]>>): Sources =>
   ({ leases: [], grants: [], hosts: [], tickTxs: [], ...o }) as unknown as Sources;
 
@@ -90,4 +92,24 @@ test('a grant lease whose payer is in PROBE_PAYERS yields nothing', () => {
   const grants = [{ grantId: 'G1', state: 'active', leaseId: 'L1', updatedAt: 1 }];
   const ev = detectEvents(src({ leases: [lease({ payer: '0xProbe', ticksPaidByRenter: 30 })], grants }), new Set(['grant:G1']), cfg);
   assert.deepEqual(ev, []);
+});
+
+test('a 600 s lease: the second paid tick is renter_returned with hours as whole hours paid', () => {
+  const ev = detectEvents(src({ leases: [short({ ticksPaidByRenter: 2, lastTickAt: 500 })] }), none, cfg);
+  assert.deepEqual(ev, [{ id: 'returned:L1', kind: 'renter_returned', at: 500, leaseId: 'L1', payer: '0xrenter', hoursPaid: 0 }]);
+  const later = detectEvents(src({ leases: [short({ ticksPaidByRenter: 13, lastTickAt: 500 })] }), none, cfg);
+  assert.equal((later[0] as { hoursPaid: number }).hoursPaid, 2);
+});
+
+test('a 600 s lease reaches milestones by hours, not ticks', () => {
+  const seen = new Set(['returned:L1']);
+  assert.deepEqual(detectEvents(src({ leases: [short({ ticksPaidByRenter: 24 })] }), seen, cfg), [], '24 ticks are 4 hours');
+  assert.deepEqual(detectEvents(src({ leases: [short({ ticksPaidByRenter: 143 })] }), seen, cfg), []);
+  assert.deepEqual(detectEvents(src({ leases: [short({ ticksPaidByRenter: 144 })] }), seen, cfg).map((e) => e.id), ['milestone:L1:24']);
+  assert.deepEqual(detectEvents(src({ leases: [short({ ticksPaidByRenter: 600 })] }), seen, cfg).map((e) => e.id), ['milestone:L1:100']);
+});
+
+test('a lease with no usable interval counts no hours', () => {
+  const seen = new Set(['returned:L1']);
+  assert.deepEqual(detectEvents(src({ leases: [lease({ ticksPaidByRenter: 500, offer: undefined })] }), seen, cfg), []);
 });
