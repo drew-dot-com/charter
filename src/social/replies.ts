@@ -1,5 +1,6 @@
 import { classify, compose } from './compose.js';
 import type { SocialConfig } from './config.js';
+import type { SocialEvent } from './events.js';
 import { buildFactSheet, type FactSheet, type OfferLite } from './facts.js';
 import type { ConfigFiles, Optins, Rules } from './files.js';
 import { bannedWordRe } from './lint.js';
@@ -44,7 +45,6 @@ export function replyGate(m: Mention, s: SocialState, ctx: { selfId: string; blo
 const PATTERNS: [RegExp, string][] = [
   [/\btoken/i, 'token'],
   [/airdrop/i, 'airdrop'],
-  [/\bprice\b/i, 'price'],
   [/send me/i, 'send me'],
   [/0x[0-9a-f]{40}/i, 'wallet address'],
   [/ignore (all |previous|prior)/i, 'ignore instructions'],
@@ -52,7 +52,7 @@ const PATTERNS: [RegExp, string][] = [
   [/you are now/i, 'you are now'],
 ];
 /** Also matched with their letters spaced out, like the banned list. */
-const SPACED = ['token', 'airdrop', 'price'];
+const SPACED = ['token', 'airdrop'];
 
 /**
  * Code's first pass over an untrusted mention: the reason to drop it, or null to continue. The text is NFKC-folded
@@ -76,6 +76,25 @@ function optedInHandles(optins: Optins): Set<string> {
     for (const o of Object.values(section)) if (o.handle && bare(o.handle)) out.add(bare(o.handle));
   }
   return out;
+}
+
+/**
+ * A synthetic renter_returned event for the author's newest lease, so the fact sheet names them and carries that
+ * lease's newest tick tx. Only for a handle on an `optins.renters` entry; never for a probe or first-party wallet.
+ */
+function receiptEvent(m: Mention, src: Sources, optins: Optins, excluded: ReadonlySet<string>, now: number): SocialEvent | undefined {
+  const handle = bare(m.authorHandle);
+  const wallets = new Set(
+    Object.entries(optins.renters)
+      .filter(([w, o]) => o.handle && bare(o.handle) === handle && !excluded.has(w.toLowerCase()))
+      .map(([w]) => w.toLowerCase()),
+  );
+  if (!wallets.size) return undefined;
+  const lease = src.leases
+    .filter((l) => l.payer && wallets.has(l.payer.toLowerCase()))
+    .sort((a, b) => b.createdAt - a.createdAt)[0];
+  if (!lease?.payer) return undefined;
+  return { id: `reply:${m.id}`, kind: 'renter_returned', at: now, leaseId: lease.leaseId, payer: lease.payer, hoursPaid: lease.ticksPaidByRenter };
 }
 
 const BRIEF = {
@@ -129,20 +148,17 @@ export async function handleMention(deps: LoopDeps, m: Mention): Promise<'replie
   if (filtered) return skip('skipped', filtered);
 
   // Facts before the classifier, which labels against them. No facts, no reply.
+  const excludePayers: ReadonlySet<string> = new Set([...deps.cfg.firstParty, ...deps.cfg.probes]);
+  let src: Sources;
+  let factsFor: (event?: SocialEvent) => FactSheet;
   let facts: FactSheet;
   try {
-    const src = deps.sources();
-    if ('error' in src) throw new Error(`sources: ${src.error}`);
+    const read = deps.sources();
+    if ('error' in read) throw new Error(`sources: ${read.error}`);
+    src = read;
     const offers = await deps.offers();
-    facts = buildFactSheet({
-      src,
-      offers,
-      factsMd: files.factsMd,
-      optins: files.optins,
-      siteUrl: deps.cfg.siteUrl,
-      now,
-      excludePayers: new Set([...deps.cfg.firstParty, ...deps.cfg.probes]),
-    });
+    factsFor = (event) => buildFactSheet({ event, src: read, offers, factsMd: files.factsMd, optins: files.optins, siteUrl: deps.cfg.siteUrl, now, excludePayers });
+    facts = factsFor();
   } catch (e) {
     const why = String((e as Error)?.message ?? e).slice(0, 200);
     await alertHourly(deps, 'reply_facts', `replies silent: no fact sheet: ${why}`, now);
@@ -155,6 +171,17 @@ export async function handleMention(deps: LoopDeps, m: Mention): Promise<'replie
   if (notes.length) log(deps, { at: now, kind: 'error', text: `mention ${m.id}: ${notes.join('; ')}` });
   if (label === 'tenant' && !optedInHandles(files.optins).has(bare(m.authorHandle))) label = 'other';
   if (label === 'other') return skip('silent', 'other');
+  if (label === 'tenant') {
+    // An opted-in renter's reply carries a receipt; a grantee or host gets the plain facts.
+    const event = receiptEvent(m, src, files.optins, excludePayers, now);
+    if (event) {
+      try {
+        facts = factsFor(event);
+      } catch (e) {
+        return skip('silent', `no fact sheet: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+      }
+    }
+  }
 
   const composed = await compose(
     { model: deps.model, writeModel: deps.cfg.gemini.modelWrite, checkModel: deps.cfg.gemini.modelCheck, files, siteHost: deps.cfg.siteUrl },
