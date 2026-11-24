@@ -170,7 +170,7 @@ export function openApiDoc(prices: Micro[], max: Micro, usd: (m: Micro) => strin
             '201': json(
               {
                 type: 'object',
-                properties: { allowanceId: { type: 'string' }, ownerToken: { type: 'string', description: 'Keep it: it reads the owner view and stops the allowance.' }, approveUrl: { type: 'string' }, state: { type: 'string' }, next: { type: 'object' } },
+                properties: { allowanceId: { type: 'string' }, ownerToken: { type: 'string', description: 'Keep it: it reads the owner view and stops the allowance.' }, approveUrl: { type: 'string' }, state: { type: 'string' }, next: { type: 'string', description: 'The path to read it: /v1/allowances/<id>.' } },
                 required: ['allowanceId', 'ownerToken', 'approveUrl', 'state'],
               },
               'Created in state waiting; give approveUrl to your person.',
@@ -178,6 +178,7 @@ export function openApiDoc(prices: Micro[], max: Micro, usd: (m: Micro) => strin
             '400': error('The body is not valid.'),
             '404': error('no_home: the home has not paid its first hour yet.'),
             '409': error('already_live: this home already has a live allowance.'),
+            '429': error('rate_limited'),
           },
         },
       },

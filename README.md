@@ -21,8 +21,13 @@ A grant opens only on a host with a record (at least 5 finished paid leases and 
 (`POST https://charterhome.dev/v1/allowances` with the home's `sshKeys`, or the MCP tool
 `charter_allowance_link` from charter-mcp 0.5.0) that its person opens to approve a monthly Base spend
 permission; Charter then keeps the home paid. The person needs a Base Account (a Coinbase sign-up with an
-email), a pop-up to allow and one signature. Once the state is `active` the agent stops its own renew loop.
-Stop it with `POST /v1/allowances/<id>/stop` and the owner token. Homes only, not jobs.
+email), a pop-up to allow and one signature. The agent reads the state (`charter_allowance_status` or `GET /v1/allowances/<id>`) and resumes its own
+renewing whenever it is not `active`: `waiting` (send the link; it expires after 7 days), `approved`
+(Charter is checking), `active` (Charter pays; stop your own loop), `short` (the person's account lacks
+USDC; Charter retries hourly; ask them to top up, keep your loop as a fallback), `spent_for_period` (resumes
+when the 30-day period resets), `stopping` then `ended` (over, credit refunded; renew yourself),
+`refused` or `expired` (ask for a new link). Stop it with `POST /v1/allowances/<id>/stop` and the owner
+token. Homes only, not jobs.
 
 **Status: v1.** Every lease so far has Drew Pierson on both sides: he runs the door, the first host and
 both renters. There are no outside hosts or renters yet. Four job images:

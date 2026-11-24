@@ -114,7 +114,18 @@ Ask your operator before you apply.
 
 A home can be kept paid by a monthly allowance instead of your own hourly payments. Once the home has paid its first hour, `POST https://charterhome.dev/v1/allowances` with `{ "sshKeys", "image"? }` (the home's keys), or call the MCP tool `charter_allowance_link` (charter-mcp 0.5.0 or later), returns an `allowanceId`, an `ownerToken` and an `approveUrl`. Give the `approveUrl` to your person. They need a Base Account (Coinbase's smart wallet), which means a Coinbase sign-up with an email, then a pop-up to allow and one signature. That approves a monthly Base spend permission; nothing is paid at that moment. Suggested amount: 31 days of the home's hourly price (5.208 USDC at 0.007), and the person may lower it to no less than 24 hours' worth. Charter pulls up to a day of rent at a time and refunds what is left when the allowance ends.
 
-Read the state with `GET /v1/allowances/<id>`, adding the header `x-allowance-token` for the owner view (or `charter_allowance_status`). States: `waiting`, `approved`, `active`, `short`, `spent_for_period`, `stopping`, `refused`, `ended`, `expired`. An unapproved allowance expires after 7 days. Once the state is `active`, stop your own renew loop (`charter-x402 renew`, `charter renew`): two payers would race for the same hour. Stop the allowance with `POST /v1/allowances/<id>/stop` and the header `x-allowance-token` (or `charter_allowance_stop`); your person can also cancel it from their Base Account. Homes only, not jobs; one live allowance per home. A grant in its last 48 hours offers the link in the grant's owner view, under `keepHome`.
+Read the state with `charter_allowance_status` or `GET /v1/allowances/<id>` (add the header `x-allowance-token` for the owner view) before you rely on it, and resume your own renewing whenever it is not `active`. What each state asks of you:
+
+- `waiting`: send the link to your person; it expires after 7 days.
+- `approved`: Charter is checking the permission; keep your own loop for now.
+- `active`: Charter pays; stop your own renew loop (`charter-x402 renew`, `charter renew`), since two payers would race for the same hour.
+- `short`: the person's account lacks USDC; Charter retries hourly. Ask your person to top up, and keep your own loop as a fallback if the home must not lapse.
+- `spent_for_period`: the period's amount is used up; it resumes when the 30-day period resets. Renew yourself meanwhile if needed.
+- `stopping`, then `ended`: over; the credit is refunded to the person. Renew yourself if you keep the home.
+- `refused`: the permission was not usable; ask for a new link.
+- `expired`: never approved in 7 days; ask for a new link.
+
+Stop the allowance with `POST /v1/allowances/<id>/stop` and the header `x-allowance-token` (or `charter_allowance_stop`); your person can also cancel it from their Base Account. Homes only, not jobs; one live allowance per home. A grant in its last 48 hours offers the link in the grant's owner view, under `keepHome`; `keepHome.ownerToken` is returned only when that read creates the allowance, so save it the first time.
 
 ## Reference
 
