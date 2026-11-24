@@ -208,23 +208,37 @@ function idNum(id: string): bigint {
   return /^\d+$/.test(id) ? BigInt(id) : -1n;
 }
 
+const TRANSIENT_REFUSAL = /: publish: (paused|kill_switch_offline|spend_cap)$/;
+
+/** Whether `handleMention` logged a publish refusal for this mention that will lift later (not a permanent skip). */
+function refusedForNow(deps: LoopDeps, mentionId: string): boolean {
+  const row = [...deps.state.get().log].reverse().find((r) => r.kind === 'skip' && r.id === mentionId);
+  return !!row && TRANSIENT_REFUSAL.test(row.text);
+}
+
 /**
  * Every 10 minutes. Paused, a dead kill switch or the spend cap: no read at all, and the since id stays, so the
  * mentions are read next time (the 24 hour age limit still applies). Every read is charged to the day's spend.
- * The first run stores the newest id and replies to nothing. Then each mention, oldest first, goes through
- * `handleMention`, and the since id moves past it; a block that starts mid-tick stops before the next mention.
+ * The first run (`mentionsInitialized` false) stores the newest id, if any, and replies to nothing. Then each
+ * mention, oldest first, goes through `handleMention`, and the since id moves past it. A block that starts
+ * mid-tick, or a publish refused as paused, kill switch offline or spend cap, stops the tick with the cursor
+ * before that mention.
  */
 export async function mentionTick(deps: LoopDeps): Promise<void> {
   const now = deps.now();
   if (await blocked(deps, now, 0)) return;
 
-  const sinceId = deps.state.get().mentionSinceId;
-  const r = await deps.x.mentions(sinceId);
+  const st = deps.state.get();
+  const r = await deps.x.mentions(st.mentionSinceId);
   deps.state.update((s) => void (s.spendUsdToday += costOf('read', { count: r.mentions.length })));
 
-  if (sinceId === undefined) {
+  if (!st.mentionsInitialized) {
+    // Ruling R16: an empty first read still counts, so the account's first real mentions are answered.
     const newest = r.newestId ?? [...r.mentions].sort((a, b) => (idNum(b.id) > idNum(a.id) ? 1 : -1))[0]?.id;
-    if (newest) deps.state.update((s) => void (s.mentionSinceId = newest));
+    deps.state.update((s) => {
+      if (newest) s.mentionSinceId = newest;
+      s.mentionsInitialized = true;
+    });
     return;
   }
 
@@ -235,7 +249,9 @@ export async function mentionTick(deps: LoopDeps): Promise<void> {
   });
   for (const m of ordered) {
     if (await blocked(deps, deps.now(), 0)) return;
-    await handleMention(deps, m);
+    const result = await handleMention(deps, m);
+    // A pause, dead kill switch or spend cap that landed during this mention: keep the cursor before it.
+    if (result === 'skipped' && (refusedForNow(deps, m.id) || (await blocked(deps, deps.now(), 0)))) return;
     deps.state.update((s) => {
       if (s.mentionSinceId === undefined || idNum(m.id) > idNum(s.mentionSinceId)) s.mentionSinceId = m.id;
     });

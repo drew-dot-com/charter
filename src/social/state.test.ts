@@ -16,6 +16,7 @@ test('StateStore survives a missing file', () => {
   assert.equal(s.day, '2026-11-24');
   assert.equal(s.postsToday, 0);
   assert.equal(s.paused, false);
+  assert.equal(s.mentionsInitialized, false);
 });
 
 test('a missing file is a fresh, unpaused state', () => {
@@ -99,7 +100,7 @@ test('StateStore resets day counters on a new UTC day but keeps the long-lived f
     s.postsToday = 4; s.repliesToday = 9; s.authorRepliesToday = { a: 2 };
     s.spendUsdToday = 1.5; s.geminiCallsToday = 77; s.capAlerted = true;
     s.paused = true; s.heartbeatAt = 123; s.seen = ['x']; s.repliedConversations = ['c1'];
-    s.alertedAt = { loop: 99 }; s.mentionSinceId = '55';
+    s.alertedAt = { loop: 99 }; s.mentionSinceId = '55'; s.mentionsInitialized = true;
     s.week = { key: '2026-W48', hoursPaidAtStart: 10, summaryPosted: true, reportSent: true };
   });
   now = D2;
@@ -117,6 +118,7 @@ test('StateStore resets day counters on a new UTC day but keeps the long-lived f
   assert.deepEqual(s.repliedConversations, ['c1']);
   assert.deepEqual(s.alertedAt, { loop: 99 });
   assert.equal(s.mentionSinceId, '55');
+  assert.equal(s.mentionsInitialized, true);
   assert.deepEqual(s.week, { key: '2026-W48', hoursPaidAtStart: 10, summaryPosted: true, reportSent: true });
 });
 
@@ -138,4 +140,15 @@ test('the paused state written after a corrupt file survives further reads and n
   assert.equal(st.get().paused, true);
   assert.equal(new StateStore(f, () => D1).get().paused, true);
   assert.ok(readdirSync(d).some((n) => n.startsWith('state.json.corrupt-')));
+});
+
+test('mentionsInitialized: a wrong type falls back, and a file from before the field counts a stored since id as initialized', () => {
+  const d = dir();
+  const f = join(d, 'state.json');
+  writeFileSync(f, JSON.stringify({ mentionsInitialized: 'yes', day: '2026-11-24' }));
+  assert.equal(new StateStore(f, () => D1).get().mentionsInitialized, false);
+  writeFileSync(f, JSON.stringify({ mentionSinceId: '55', day: '2026-11-24' }));
+  assert.equal(new StateStore(f, () => D1).get().mentionsInitialized, true);
+  writeFileSync(f, JSON.stringify({ mentionsInitialized: false, mentionSinceId: '55', day: '2026-11-24' }));
+  assert.equal(new StateStore(f, () => D1).get().mentionsInitialized, false);
 });

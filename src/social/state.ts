@@ -10,6 +10,8 @@ export interface SocialState {
   /** Event id or reply key to failed X attempts. */
   attempts: Record<string, number>;
   mentionSinceId?: string;
+  /** The first mentions read happened (it replies to nothing). Set even when that read was empty. */
+  mentionsInitialized: boolean;
   repliedConversations: string[];
   /** UTC YYYY-MM-DD the counters below belong to. */
   day: string;
@@ -37,6 +39,7 @@ function fresh(day: string): SocialState {
     initialized: false,
     seen: [],
     attempts: {},
+    mentionsInitialized: false,
     repliedConversations: [],
     day,
     postsToday: 0,
@@ -92,7 +95,7 @@ export class StateStore {
       else s = checked(raw, day);
     }
     if (s.day !== day) {
-      // New UTC day: the counters restart. paused, seen, replies, heartbeat, alerts, week and log carry over.
+      // New UTC day: the counters restart. paused, seen, replies, mention cursor, heartbeat, alerts, week and log carry over.
       s.day = day;
       s.postsToday = 0;
       s.repliesToday = 0;
@@ -145,6 +148,9 @@ function checked(raw: Record<string, unknown>, day: string): SocialState {
     initialized: typeof raw.initialized === 'boolean' ? raw.initialized : d.initialized,
     seen: isStrs(raw.seen) ? raw.seen : d.seen,
     attempts: isNumMap(raw.attempts) ? raw.attempts : d.attempts,
+    // A file from before this field: a stored since id means the first read already happened.
+    mentionsInitialized:
+      typeof raw.mentionsInitialized === 'boolean' ? raw.mentionsInitialized : raw.mentionsInitialized === undefined && typeof raw.mentionSinceId === 'string',
     repliedConversations: isStrs(raw.repliedConversations) ? raw.repliedConversations : d.repliedConversations,
     day: typeof raw.day === 'string' ? raw.day : d.day,
     postsToday: isNum(raw.postsToday) ? raw.postsToday : d.postsToday,

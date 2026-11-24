@@ -289,12 +289,61 @@ test('the first mentionTick replies to nothing and stores newestId', async () =>
 
 test('a later mentionTick replies oldest first and advances the since id', async () => {
   const t = setup({});
-  t.state.update((s) => void (s.mentionSinceId = '100'));
+  t.state.update((s) => {
+    s.mentionsInitialized = true;
+    s.mentionSinceId = '100';
+  });
   t.x.setMentions({ mentions: [mention('300'), mention('200')], newestId: '300' });
   await mentionTick(t.deps);
   assert.deepEqual(t.x.reads, ['100']);
   assert.deepEqual(t.x.posts.map((p) => p.replyTo), ['200', '300']);
   assert.equal(t.state.get().mentionSinceId, '300');
+});
+
+test('an empty first mentions read still initializes, so the next mention is answered', async () => {
+  const t = setup({});
+  await mentionTick(t.deps);
+  const s = t.state.get();
+  assert.equal(s.mentionsInitialized, true);
+  assert.equal(s.mentionSinceId, undefined);
+  t.x.setMentions({ mentions: [mention('500')], newestId: '500' });
+  await mentionTick(t.deps);
+  assert.deepEqual(t.x.reads, [undefined, undefined]);
+  assert.deepEqual(t.x.posts, [{ text: REPLY, replyTo: '500' }]);
+  assert.equal(t.state.get().mentionSinceId, '500');
+});
+
+test('a pause that lands during a compose keeps the cursor before that mention', async () => {
+  const base = fakeModel();
+  let state: StateStore | undefined;
+  let pausedOnce = false;
+  const model: Model & { prompts: string[] } = {
+    prompts: base.prompts,
+    async json<T>(m: string, prompt: string, system?: string): Promise<T> {
+      if (!pausedOnce && prompt.startsWith('Draft three') && prompt.includes('From: @user202')) {
+        pausedOnce = true;
+        state!.update((s) => void (s.paused = true));
+      }
+      return base.json<T>(m, prompt, system);
+    },
+  };
+  const t = setup({ model });
+  state = t.state;
+  t.state.update((s) => {
+    s.mentionsInitialized = true;
+    s.mentionSinceId = '100';
+  });
+  t.x.setMentions({ mentions: [mention('201'), mention('202'), mention('203')], newestId: '203' });
+  await mentionTick(t.deps);
+  assert.deepEqual(t.x.posts.map((p) => p.replyTo), ['201']);
+  assert.equal(t.state.get().mentionSinceId, '201');
+
+  await handleCommand({ text: '/resume', chatId: '42', date: Math.floor(NOW / 1000) }, { state: t.state, x: t.x, chatId: '42', now: NOW, status: () => '' });
+  t.x.setMentions({ mentions: [mention('203'), mention('202')], newestId: '203' });
+  await mentionTick(t.deps);
+  assert.deepEqual(t.x.reads, ['100', '201']);
+  assert.deepEqual(t.x.posts.map((p) => p.replyTo), ['201', '202', '203']);
+  assert.equal(t.state.get().mentionSinceId, '203');
 });
 
 test('a paused mentionTick reads nothing and keeps the since id', async () => {
