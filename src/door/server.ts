@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { HostError, type HostApi, type OpenResult } from '../tenant/host-api.js';
 import { JOB_IMAGES, homeIdOf, isHomeImage, jobFromBody } from '../jobs.js';
-import { ALLOWED_MOVES as ALLOWANCE_MOVES, BadMove as AllowanceBadMove, LIVE_STATES as ALLOWANCE_LIVE, billerView, ownerView as allowanceOwnerView, pageView as allowancePageView, validatePermission, validateRequest as validateAllowanceRequest, type AllowanceState, type AllowanceStore, type EndReason } from './allowances.js';
+import { ALLOWED_MOVES as ALLOWANCE_MOVES, KEEP_HOME_FROM_HOURS, BadMove as AllowanceBadMove, LIVE_STATES as ALLOWANCE_LIVE, billerView, ownerView as allowanceOwnerView, pageView as allowancePageView, validatePermission, validateRequest as validateAllowanceRequest, type AllowanceState, type AllowanceStore, type EndReason } from './allowances.js';
 import { ALLOWED_MOVES, BadMove, ownerView, publicView, readFundPublic, validatePitch, type Grant, type GrantState, type GrantStore } from './grants.js';
 import type { JobSpec, Lease, Micro, Offer } from '../types.js';
 import { DeadlinePassedError, SendTimeoutError } from '../errors.js';
@@ -445,7 +445,22 @@ export function doorApp(deps: DoorDeps): express.Express {
       const token = req.get('x-grant-token');
       if (token === undefined) return void res.json(publicView(g));
       if (!grants.tokenOk(id, token)) return void res.status(403).json({ error: 'bad_token' });
-      res.json(ownerView(g));
+      const view = ownerView(g);
+      // The last 48 hours of a paid grant: hand the grantee a link its person can use to keep the home paid.
+      const tickMicro = g.leaseId ? priceOf(g.leaseId) : undefined;
+      if (deps.allowances && deps.allowAddress && g.state === 'active' && g.paidHours >= KEEP_HOME_FROM_HOURS && tickMicro !== undefined) {
+        const pageUrl = deps.allowPageUrl ?? 'https://charterhome.dev/allow';
+        const live = deps.allowances.liveForHome(g.homeId);
+        let a = live;
+        let ownerToken: string | undefined;
+        if (!a) {
+          ownerToken = randomBytes(32).toString('hex');
+          a = deps.allowances.add({ sshKeys: g.sshKeys, image: g.image, tickMicro }, ownerToken);
+        }
+        const approveUrl = `${pageUrl}?id=${a.allowanceId}`;
+        return void res.json({ ...view, keepHome: { allowanceId: a.allowanceId, ...(ownerToken ? { ownerToken } : {}), approveUrl, state: a.state, message: `Your grant ends soon. To keep this home after it, send your person this link to approve a monthly allowance: ${approveUrl}` } });
+      }
+      res.json(view);
     });
     app.get('/v1/grants', (_req, res) => {
       const list = grants.all().sort((a, b) => b.createdAt - a.createdAt).slice(0, LIST_CAP).map(publicView);

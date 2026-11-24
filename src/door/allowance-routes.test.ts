@@ -293,3 +293,64 @@ test('the biller address is never payer_blocked', async () => {
   assert.notEqual((await tick(a!, SPENDER, '1')).status, 403);
   s.close();
 });
+
+async function activeGrant(s: Awaited<ReturnType<typeof start>>, paidHours: number, leaseId: string | null = LEASE) {
+  const g = s.grants.add({ name: 'Ada', pitch: 'p', sshKeys: NKEY, image: 'charter-home' } as never, 'tok');
+  s.grants.update(g.grantId, { state: 'approved_waiting' });
+  s.grants.update(g.grantId, { state: 'active', paidHours, ...(leaseId ? { leaseId } : {}) });
+  return g;
+}
+const owner = async (s: Awaited<ReturnType<typeof start>>, id: string) =>
+  (await (await s.call('GET', `/v1/grants/${id}`, undefined, { 'x-grant-token': 'tok' })).json()) as { keepHome?: { allowanceId: string; ownerToken?: string; approveUrl: string; state: string; message: string } };
+
+test('no keepHome before hour 672', async () => {
+  const s = await start();
+  const g = await activeGrant(s, 671);
+  assert.equal((await owner(s, g.grantId)).keepHome, undefined);
+  assert.equal(s.allowances.all().length, 0);
+  s.close();
+});
+
+test('keepHome at hour 672 with a new allowance and its token', async () => {
+  const s = await start();
+  const g = await activeGrant(s, 672);
+  const k = (await owner(s, g.grantId)).keepHome!;
+  assert.match(k.ownerToken!, /^[0-9a-f]{64}$/);
+  assert.equal(k.approveUrl, `${PAGE}?id=${k.allowanceId}`);
+  assert.equal(k.state, 'waiting');
+  assert.equal(k.message, `Your grant ends soon. To keep this home after it, send your person this link to approve a monthly allowance: ${k.approveUrl}`);
+  assert.ok(s.allowances.tokenOk(k.allowanceId, k.ownerToken!));
+  assert.ok(s.allowances.get(k.allowanceId)!.tickMicro > 0n);
+  s.close();
+});
+
+test('a second read reuses it and omits the token', async () => {
+  const s = await start();
+  const g = await activeGrant(s, 700);
+  const a = (await owner(s, g.grantId)).keepHome!;
+  const b = (await owner(s, g.grantId)).keepHome!;
+  assert.equal(b.allowanceId, a.allowanceId);
+  assert.equal(b.ownerToken, undefined);
+  assert.equal(s.allowances.all().length, 1);
+  s.close();
+});
+
+test('the public grant view never has keepHome', async () => {
+  const s = await start();
+  const g = await activeGrant(s, 700);
+  await owner(s, g.grantId);
+  const pub = (await (await s.call('GET', `/v1/grants/${g.grantId}`)).json()) as Record<string, unknown>;
+  assert.equal(pub.keepHome, undefined);
+  s.close();
+});
+
+test('no keepHome without a lease, or when allowance routes are not mounted', async () => {
+  const s = await start();
+  const g = await activeGrant(s, 700, null);
+  assert.equal((await owner(s, g.grantId)).keepHome, undefined);
+  s.close();
+  const n = await start({ noAllowances: true });
+  const g2 = await activeGrant(n, 700);
+  assert.equal((await owner(n, g2.grantId)).keepHome, undefined);
+  n.close();
+});

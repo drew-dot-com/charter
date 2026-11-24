@@ -63,6 +63,8 @@ export class BadMove extends Error {
 /** An allowance nobody approved expires this long after it was made. */
 export const EXPIRE_MS = 7 * 86_400_000;
 export const PERIOD_SECONDS = 2_592_000;
+/** Paid hours at which a grant's owner view offers the keep-home link: 720 grant hours minus the last 48. */
+export const KEEP_HOME_FROM_HOURS = 672;
 export const SUGGESTED_TICKS = 744n;
 export const MIN_TICKS = 24n;
 export const BASE_CHAIN_ID = 8453;
