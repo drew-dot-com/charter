@@ -28,6 +28,18 @@
 		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
 		-Server
 	}
+	# The approval page runs the Base Account SDK, so it gets its own, wider, connect-src. Hosts read from
+	# @base-org/account 2.6.0 (dist/core/constants.js, interface/payment/constants.js, the Base chain's
+	# rpcUrls, sign/base-account/Signer.js):
+	#   keys.coinbase.com            the sign-in window's own host (the window itself is a popup, not governed here)
+	#   rpc.wallet.coinbase.com      Coinbase wallet RPC (CB_WALLET_RPC_URL)
+	#   chain-proxy.wallet.coinbase.com  Coinbase's chain proxy for Base
+	#   mainnet.base.org             the Base chain's default RPC
+	# Not allowed on purpose: the SDK's analytics (cca-lite.coinbase.com, as.coinbase.com) run from an inline
+	# script that script-src 'self' blocks, so telemetry stays off. No Cross-Origin-Opener-Policy is set,
+	# because the popup needs its opener link; the SDK refuses same-origin.
+	@allow path /allow /allow.html /allow.js
+	header @allow Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://keys.coinbase.com https://rpc.wallet.coinbase.com https://chain-proxy.wallet.coinbase.com https://mainnet.base.org; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
 	reverse_proxy charter-door:3701
 }
 
