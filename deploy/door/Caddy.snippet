@@ -3,18 +3,19 @@
 # then docker cp it to deploy-caddy-1:/tmp/Caddyfile and
 # caddy reload --config /tmp/Caddyfile. The door is on relay_deploy_net.
 #
-# Two names, one site. charter.mainnet.toonprotocol.dev needs an A record to
-# 167.233.221.236 in Jonathan's zone (the zone has a wildcard to Porkbun
-# parking, so until then the name resolves elsewhere and Caddy's certificate
-# attempts for it fail and retry in the background; the sslip name is not
-# affected). Once the record resolves, the next attempt gets the certificate.
+# Four names, one door. charterhome.dev is the canonical address: its / is the
+# landing page (the door's /home), every other path is the door. The storefront
+# for a browser is rent.charterhome.dev. The two old names stay as aliases for
+# callers that still use them (charter.mainnet.toonprotocol.dev is an A record in
+# a zone Charter does not control). DNS for charterhome.dev is at Porkbun: A and
+# AAAA for the apex and rent, to 167.233.221.236 and 2a01:4f8:c015:382f::1.
 #
-# The page is one module script, one stylesheet and self-hosted fonts, all
-# from this origin; job screenshots arrive as data: images; every fetch is to
-# this origin (wallet RPC and signing go through the injected wallet, not the
+# The pages are a module script, stylesheets and self-hosted fonts, all from the
+# same origin; job screenshots arrive as data: images; every fetch is to the
+# same origin (wallet RPC and signing go through the injected wallet, not the
 # page). Links to Basescan and Solscan are navigations, which CSP does not
 # govern. Anything else is a bug and shows up as a CSP violation in the console.
-charter.167-233-221-236.sslip.io, charter.mainnet.toonprotocol.dev {
+(charter_door) {
 	encode zstd gzip
 	request_body {
 		max_size 64KB
@@ -28,4 +29,14 @@ charter.167-233-221-236.sslip.io, charter.mainnet.toonprotocol.dev {
 		-Server
 	}
 	reverse_proxy charter-door:3701
+}
+
+charterhome.dev {
+	@root path /
+	rewrite @root /home
+	import charter_door
+}
+
+rent.charterhome.dev, charter.167-233-221-236.sslip.io, charter.mainnet.toonprotocol.dev {
+	import charter_door
 }
