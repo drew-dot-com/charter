@@ -14,9 +14,9 @@
     <a class="brand" href="/">Charter</a>
     <span class="chip live">Base mainnet</span>
     <nav>
-      <a href="/">Rent</a>
+      <a href="https://rent.charterhome.dev/">Rent</a>
       <a href="/grants">Grants</a>
-      <a href="https://charter.ar.io/">About</a>
+      <a href="https://charterhome.dev/">About</a>
       <a href="https://github.com/drew-dot-com/charter">Code</a>
     </nav>
   </header>
@@ -38,7 +38,7 @@
       <tr><td>a status read or one output part</td><td class="num">0</td><td>free</td></tr>
     </table>
     <p>Each host sets its own price, and the storefront adds its fee (0 today). The authoritative number is <code>tickPrice</code> in <a href="/v1/offers">/v1/offers</a>, in micro-USDC (<code>7000</code> is 0.007), and <code>intervalSeconds</code> says what a tick buys (3600). At 0.007 an hour, a python job that finishes inside its first hour costs 0.007 USDC. A full day costs about 0.17; 30 days about 5 USDC, which is about the price of the cheapest VPS, for a box nobody signed up for. The python job has no network and the fetch job hands back pages, while the home has a disk (<code>home.diskGiB</code>), SSH in and network out. Homes are limited: the count is <code>home.slots</code> in the offer. Until 2026-11-04 the interval was 30 seconds at 0.005.</p>
-    <p>Status: live on Base mainnet since 2026-10-17. The first host and every renter so far are the project's own; anyone may register a host. The first mainnet leases (2026-10-17 to 2026-10-20) have receipts on <a href="https://charter.ar.io/#proof">the About page</a>; grants and the hours the fund paid are at <a href="/grants">/grants</a>.</p>
+    <p>Status: live on Base mainnet since 2026-10-17. The first host and every renter so far are the project's own; anyone may register a host. The first mainnet leases (2026-10-17 to 2026-10-20) have receipts on <a href="https://charterhome.dev/#proof">the About page</a>; grants and the hours the fund paid are at <a href="/grants">/grants</a>.</p>
 
     <h2 id="hosts">Who runs the hosts</h2>
     <p>Hosts are run by independent operators. Anyone can register one; Charter does not vet them. The storefront lists a host once it passes a probe (a small paid python job), and each offer carries <code>operator: "independent"</code> and the host's <code>record</code>: <code>probesPassed</code>, <code>leasesFinished</code>, <code>successRate</code>, <code>new</code> (no finished lease yet), and <code>lastProbeFailedAt</code> when a probe failed. <code>/v1/offers</code> lists offers in the order the storefront picks them: hosts with a record before new ones, then the lower price; a host under 80% success is skipped while a better one fits. For a home, <code>home.tested: false</code> means no paid home has run on that host yet. A host that fails two leases in a row, or a probe, is hidden until it passes again. A host's operator can see what runs on its machine and read a home's disk: nothing on a host is private from its operator.</p>
@@ -258,7 +258,7 @@ done</pre>
     </ul>
   </main>
   <footer>
-    <p>Hosts are run by independent operators, and anyone can <a href="https://github.com/drew-dot-com/charter#run-a-host">run one</a>. Payments are x402 in USDC on Base. The code is MIT; the receipts are on <a href="https://charter.ar.io/#proof">charter.ar.io</a>.</p>
+    <p>Hosts are run by independent operators, and anyone can <a href="https://github.com/drew-dot-com/charter#run-a-host">run one</a>. Payments are x402 in USDC on Base. The code is MIT; the receipts are on <a href="https://charterhome.dev/#proof">charterhome.dev</a>.</p>
   </footer>
 </body>
 </html>
