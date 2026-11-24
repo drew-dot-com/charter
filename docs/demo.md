@@ -718,3 +718,21 @@ toon2 kept running jobs; the door does not list hel1 yet.
   charter-home-net, charter-anon active; DOCKER-USER held every rule; the home re-created (`restarts 1`),
   caddy and the node up; charter-host's first offer publish failed while the node booted and succeeded a
   minute later. From the Mac: logged in again and every isolation check held.
+
+## 18. Open hosts on Base: the cut-over off TOON (2026-11-23/24)
+
+Charter stopped using TOON. Renters pay the door over x402 on Base as before; the door now pays every host over the host's own x402 `batch-settlement` channel on Base, and anyone can register a host (design: `docs/superpowers/specs/2026-11-23-open-hosts-on-base-design.md`).
+
+- Code: `main` fast-forwarded to `10b3901` (40 commits) and pushed; door, grant fund and hel1 deployed from it.
+- Door wallet (renters' `payTo`, pays hosts): `0xb3fF4E7358c5D3286F6f26cbcc38f08CB9dF8c7d`, key `/root/charter-door/secrets/door-payer.key` (0400). Funded 12.1 USDC and 0.0005 ETH on Base. Daily sweep above 15 USDC to `0xbD87E8Ff0691f0A924e5ce2A06821db818B62385`.
+- Backups: `/opt/charter.bak-20261123-preopenhosts`, `door.env.bak-20261123-preopenhosts`, `/root/charter-door-data-20261123-preopenhosts.tgz`; on hel1 `env.bak-20261123-preopenhosts`, `Caddyfile.bak-20261123-preopenhosts`, `/root/charter-src-20261123-preopenhosts.tgz`, images tagged `:pre-20261123`.
+- hel1: host id `b6cbc290b3e6f6b57f4c5a94a27014b56a3fe5c4802b47a6c3761655ba8717b3`, `https://37-27-86-235.sslip.io`, paid to `0x6c7035197c2F39de03389b264c0bD3b919336f06`, claim authorizer `0x356C26f9C2fD5a853E49bcaAeacd9C28c365252b`. Registered itself; first probe passed through door channel `0xd56eea45b16aeeb816421458e27758dbfbea848fbba7044f6550ae046b97d564` (0.10 USDC deposit).
+- Paid proof and hel1's record, five rents from the bazaar key `0xb66E…c715`, each one tick (7000) and job exit 0:
+  - `24b199dd2bb3b4fa44d52a2ab6ababed` tx `0x0d2f8dae11e8fc2d3d0f7423f17418025527324566e33206ec0d1077629a2f62`
+  - `576c74f421b25390e35d294cf21ce704` tx `0x41814bb0755372632046e433d4c9c176fe22a3e5a20b8413b9a4ad100dcb3875`
+  - `8848816aa36f989368ade0e245a8876f` tx `0xafa63543093e74aa70b1413dd611a2962ccff22594f94bd3d76115198fe52207`
+  - `62a679bef84ca090d158028b136cee17` tx `0x5cd0fecd242bd695abced13db015f5a2e26495b7c653830411d243d1022dc3e4`
+  - `54f95a1487f1bebda9332334082f890d` tx `0x3fd8649d3ac5cf6844fed9c6fd287686fbc1567107a1e5b73c07a496bd4ace9b`
+  hel1 record after: `leasesFinished 5`, `successRate 1`, `new false`; channel charged 42000 (probe + five ticks), zero losses.
+- TOON retired for Charter: channels `FEFVKrn2…GLW` (edge to hel1), `DaZN3vmu…5hdr` (hel1 to edge) and `5akKFS2L…M2Wm` (old door to edge, close tx `36dMeknX3SvtuWVdwDiiq9Mx3tP83HcYoJPBKwZhb67RwcPTiCKG9JRYF1yoqM6DsLccNuRip7fc9x3KGw2HLWZR`) closed, accounts gone on chain; nothing was owed on any. hel1's routes and peering removed from the edge; hel1's TOON node stopped and disabled; `/ilp` dropped from hel1's Caddy. `~/.toon` on hel1 kept (its EVM key is hel1's payout address).
+- Not republished: the Arweave landing page (charter.ar.io stays at v8; the site moves to a regular website later).
