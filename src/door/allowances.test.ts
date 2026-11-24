@@ -37,7 +37,8 @@ const perm = () => ({
     extraData: '0x',
   },
 });
-const o = () => ({ spender: SPENDER, tickMicro: 7000n, now: 1_000_000 });
+const NOW_MS = 1_700_000_000_000;
+const o = () => ({ spender: SPENDER, tickMicro: 7000n, now: NOW_MS });
 function withPerm(patch: Record<string, unknown>, top: Record<string, unknown> = {}) {
   const p = perm();
   return { ...p, ...top, permission: { ...p.permission, ...patch } };
@@ -124,13 +125,56 @@ test('validatePermission refuses', () => {
   bad(withPerm({ token: '0x2222222222222222222222222222222222222222' }), 'token');
   bad(withPerm({}, { chainId: 1 }), 'chainId');
   bad(withPerm({ period: 86400 }), 'period');
-  bad(withPerm({ allowance: '167999' }), 'allowance');
-  assert.equal(validatePermission(withPerm({ allowance: '168000' }), o()).ok, true);
+  // At least 720 ticks (30 days of the home), so a smaller allowance never loses the home every month.
+  bad(withPerm({ allowance: '5039999' }), 'allowance');
+  assert.equal(validatePermission(withPerm({ allowance: '5040000' }), o()).ok, true);
   bad(withPerm({ end: 1000 }), 'end');
   bad(withPerm({}, { signature: 'zz' }), 'signature');
   bad(withPerm({}, { signature: '0x' }), 'signature');
   bad(withPerm({ account: 'nope' }), 'account');
   bad(null, 'body');
+});
+
+test('validatePermission bounds every field to its Solidity type', () => {
+  const bad = (b: unknown, field: string) => {
+    const v = validatePermission(b, o());
+    assert.equal(v.ok, false, field);
+    if (!v.ok) assert.match(v.error, new RegExp(field));
+  };
+  const ok = (b: unknown) => assert.equal(validatePermission(b, o()).ok, true);
+  // allowance: uint160
+  ok(withPerm({ allowance: (2n ** 160n - 1n).toString() }));
+  bad(withPerm({ allowance: (2n ** 160n).toString() }), 'allowance');
+  bad(withPerm({ allowance: '9'.repeat(78) }), 'allowance');
+  // start and end: uint48
+  ok(withPerm({ end: 2 ** 48 - 1 }));
+  bad(withPerm({ end: 2 ** 48 }), 'end');
+  bad(withPerm({ end: Number.MAX_SAFE_INTEGER }), 'end');
+  bad(withPerm({ start: 2 ** 48 }), 'start');
+  // salt: uint256
+  ok(withPerm({ salt: '0x' + 'ff'.repeat(32) }));
+  bad(withPerm({ salt: '0x1' + '00'.repeat(32) }), 'salt');
+  bad(withPerm({ salt: '0x' + '0'.repeat(200) }), 'salt');
+  // extraData: bytes, even-length hex, capped
+  ok(withPerm({ extraData: '0x' }));
+  ok(withPerm({ extraData: '0xabcd' }));
+  bad(withPerm({ extraData: '0xabc' }), 'extraData');
+  bad(withPerm({ extraData: '0x' + 'ab'.repeat(1025) }), 'extraData');
+  // signature: bytes, even-length, up to 20000 characters (an ERC-6492 wrapped passkey signature is long)
+  ok(withPerm({}, { signature: '0x' + 'ab'.repeat(4000) }));
+  ok(withPerm({}, { signature: '0x' + 'ab'.repeat(9999) }));
+  bad(withPerm({}, { signature: '0x' + 'ab'.repeat(10000) }), 'signature');
+  bad(withPerm({}, { signature: '0xabc' }), 'signature');
+});
+
+test('validatePermission refuses a start more than 10 minutes ahead of the door clock', () => {
+  const nowSec = NOW_MS / 1000;
+  assert.equal(validatePermission(withPerm({ start: nowSec + 600 }), o()).ok, true);
+  const v = validatePermission(withPerm({ start: nowSec + 601 }), o());
+  assert.equal(v.ok, false);
+  if (!v.ok) assert.match(v.error, /start/);
+  // A start in the past (the page passes an hour ago) is fine.
+  assert.equal(validatePermission(withPerm({ start: nowSec - 3600 }), o()).ok, true);
 });
 
 test('pageView hides keys, homeId, token hash, signature and leaseId; ownerView adds homeId and leaseId', () => {
@@ -145,7 +189,7 @@ test('pageView hides keys, homeId, token hash, signature and leaseId; ownerView 
   assert.equal(text.includes('ab'.repeat(65)), false);
   assert.equal(pv.allowanceId, a.allowanceId);
   assert.equal(pv.suggestedMicro, '5208000');
-  assert.equal(pv.minMicro, '168000');
+  assert.equal(pv.minMicro, '5040000');
   assert.equal(pv.periodDays, 30);
   assert.equal(pv.spender, SPENDER);
   assert.equal(pv.account, ACCOUNT);

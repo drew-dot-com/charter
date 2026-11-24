@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { HostError, type HostApi, type OpenResult } from '../tenant/host-api.js';
 import { JOB_IMAGES, homeIdOf, isHomeImage, jobFromBody } from '../jobs.js';
-import { ALLOWED_MOVES as ALLOWANCE_MOVES, KEEP_HOME_FROM_HOURS, BadMove as AllowanceBadMove, LIVE_STATES as ALLOWANCE_LIVE, billerView, ownerView as allowanceOwnerView, pageView as allowancePageView, validatePermission, validateRequest as validateAllowanceRequest, type AllowanceState, type AllowanceStore, type EndReason } from './allowances.js';
+import { ALLOWED_MOVES as ALLOWANCE_MOVES, KEEP_HOME_FROM_HOURS, BadMove as AllowanceBadMove, LIVE_STATES as ALLOWANCE_LIVE, billerView, personMessage, ownerView as allowanceOwnerView, pageView as allowancePageView, validatePermission, validateRequest as validateAllowanceRequest, type AllowanceState, type AllowanceStore, type EndReason } from './allowances.js';
 import { ALLOWED_MOVES, BadMove, ownerView, publicView, readFundPublic, validatePitch, type Grant, type GrantState, type GrantStore } from './grants.js';
 import type { JobSpec, Lease, Micro, Offer } from '../types.js';
 import { DeadlinePassedError, SendTimeoutError } from '../errors.js';
@@ -72,7 +72,7 @@ export interface DoorDeps {
   fundToken?: string;
   /** The fund's own payer address, lowercased. A payer equal to it is never answered payer_blocked. */
   fundAddress?: string;
-  /** The allowance store. Left out (or no `allowAddress`): the /v1/allowances routes are not mounted. */
+  /** The allowance store. Left out (or no `allowAddress` or `allowToken`): the /v1/allowances routes are not mounted. */
   allowances?: AllowanceStore;
   /** The biller's bearer token. Left out: the /v1/biller routes do not exist. */
   allowToken?: string;
@@ -448,17 +448,14 @@ export function doorApp(deps: DoorDeps): express.Express {
       const view = ownerView(g);
       // The last 48 hours of a paid grant: hand the grantee a link its person can use to keep the home paid.
       const tickMicro = g.leaseId ? priceOf(g.leaseId) : undefined;
-      if (deps.allowances && deps.allowAddress && g.state === 'active' && g.paidHours >= KEEP_HOME_FROM_HOURS && tickMicro !== undefined) {
+      // Offered only when this read can make the allowance itself, so its token always goes with it: a live
+      // allowance someone else asked for (anyone who knows the home's public keys can) is never handed out.
+      if (deps.allowances && deps.allowAddress && deps.allowToken && g.state === 'active' && g.paidHours >= KEEP_HOME_FROM_HOURS && tickMicro !== undefined && !deps.allowances.liveForHome(g.homeId)) {
         const pageUrl = deps.allowPageUrl ?? 'https://charterhome.dev/allow';
-        const live = deps.allowances.liveForHome(g.homeId);
-        let a = live;
-        let ownerToken: string | undefined;
-        if (!a) {
-          ownerToken = randomBytes(32).toString('hex');
-          a = deps.allowances.add({ sshKeys: g.sshKeys, image: g.image, tickMicro }, ownerToken);
-        }
+        const ownerToken = randomBytes(32).toString('hex');
+        const a = deps.allowances.add({ sshKeys: g.sshKeys, image: g.image, tickMicro }, ownerToken);
         const approveUrl = `${pageUrl}?id=${a.allowanceId}`;
-        return void res.json({ ...view, keepHome: { allowanceId: a.allowanceId, ...(ownerToken ? { ownerToken } : {}), approveUrl, state: a.state, message: `Your grant ends soon. To keep this home after it, send your person this link to approve a monthly allowance: ${approveUrl}` } });
+        return void res.json({ ...view, keepHome: { allowanceId: a.allowanceId, ownerToken, approveUrl, state: a.state, message: `Your grant ends soon. To keep this home after it, send your person this message as it is:\n\n${personMessage(approveUrl)}` } });
       }
       res.json(view);
     });
@@ -532,9 +529,12 @@ export function doorApp(deps: DoorDeps): express.Express {
     });
   }
 
-  if (deps.allowances && deps.allowAddress) {
+  // Mounted only with both the biller's address and its token: an allowance nobody can bill would sit
+  // approved forever.
+  if (deps.allowances && deps.allowAddress && deps.allowToken) {
     const allowances = deps.allowances;
     const spender = deps.allowAddress;
+    const allowToken = deps.allowToken;
     const pageUrl = deps.allowPageUrl ?? 'https://charterhome.dev/allow';
     const ENDS: readonly string[] = ['cancelled', 'stopped', 'home_gone', 'operator'];
     /** The home's newest lease in the ledger, by createdAt. */
@@ -549,7 +549,8 @@ export function doorApp(deps: DoorDeps): express.Express {
       const paid = ledger.all().some((l) => l.homeId === homeId && l.ticksPaidByRenter > 0);
       if (!newest || !paid || !registry.homeHost(homeId)) return void res.status(404).json({ error: 'no_home' });
       const live = allowances.liveForHome(homeId);
-      if (live) return void res.status(409).json({ error: 'already_live', allowanceId: live.allowanceId });
+      // Never the live one's id: anyone who knows a home's public keys can ask.
+      if (live) return void res.status(409).json({ error: 'already_live' });
       const token = randomBytes(32).toString('hex');
       const a = allowances.add({ sshKeys: v.sshKeys, image: v.image, tickMicro: priceOf(newest.leaseId)! }, token);
       res.status(201).json({ allowanceId: a.allowanceId, ownerToken: token, approveUrl: `${pageUrl}?id=${a.allowanceId}`, state: a.state, next: `/v1/allowances/${a.allowanceId}` });
@@ -584,8 +585,8 @@ export function doorApp(deps: DoorDeps): express.Express {
       res.json(allowanceOwnerView(allowances.update(id, { state: a.state === 'waiting' ? 'expired' : 'stopping' }), spender));
     });
 
-    if (deps.allowToken) {
-      const want = createHash('sha256').update(deps.allowToken).digest();
+    {
+      const want = createHash('sha256').update(allowToken).digest();
       const billerAuth: express.RequestHandler = (req, res, next) => {
         const m = /^Bearer (.+)$/.exec(req.get('authorization') ?? '');
         const got = createHash('sha256').update(m?.[1] ?? '').digest();
@@ -595,7 +596,8 @@ export function doorApp(deps: DoorDeps): express.Express {
       app.get('/v1/biller/allowances', billerAuth, (_req, res) => {
         // liveForHome expires a stale waiting allowance, so run it for each home first.
         for (const h of new Set(allowances.all().map((a) => a.homeId))) allowances.liveForHome(h);
-        res.json({ allowances: allowances.all().filter((a) => ALLOWANCE_LIVE.includes(a.state)).map(billerView) });
+        // `spender`: the address people approve, which the biller checks is its own before it does anything.
+        res.json({ spender, allowances: allowances.all().filter((a) => ALLOWANCE_LIVE.includes(a.state)).map(billerView) });
       });
       app.post('/v1/biller/allowances/:id', billerAuth, (req, res) => {
         const id = String(req.params.id);
@@ -622,12 +624,12 @@ export function doorApp(deps: DoorDeps): express.Express {
       });
       app.get('/v1/biller/homes/:homeId', billerAuth, (req, res) => {
         const homeId = String(req.params.homeId);
-        const newest = newestLease(homeId);
-        // The offer to re-open on is the home's own host's: the newest lease may be an unpaid open elsewhere.
+        // The lease to pay and the offer to re-open on are the home's own host's: a newer lease may be an
+        // unpaid open elsewhere, and the biller never pays or opens on another host.
         const holder = registry.homeHost(homeId);
         const own = holder === undefined ? undefined : ledger.all().filter((l) => l.homeId === homeId && l.offerId.startsWith(`${holder}:`)).sort((a, b) => b.createdAt - a.createdAt)[0];
         const grantLive = deps.grants?.all().some((g) => g.homeId === homeId && (g.state === 'active' || g.state === 'approved_waiting')) ?? false;
-        res.json({ leaseId: newest?.leaseId ?? null, offerId: own?.offerId ?? null, hostKnown: holder !== undefined, grantLive });
+        res.json({ leaseId: own?.leaseId ?? null, offerId: own?.offerId ?? null, hostKnown: holder !== undefined, grantLive });
       });
     }
   }

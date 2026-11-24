@@ -66,7 +66,8 @@ export const PERIOD_SECONDS = 2_592_000;
 /** Paid hours at which a grant's owner view offers the keep-home link: 720 grant hours minus the last 48. */
 export const KEEP_HOME_FROM_HOURS = 672;
 export const SUGGESTED_TICKS = 744n;
-export const MIN_TICKS = 24n;
+/** 30 days of the home: an allowance smaller than about a month of rent lets the home lapse every period. */
+export const MIN_TICKS = 720n;
 export const BASE_CHAIN_ID = 8453;
 export const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 
@@ -81,8 +82,19 @@ export function validateRequest(body: unknown): { ok: true; sshKeys: string[]; i
 }
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
-const HEX = /^0x[0-9a-fA-F]+$/;
+/** ABI `bytes`: 0x and whole bytes. */
+const BYTES = /^0x(?:[0-9a-fA-F]{2})*$/;
 const DIGITS = /^[0-9]{1,78}$/;
+/** The SpendPermission struct's types, so the contract (and viem's encoder) can always take what is stored. */
+const UINT160 = 2n ** 160n;
+const UINT48 = 2 ** 48;
+const UINT256 = 2n ** 256n;
+/** An ERC-6492 wrapped signature from a smart wallet not yet deployed (a passkey account) runs to thousands of characters. */
+export const MAX_SIGNATURE_CHARS = 20_000;
+/** extraData: up to 1024 bytes. */
+export const MAX_EXTRA_DATA_CHARS = 2 + 2 * 1024;
+/** A permission may start at most this far ahead of the door's clock (seconds). */
+export const MAX_START_AHEAD_S = 600;
 
 export function validatePermission(
   body: unknown,
@@ -91,9 +103,11 @@ export function validatePermission(
   const no = (error: string) => ({ ok: false as const, error });
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return no('body must be a JSON object');
   const b = body as Record<string, unknown>;
-  if (typeof b.signature !== 'string' || !HEX.test(b.signature) || b.signature.length > 2000) return no('signature must be a 0x hex string');
+  if (typeof b.signature !== 'string' || b.signature.length < 4 || b.signature.length > MAX_SIGNATURE_CHARS || !BYTES.test(b.signature)) {
+    return no(`signature must be 0x and whole bytes of hex, at most ${MAX_SIGNATURE_CHARS} characters`);
+  }
   if (b.chainId !== BASE_CHAIN_ID) return no(`chainId must be ${BASE_CHAIN_ID}`);
-  if (b.permissionHash !== undefined && (typeof b.permissionHash !== 'string' || !HEX.test(b.permissionHash))) return no('permissionHash must be a 0x hex string');
+  if (b.permissionHash !== undefined && (typeof b.permissionHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(b.permissionHash))) return no('permissionHash must be a 0x hex string of 32 bytes');
   const p = b.permission;
   if (typeof p !== 'object' || p === null || Array.isArray(p)) return no('permission must be an object');
   const q = p as Record<string, unknown>;
@@ -102,11 +116,15 @@ export function validatePermission(
   if (typeof q.token !== 'string' || q.token.toLowerCase() !== USDC_BASE.toLowerCase()) return no('token must be USDC on Base');
   if (q.period !== PERIOD_SECONDS) return no(`period must be ${PERIOD_SECONDS}`);
   if (typeof q.allowance !== 'string' || !DIGITS.test(q.allowance)) return no('allowance must be a decimal string');
-  if (BigInt(q.allowance) < MIN_TICKS * o.tickMicro) return no(`allowance must be at least ${MIN_TICKS * o.tickMicro} (24 ticks)`);
-  if (typeof q.start !== 'number' || !Number.isSafeInteger(q.start) || q.start < 0) return no('start must be a unix time in seconds');
-  if (typeof q.end !== 'number' || !Number.isSafeInteger(q.end) || q.end <= o.now / 1000) return no('end must be in the future');
-  if (typeof q.salt !== 'string' || !HEX.test(q.salt)) return no('salt must be a 0x hex string');
-  if (typeof q.extraData !== 'string' || !(q.extraData === '0x' || HEX.test(q.extraData))) return no('extraData must be a 0x hex string');
+  if (BigInt(q.allowance) >= UINT160) return no('allowance must fit a uint160');
+  if (BigInt(q.allowance) < MIN_TICKS * o.tickMicro) return no(`allowance must be at least ${MIN_TICKS * o.tickMicro} (${MIN_TICKS} ticks, 30 days of the home)`);
+  const nowSec = Math.floor(o.now / 1000);
+  if (typeof q.start !== 'number' || !Number.isSafeInteger(q.start) || q.start < 0 || q.start >= UINT48) return no('start must be a unix time in seconds that fits a uint48');
+  if (q.start > nowSec + MAX_START_AHEAD_S) return no(`start must not be more than ${MAX_START_AHEAD_S / 60} minutes ahead of Charter's clock; check this device's clock and sign again`);
+  if (typeof q.end !== 'number' || !Number.isSafeInteger(q.end) || q.end >= UINT48) return no('end must be a unix time in seconds that fits a uint48');
+  if (q.end <= o.now / 1000) return no('end must be in the future');
+  if (typeof q.salt !== 'string' || !/^0x[0-9a-fA-F]{1,128}$/.test(q.salt) || BigInt(q.salt) >= UINT256) return no('salt must be a 0x hex number that fits a uint256');
+  if (typeof q.extraData !== 'string' || q.extraData.length > MAX_EXTRA_DATA_CHARS || !BYTES.test(q.extraData)) return no('extraData must be 0x and whole bytes of hex, at most 1024 bytes');
   const signed: SignedPermission = {
     signature: b.signature,
     chainId: BASE_CHAIN_ID,
@@ -237,6 +255,18 @@ export class AllowanceStore {
     const y = Buffer.from(a.tokenHash, 'hex');
     return x.length === y.length && timingSafeEqual(x, y);
   }
+}
+
+/**
+ * The message an agent forwards to its person: what approving does, what they will meet (a Coinbase sign-up
+ * with an email, a pop-up, one signature), and the link. The same words as charter-mcp's allowanceMessage.
+ */
+export function personMessage(approveUrl: string): string {
+  return [
+    'I would like your OK to keep my Charter home paid. If you approve, Charter keeps this home paid, up to the amount you choose per 30 days, and you can stop it at any time.',
+    'What you will need: a Coinbase sign-up with an email address, a pop-up to allow in your browser, and one signature.',
+    `Approve here: ${approveUrl}`,
+  ].join('\n\n');
 }
 
 /** What the approval page may see: no keys, homeId, token hash, signature or lease id. */

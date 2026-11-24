@@ -112,12 +112,15 @@ test('a bad body is 400', async () => {
   s.close();
 });
 
-test('a second request for the same home is 409 already_live naming the first', async () => {
+test('a second request for the same home is 409 already_live and does not name the first', async () => {
   const s = await start();
   const a = await made(s);
   const r = await s.create();
   assert.equal(r.status, 409);
-  assert.deepEqual(await r.json(), { error: 'already_live', allowanceId: a.allowanceId });
+  const text = await r.text();
+  // Anyone who knows a home's public keys may ask; the live allowance's id is never handed out.
+  assert.deepEqual(JSON.parse(text), { error: 'already_live' });
+  assert.ok(!text.includes(a.allowanceId));
   s.close();
 });
 
@@ -133,6 +136,14 @@ test('the routes are absent without the store and address', async () => {
   const s = await start({ noAllowances: true });
   assert.equal((await s.create()).status, 404);
   assert.equal((await s.bill('GET', '/v1/biller/allowances')).status, 404);
+  s.close();
+});
+
+test('the public routes are absent without the biller token too', async () => {
+  // An allowance nobody can bill would sit approved forever.
+  const s = await start({ noBiller: true });
+  assert.equal((await s.create()).status, 404);
+  assert.equal((await s.call('GET', `/v1/allowances/${'0'.repeat(32)}`)).status, 404);
   s.close();
 });
 
@@ -243,6 +254,13 @@ test('biller routes are 401 without the token', async () => {
   s.close();
 });
 
+test('GET /v1/biller/allowances names the door\'s spender, so the biller can check it is that address', async () => {
+  const s = await start();
+  const j = (await (await s.bill('GET', '/v1/biller/allowances')).json()) as { spender: string };
+  assert.equal(j.spender, SPENDER);
+  s.close();
+});
+
 test('biller routes do not exist without a token', async () => {
   const s = await start({ noBiller: true });
   assert.equal((await s.call('GET', '/v1/biller/allowances', undefined, { authorization: 'Bearer x' })).status, 404);
@@ -299,8 +317,13 @@ test('GET /v1/biller/homes/:homeId reports newest lease, its offer, host and liv
   const newer = 'd'.repeat(32);
   s.ledger.open({ leaseId: newer, offerId: 'z:z', createdAt: 99, offer: snapshotOffer(OFFER), homeId: HOME });
   j = (await (await s.bill('GET', url)).json()) as Record<string, unknown>;
-  assert.equal(j.leaseId, newer);
+  // A newer lease on another host is never the one the biller pays.
+  assert.equal(j.leaseId, LEASE);
   assert.equal(j.offerId, offerId);
+  const newerOwn = 'e'.repeat(32);
+  s.ledger.open({ leaseId: newerOwn, offerId, createdAt: 100, offer: snapshotOffer(OFFER), homeId: HOME });
+  j = (await (await s.bill('GET', url)).json()) as Record<string, unknown>;
+  assert.equal(j.leaseId, newerOwn);
   const g = s.grants.add({ name: 'Ada', pitch: 'p', sshKeys: NKEY, image: 'charter-home' } as never, 't');
   s.grants.update(g.grantId, { state: 'approved_waiting' });
   j = (await (await s.bill('GET', url)).json()) as Record<string, unknown>;
@@ -320,7 +343,7 @@ test('GET /v1/biller/homes/:homeId names the home host\'s own offer when a newer
     const elsewhere = 'b'.repeat(32);
     s.ledger.open({ leaseId: elsewhere, offerId: 'otherhost:offer9', createdAt: 999, offer: snapshotOffer(OFFER), homeId: HOME });
     const j = (await (await s.bill('GET', url)).json()) as Record<string, unknown>;
-    assert.equal(j.leaseId, elsewhere);
+    assert.equal(j.leaseId, LEASE, 'the newest lease on the home host, not the newer one elsewhere');
     assert.equal(j.offerId, own);
     assert.equal(j.hostKnown, true);
   } finally {
@@ -372,20 +395,42 @@ test('keepHome at hour 672 with a new allowance and its token', async () => {
   assert.match(k.ownerToken!, /^[0-9a-f]{64}$/);
   assert.equal(k.approveUrl, `${PAGE}?id=${k.allowanceId}`);
   assert.equal(k.state, 'waiting');
-  assert.equal(k.message, `Your grant ends soon. To keep this home after it, send your person this link to approve a monthly allowance: ${k.approveUrl}`);
+  assert.match(k.message, /^Your grant ends soon\. To keep this home after it, send your person this message as it is:/);
+  for (const w of [/Coinbase sign-up with an email address/, /pop-up/, /one signature/, /per 30 days/]) assert.match(k.message, w);
+  assert.ok(k.message.includes(`Approve here: ${k.approveUrl}`));
+  assert.ok(!k.message.includes(k.ownerToken!), 'the token is for the agent, not the person');
+  assert.ok(!k.message.includes(String.fromCharCode(0x2014)));
   assert.ok(s.allowances.tokenOk(k.allowanceId, k.ownerToken!));
   assert.ok(s.allowances.get(k.allowanceId)!.tickMicro > 0n);
   s.close();
 });
 
-test('a second read reuses it and omits the token', async () => {
+test('a second read offers no keepHome: a live allowance is never handed out without its token', async () => {
   const s = await start();
   const g = await activeGrant(s, 700);
   const a = (await owner(s, g.grantId)).keepHome!;
-  const b = (await owner(s, g.grantId)).keepHome!;
-  assert.equal(b.allowanceId, a.allowanceId);
-  assert.equal(b.ownerToken, undefined);
+  assert.ok(a.ownerToken);
+  assert.equal((await owner(s, g.grantId)).keepHome, undefined);
   assert.equal(s.allowances.all().length, 1);
+  s.close();
+});
+
+test('keepHome never hands out an allowance someone else made for the home', async () => {
+  const s = await start();
+  // A squatter who knows the home's public keys asks first.
+  const squat = await made(s);
+  const g = await activeGrant(s, 700);
+  const view = await owner(s, g.grantId);
+  assert.equal(view.keepHome, undefined);
+  assert.ok(!JSON.stringify(view).includes(squat.allowanceId));
+  // Stopping, too, is live: no keepHome until it is over, then a fresh one with its own token.
+  s.allowances.update(squat.allowanceId, { state: 'approved' });
+  s.allowances.update(squat.allowanceId, { state: 'stopping' });
+  assert.equal((await owner(s, g.grantId)).keepHome, undefined);
+  s.allowances.update(squat.allowanceId, { state: 'ended', endReason: 'stopped' });
+  const k = (await owner(s, g.grantId)).keepHome!;
+  assert.notEqual(k.allowanceId, squat.allowanceId);
+  assert.ok(s.allowances.tokenOk(k.allowanceId, k.ownerToken!));
   s.close();
 });
 
@@ -407,4 +452,9 @@ test('no keepHome without a lease, or when allowance routes are not mounted', as
   const g2 = await activeGrant(n, 700);
   assert.equal((await owner(n, g2.grantId)).keepHome, undefined);
   n.close();
+  const t = await start({ noBiller: true });
+  const g3 = await activeGrant(t, 700);
+  assert.equal((await owner(t, g3.grantId)).keepHome, undefined);
+  assert.equal(t.allowances.all().length, 0);
+  t.close();
 });
