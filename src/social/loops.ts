@@ -73,14 +73,20 @@ async function loadFiles(deps: LoopDeps, now: number): Promise<ConfigFiles | und
   }
 }
 
-type Block = 'paused' | 'kill_switch_offline' | 'spend_cap';
+type Block = 'paused' | 'kill_switch_offline' | 'spend_cap' | 'gemini_cap';
+
+/** The dearest X write: a post with a link. The pre-check assumes it, so a refused publish never repeats. */
+const WORST_POST_COST = costOf('post', { hasUrl: true });
+const GEMINI_CAP_ALERT = 'gemini_cap';
+const utcDay = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
 
 /**
  * The cheap check before any Gemini call or X read: paused, a heartbeat older than the limit (or that far in the
- * future), or a day's spend that cannot cover `nextCost` (or has reached the cap). Alerts the same way `publish` does:
- * the kill switch once an hour, the spend cap once a day. `publish` re-checks all of it before any X write.
+ * future), the spend cap (already alerted today, or a day's spend that cannot cover the dearest post), or the day's
+ * Gemini calls used up. Both caps hold until the UTC day ends. Alerts: the kill switch once an hour (as `publish`
+ * does), each cap once a day. `publish` re-checks its part before any X write.
  */
-async function blocked(deps: LoopDeps, now: number, nextCost: number): Promise<Block | undefined> {
+async function blocked(deps: LoopDeps, now: number): Promise<Block | undefined> {
   let block: Block | undefined;
   let alert: string | undefined;
   const cap = deps.cfg.spendCapUsdDay;
@@ -95,17 +101,29 @@ async function blocked(deps: LoopDeps, now: number, nextCost: number): Promise<B
       }
       return;
     }
-    if (!(s.spendUsdToday < cap && s.spendUsdToday + nextCost <= cap)) {
+    if (s.capAlerted || !(s.spendUsdToday + WORST_POST_COST <= cap)) {
       block = 'spend_cap';
       if (!s.capAlerted) {
         s.capAlerted = true;
-        alert = `spend cap reached: ${s.spendUsdToday.toFixed(3)} of ${cap} USD spent today. Posts and replies stop until the UTC day ends.`;
+        alert = `spend cap reached: ${s.spendUsdToday.toFixed(3)} of ${cap} USD spent today, and a post can cost ${WORST_POST_COST}. Posts and replies stop until the UTC day ends.`;
+      }
+      return;
+    }
+    if (s.geminiCallsToday >= deps.cfg.geminiCallsCapDay) {
+      block = 'gemini_cap';
+      const last = s.alertedAt[GEMINI_CAP_ALERT];
+      if (last === undefined || utcDay(last) !== s.day) {
+        s.alertedAt[GEMINI_CAP_ALERT] = now;
+        alert = `gemini cap reached: ${s.geminiCallsToday} of ${deps.cfg.geminiCallsCapDay} calls today. Posts and replies stop until the UTC day ends.`;
       }
     }
   });
   if (alert) await tell(deps.tg, alert);
   return block;
 }
+
+/** compose's reason for a call refused by the day's Gemini budget. */
+const geminiCapped = (reasons: string[]): boolean => reasons.some((r) => r.endsWith('gemini cap'));
 
 function markSeen(deps: LoopDeps, e: SocialEvent, now: number, reason?: string): void {
   deps.state.update((s) => {
@@ -172,7 +190,7 @@ export async function eventTick(deps: LoopDeps): Promise<void> {
       markSeen(deps, e, now, 'cap: daily event posts used, rolls into the weekly summary');
       continue;
     }
-    if (await blocked(deps, now, costOf('post'))) return;
+    if (await blocked(deps, now)) return;
 
     if (!offers) {
       try {
@@ -188,6 +206,8 @@ export async function eventTick(deps: LoopDeps): Promise<void> {
       { facts, task: 'post', brief: briefFor(e) },
     );
     if ('dropped' in composed) {
+      // A refused Gemini call is not a verdict on the draft: the event waits for the next UTC day.
+      if (geminiCapped(composed.dropped)) return;
       const reasons = composed.dropped.join('; ');
       await tell(deps.tg, `post dropped: ${e.id}: ${reasons}`);
       markSeen(deps, e, now, `dropped: ${reasons}`);
@@ -226,7 +246,7 @@ function refusedForNow(deps: LoopDeps, mentionId: string): boolean {
  */
 export async function mentionTick(deps: LoopDeps): Promise<void> {
   const now = deps.now();
-  if (await blocked(deps, now, 0)) return;
+  if (await blocked(deps, now)) return;
 
   const st = deps.state.get();
   const r = await deps.x.mentions(st.mentionSinceId);
@@ -248,10 +268,11 @@ export async function mentionTick(deps: LoopDeps): Promise<void> {
     return x === y ? a.createdAt - b.createdAt : x < y ? -1 : 1;
   });
   for (const m of ordered) {
-    if (await blocked(deps, deps.now(), 0)) return;
+    if (await blocked(deps, deps.now())) return;
     const result = await handleMention(deps, m);
-    // A pause, dead kill switch or spend cap that landed during this mention: keep the cursor before it.
-    if (result === 'skipped' && (refusedForNow(deps, m.id) || (await blocked(deps, deps.now(), 0)))) return;
+    // A pause, dead kill switch, spend cap or Gemini cap that landed during this mention: keep the cursor before it.
+    // Any cap now in force counts, so a mention left silent by a refused Gemini call is read again tomorrow.
+    if (result !== 'replied' && (refusedForNow(deps, m.id) || (await blocked(deps, deps.now())))) return;
     deps.state.update((s) => {
       if (s.mentionSinceId === undefined || idNum(m.id) > idNum(s.mentionSinceId)) s.mentionSinceId = m.id;
     });
@@ -356,7 +377,7 @@ export async function weeklyTick(deps: LoopDeps): Promise<void> {
     });
   };
 
-  if (await blocked(deps, now, costOf('post'))) return;
+  if (await blocked(deps, now)) return;
   const files = await loadFiles(deps, now);
   if (!files) return;
   const h = await hoursNow();
@@ -376,6 +397,7 @@ export async function weeklyTick(deps: LoopDeps): Promise<void> {
     { facts, task: 'post', brief: SUMMARY_BRIEF },
   );
   if ('dropped' in composed) {
+    if (geminiCapped(composed.dropped)) return;
     const reasons = composed.dropped.join('; ');
     await tell(deps.tg, `summary dropped: ${week}: ${reasons}`);
     log(deps, { at: now, kind: 'skip', text: `weekly ${week}: dropped: ${reasons}` });

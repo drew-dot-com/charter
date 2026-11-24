@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { StateStore, type SocialState } from './state.js';
 import type { Mention } from './x.js';
 import { handleCommand, type Telegram } from './telegram.js';
-import type { Model } from './model.js';
+import { GeminiCapError, type Model } from './model.js';
 import type { SocialConfig } from './config.js';
 import { DEFAULT_BANNED, type ConfigFiles } from './files.js';
 import { readSources } from './sources.js';
@@ -437,4 +437,120 @@ test('the weekly report counts posts, replies and mention skips by reason from t
   assert.match(report, /pre-filter 2/);
   assert.match(report, /too old 1/);
   assert.match(report, /spend today: 0\.000 of 2 USD/);
+});
+
+// Caps stop both loops for the day (fix round 1, finding 1)
+
+const LINKED = 'A renter came back. https://charter.example';
+
+test('spend 1.9 of 2 with a post that carries a link: no Gemini call over 3 ticks, the event stays unseen, one alert', async () => {
+  const t = setup({ leases: [lease()], model: fakeModel({ write: { candidates: [LINKED] } }) });
+  await eventTick(t.deps);
+  t.write({ leases: [lease({ ticksPaidByRenter: 2 })] });
+  t.state.update((s) => void (s.spendUsdToday = 1.9));
+  for (let i = 0; i < 3; i++) await eventTick(t.deps);
+  assert.equal(t.model.prompts.length, 0);
+  assert.equal(t.x.posts.length, 0);
+  assert.ok(!t.state.get().seen.includes('returned:L1'));
+  assert.equal(t.tg.sent.filter((m) => m.startsWith('spend cap reached')).length, 1);
+});
+
+test('once the spend cap has alerted, both loops stay stopped until the next UTC day', async () => {
+  const t = setup({ leases: [lease()] });
+  await eventTick(t.deps);
+  t.write({ leases: [lease({ ticksPaidByRenter: 2 })] });
+  t.state.update((s) => {
+    s.mentionsInitialized = true;
+    s.mentionSinceId = '100';
+    s.spendUsdToday = 1;
+    s.capAlerted = true;
+  });
+  t.x.setMentions({ mentions: [mention('200')], newestId: '200' });
+  await eventTick(t.deps);
+  await mentionTick(t.deps);
+  assert.equal(t.model.prompts.length, 0);
+  assert.deepEqual(t.x.reads, []);
+  assert.ok(!t.state.get().seen.includes('returned:L1'));
+  assert.equal(t.tg.sent.filter((m) => m.startsWith('spend cap reached')).length, 0, 'already alerted today');
+});
+
+/** A model that spends the state's Gemini budget like main's allowance does, and throws at the cap. */
+function cappedModel(state: () => StateStore, cap: number): Model & { prompts: string[] } {
+  const base = fakeModel();
+  return {
+    prompts: base.prompts,
+    async json<T>(m: string, prompt: string, system?: string): Promise<T> {
+      let ok = false;
+      state().update((s) => {
+        if (s.geminiCallsToday >= cap) return;
+        s.geminiCallsToday += 1;
+        ok = true;
+      });
+      if (!ok) throw new GeminiCapError();
+      return base.json<T>(m, prompt, system);
+    },
+  };
+}
+
+test('the Gemini cap leaves events unseen and the cursor unmoved, and both resume on the next UTC day', async () => {
+  let store: StateStore | undefined;
+  const model = cappedModel(() => store!, cfg.geminiCallsCapDay);
+  const t = setup({ leases: [lease()], model });
+  store = t.state;
+  await eventTick(t.deps);
+  t.write({ leases: [lease({ ticksPaidByRenter: 2 })] });
+  t.state.update((s) => {
+    s.mentionsInitialized = true;
+    s.mentionSinceId = '100';
+    s.geminiCallsToday = cfg.geminiCallsCapDay;
+  });
+  t.x.setMentions({ mentions: [mention('200')], newestId: '200' });
+  await eventTick(t.deps);
+  await mentionTick(t.deps);
+  await eventTick(t.deps);
+  assert.equal(model.prompts.length, 0);
+  assert.deepEqual(t.x.reads, []);
+  assert.ok(!t.state.get().seen.includes('returned:L1'));
+  assert.equal(t.state.get().mentionSinceId, '100');
+  assert.equal(t.tg.sent.filter((m) => m.startsWith('gemini cap reached')).length, 1, 'one alert a day');
+
+  t.clock.now = Date.UTC(2026, 10, 25, 0, 30); // the next UTC day
+  t.beat();
+  t.write({ leases: [lease({ ticksPaidByRenter: 2, lastTickAt: t.clock.now - 60_000 })] });
+  t.x.setMentions({ mentions: [mention('200', { createdAt: t.clock.now - 60_000 })], newestId: '200' });
+  await eventTick(t.deps);
+  await mentionTick(t.deps);
+  assert.ok(t.state.get().seen.includes('returned:L1'));
+  assert.deepEqual(t.x.posts.map((p) => p.replyTo), [undefined, '200']);
+  assert.equal(t.state.get().mentionSinceId, '200');
+});
+
+test('the Gemini cap reached during a compose leaves the event unseen with no drop message', async () => {
+  let store: StateStore | undefined;
+  const model = cappedModel(() => store!, cfg.geminiCallsCapDay);
+  const t = setup({ leases: [lease()], model });
+  store = t.state;
+  await eventTick(t.deps);
+  t.write({ leases: [lease({ ticksPaidByRenter: 2 })] });
+  t.state.update((s) => void (s.geminiCallsToday = cfg.geminiCallsCapDay - 1)); // the writer runs, the checker is refused
+  await eventTick(t.deps);
+  assert.equal(t.x.posts.length, 0);
+  assert.ok(!t.state.get().seen.includes('returned:L1'));
+  assert.ok(!t.tg.sent.some((m) => m.startsWith('post dropped')));
+});
+
+test('the Gemini cap reached during a mention keeps the cursor before it', async () => {
+  let store: StateStore | undefined;
+  const model = cappedModel(() => store!, cfg.geminiCallsCapDay);
+  const t = setup({ model });
+  store = t.state;
+  t.state.update((s) => {
+    s.mentionsInitialized = true;
+    s.mentionSinceId = '100';
+    s.geminiCallsToday = cfg.geminiCallsCapDay - 1; // the classifier runs, the writer is refused
+  });
+  t.x.setMentions({ mentions: [mention('200'), mention('300')], newestId: '300' });
+  await mentionTick(t.deps);
+  assert.equal(t.x.posts.length, 0);
+  assert.equal(t.state.get().mentionSinceId, '100');
 });

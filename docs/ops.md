@@ -650,31 +650,42 @@ Mondays: a report to Drew at 13:00 UTC, the summary post at 15:00 UTC). The loop
   flag, the heartbeat. A state file that does not parse is kept as `state.json.corrupt-<ms>` and the service
   starts paused.
 
-Set up (as root on the box):
+Set up (as root on the box, with the repo tree at `/opt/charter` as for the door):
 
 ```
 mkdir -p /root/charter-social/{state,config,secrets}
-cp <repo>/deploy/social/social.env.example /root/charter-social/social.env        # then fill it
-for f in facts.md rules.json optins.json blocklist.json; do cp <repo>/deploy/social/$f.example /root/charter-social/config/$f; done
-printf '%s' '<bot token>' > /root/charter-social/secrets/telegram.token
+cp /opt/charter/deploy/social/social.env.example /root/charter-social/social.env        # then fill it
+for f in facts.md rules.json optins.json blocklist.json; do cp /opt/charter/deploy/social/$f.example /root/charter-social/config/$f; done
+read -rs TOKEN && printf '%s' "$TOKEN" > /root/charter-social/secrets/telegram.token && unset TOKEN   # paste the token, nothing echoes or lands in history
 chown -R 1000:1000 /root/charter-social && chmod 700 /root/charter-social
 chmod 600 /root/charter-social/social.env && chmod 400 /root/charter-social/secrets/telegram.token
 ```
 
-**First start, dry run.** Leave `DRY_RUN=1`, then `docker compose -f deploy/door/docker-compose.yml up -d
-charter-social`. Telegram says `charter-social started: DRY_RUN on`. The first event tick records everything
-already in the ledger as seen and posts nothing; the first mention tick stores the newest mention id and
-replies to nothing. From then on every post or reply it would make arrives as `would post: ...` or
-`would reply: ...`. Without a readable token file or `TELEGRAM_CHAT_ID` the process exits (no kill switch,
-no service); any other missing setting leaves the loops idle and `/status` lists it.
+**Build the image first.** `charter-social` has no `build:` of its own: it runs the door's image
+`charter-door:local`, and an image built before this service existed has no `dist/social/main.js`, so the
+container would crash-loop. With Drew's go, after the tree in `/opt/charter` is updated:
+`docker compose -f /opt/charter/deploy/door/docker-compose.yml build charter-door`. That rebuilds the image
+the door runs too, so the door picks up whatever code is in the tree the next time its container is
+re-created. Only build; do not run a bare `up -d` or `up -d --build` here, which would re-create the door now.
+
+**First start, dry run.** Leave `DRY_RUN=1`, then
+`docker compose -f /opt/charter/deploy/door/docker-compose.yml up -d charter-social` (naming the service
+leaves the door alone). Telegram says `charter-social started: DRY_RUN on`. The first event tick records
+everything already in the ledger as seen and posts nothing; the first mention read stores the newest mention
+id and replies to nothing. From then on every post or reply it would make arrives as `would post: ...` or
+`would reply: ...`. A dry-run event is marked seen and a dry-run reply reserves its conversation, the same
+as a live one, so nothing from the dry run is posted after going live. Without a readable token file or
+`TELEGRAM_CHAT_ID` the process exits (no kill switch, no service); any other missing setting leaves the loops
+idle and `/status` lists it.
 
 **`/status`.** Paused or live, `DRY_RUN on|off`, the last post and reply, today's counts, spend against
 `SPEND_CAP_USD_DAY`, Gemini calls against `GEMINI_CALLS_CAP_DAY`, the heartbeat's age and any missing
 setting. Other commands: `/pause`, `/resume`, `/delete <post id or x.com status URL>`. Only Drew's chat is
 answered; a command other than `/pause` older than 10 minutes is refused.
 
-**Going live.** Set `DRY_RUN=0` in `social.env`, then `docker compose -f deploy/door/docker-compose.yml up -d
-charter-social` (re-creating the container is what re-reads the env file). Telegram says `DRY_RUN off`.
+**Going live.** Set `DRY_RUN=0` in `social.env`, then
+`docker compose -f /opt/charter/deploy/door/docker-compose.yml up -d charter-social` (re-creating the container
+is what re-reads the env file). Telegram says `DRY_RUN off`.
 
 **Pausing.** `/pause` from Drew's chat stops every post and reply within one tick; it is honored however old.
 `/resume` starts them again. While paused nothing is read from X and no Gemini call is made: events wait
@@ -697,7 +708,9 @@ The handle has no `@` and is optional. Posts from the next tick use it; nothing 
 **Limits it keeps by itself.** At most 4 event posts a UTC day (past that, events roll into the weekly
 totals); 20 replies a day, 2 per author a day, 1 per X conversation ever; mentions older than 24 hours
 skipped. `SPEND_CAP_USD_DAY` (default 2) counts X's per-call prices (`X_PRICE_USD` in `src/social/x.ts`) for
-posts and mention reads; reaching it stops both loops until the UTC day ends and alerts once. A Telegram
+posts and mention reads. The loops stop for the rest of the UTC day once the day's spend could not cover one
+more post with a link (0.20), and alert once. `GEMINI_CALLS_CAP_DAY` (default 200) stops them the same way: an
+event or mention left by a refused Gemini call waits for the next day, it is not dropped. A Telegram
 heartbeat older than 15 minutes blocks every post and reply and alerts `kill switch offline` once an hour.
 
 **Alerts and failures.** Every post and reply, every dropped draft set (`post dropped: <event id>: <why>`),
