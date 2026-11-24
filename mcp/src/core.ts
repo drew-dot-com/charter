@@ -508,8 +508,8 @@ function allowanceRefusal(r: Answer): Error {
   const code = typeof r.body?.error === 'string' ? r.body.error.slice(0, 60) : `status ${r.status}`;
   if (code === 'no_home') return new Error('this key set has no home yet: open the home and pay its first hour first (charter_rent_home), then ask for the link again (no_home). Nothing was paid.');
   if (code === 'already_live') {
-    const id = typeof r.body?.allowanceId === 'string' ? r.body.allowanceId.slice(0, 64) : 'unknown';
-    return new Error(`this home already has a live allowance, ${id} (already_live). Read it with charter_allowance_status, or stop it with charter_allowance_stop; the ownerToken is the one its first link returned.`);
+    // The door does not say which allowance: anyone who knows a home's public keys can ask.
+    return new Error('this home already has a live allowance (already_live). If you asked for it, read it with charter_allowance_status or stop it with charter_allowance_stop, using the allowanceId and ownerToken its link returned. A new link can be asked for once it has ended or expired (an unapproved one expires after 7 days). Nothing was paid.');
   }
   return new Error(`${ALLOWANCE_ERRORS[code] ?? 'the door refused the allowance request'} (${code}). Nothing was paid.`);
 }

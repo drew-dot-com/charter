@@ -450,8 +450,15 @@ test('allowanceLink checks keys before any request, refuses private keys, and ma
   assert.deepEqual(d.posts, []);
   d.postAnswer = { status: 404, body: { error: 'no_home' } };
   await assert.rejects(allowanceLink(d, { sshKeys: [KEY] }), /open the home and pay its first hour first/);
-  d.postAnswer = { status: 409, body: { error: 'already_live', allowanceId: AID } };
-  await assert.rejects(allowanceLink(d, { sshKeys: [KEY] }), new RegExp(`already_live.*${AID}|${AID}.*already_live`));
+  d.postAnswer = { status: 409, body: { error: 'already_live' } };
+  await assert.rejects(allowanceLink(d, { sshKeys: [KEY] }), (e: unknown) => {
+    const m = (e as Error).message;
+    // The door never names the live allowance; the agent is told one exists and to use its saved token.
+    assert.match(m, /already has a live allowance \(already_live\)/);
+    assert.match(m, /ownerToken/);
+    assert.doesNotMatch(m, /unknown/);
+    return true;
+  });
   d.postAnswer = { status: 429, body: { error: 'rate_limited' } };
   await assert.rejects(allowanceLink(d, { sshKeys: [KEY] }), /rate_limited/);
 });
