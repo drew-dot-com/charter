@@ -3,13 +3,19 @@
 import { createBaseAccountSDK } from '@base-org/account';
 import { requestRevoke, requestSpendPermission } from '@base-org/account/spend-permission';
 import { esc } from './grants.js';
-import { BEFORE_YOU_START, clampAllowance, errorWords, formatUsdc, hoursFor, stateWords } from './allow-copy.js';
+import { BEFORE_YOU_START, clampAllowance, errorWords, formatUsdc, hoursFor, stateWords, stopWords } from './allow-copy.js';
 
 /** The cancel button stays hidden until the revoke call is proven on mainnet (plan Task 9 step 2). */
 const CANCEL_TESTED = false;
 const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const BASE = 8453;
 const REFRESH_MS = 30_000;
+/**
+ * The permission starts an hour before this device's clock: a device clock running ahead of Charter's would
+ * otherwise sign a permission not yet in force (Charter waits for it, and refuses one more than 10 minutes ahead).
+ */
+const START_BACK_MS = 3_600_000;
+const STOP_WORDS = stopWords(CANCEL_TESTED);
 
 interface View {
   allowanceId: string;
@@ -50,7 +56,7 @@ function doneHtml(v: View): string {
   if (v.remainingMicro !== undefined) bits.push(`<p>Left in this 30-day period: <strong>${esc(formatUsdc(BigInt(v.remainingMicro)))} USDC</strong> (about ${esc(hoursFor(BigInt(v.remainingMicro), tick))} hours).</p>`);
   if (v.periodEndsAt !== undefined) bits.push(`<p>This period ends on ${esc(day(v.periodEndsAt))}.</p>`);
   if (v.account) bits.push(`<p>Your account: <code>${esc(v.account)}</code></p>`);
-  bits.push('<p class="note">You can cancel at any time in your Base Account (account.base.app), under spend permissions. This page checks again every 30 seconds.</p>');
+  bits.push(`<p class="note">${esc(STOP_WORDS)} This page checks again every 30 seconds.</p>`);
   return bits.join('');
 }
 
@@ -64,8 +70,8 @@ function waitingHtml(v: View): string {
     <ul>
       <li>The home costs <strong>${esc(formatUsdc(tick))} USDC an hour</strong>.</li>
       <li>You allow up to <label>this much every 30 days: <input id="amount" inputmode="decimal" size="8" value="${esc(formatUsdc(suggested))}"> USDC</label>. <span id="hours" class="muted"></span></li>
-      <li>Charter's payer is <code>${esc(v.spender)}</code>. It can only take USDC on Base, only up to that amount in each 30 days, and only to pay for this home.</li>
-      <li>You can cancel at any time in your Base Account. The agent can also ask Charter to stop.</li>
+      <li>Charter's payer is <code>${esc(v.spender)}</code>. It can only take USDC on Base, and only up to that amount in each 30 days. Charter uses it only to pay for this home.</li>
+      <li>${esc(STOP_WORDS)}</li>
     </ul>
     <p id="amount-err" class="status" role="alert"></p>
     <h2>Two steps</h2>
@@ -149,7 +155,7 @@ async function main(root: HTMLElement): Promise<void> {
     approve.disabled = true;
     status.textContent = 'Waiting for your signature in the Coinbase window.';
     try {
-      permission = await requestSpendPermission({ account: account as `0x${string}`, spender: view.spender as `0x${string}`, token: USDC, chainId: BASE, allowance: v, periodInDays: 30, provider });
+      permission = await requestSpendPermission({ account: account as `0x${string}`, spender: view.spender as `0x${string}`, token: USDC, chainId: BASE, allowance: v, periodInDays: 30, start: new Date(Date.now() - START_BACK_MS), provider });
     } catch (e) {
       approve.disabled = false;
       status.textContent = `Not approved: ${e instanceof Error ? e.message : 'the window was closed'}. Nothing was charged. You can press 2 again.`;

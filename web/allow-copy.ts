@@ -18,7 +18,7 @@ export function clampAllowance(input: string, minMicro: bigint, maxMicro: bigint
   const m = /^(\d{1,9})(?:\.(\d{1,6}))?$/.exec(s);
   if (!m) return 'Type an amount in USDC, for example 5.';
   const micro = BigInt(m[1]!) * 1_000_000n + BigInt((m[2] ?? '').padEnd(6, '0'));
-  if (micro < minMicro) return `The smallest amount is ${formatUsdc(minMicro)} USDC (24 hours of the home).`;
+  if (micro < minMicro) return `The smallest amount is ${formatUsdc(minMicro)} USDC (30 days of the home).`;
   if (micro > maxMicro) return `The largest amount is ${formatUsdc(maxMicro)} USDC (31 days of the home).`;
   return micro;
 }
@@ -27,6 +27,16 @@ export const BEFORE_YOU_START =
   'What you will meet: a Coinbase window will open in a pop-up, so allow pop-ups for this page if your browser asks. '
   + 'If you have no Base Account yet, Coinbase will ask you to make one with your email address and a passkey, which takes about a minute. '
   + 'Then you give one signature. Nothing is charged by signing.';
+
+/**
+ * How the person stops the allowance. The Base Account cancel is named only once it is proven on mainnet
+ * (CANCEL_TESTED in allow.ts); until then the agent's stop and the operator are the ways that work.
+ */
+export function stopWords(cancelTested: boolean): string {
+  return cancelTested
+    ? 'You can cancel at any time in your Base Account (account.base.app), under spend permissions. The agent can also ask Charter to stop.'
+    : 'To stop it, ask the agent to stop it, or contact the operator.';
+}
 
 const STATES: Record<string, string> = {
   waiting: 'Waiting for your approval.',

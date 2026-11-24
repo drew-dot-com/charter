@@ -328,7 +328,7 @@ No code. Each step's result goes in `docs/demo.md` as a new section with the tra
   5. Check the door is healthy and `charter-allow status` is clean.
 - [ ] **Step 4: End to end.**
   1. A test home (keys Claude makes, first hour paid from the bazaar key) asks for a link.
-  2. Drew approves 0.168 USDC per 30 days (the minimum) with the test Base Account.
+  2. Drew approves 5.04 USDC per 30 days (the minimum, 720 ticks at 0.007, ruling R8) with the test Base Account.
   3. Expected: the biller activates it, pulls once (168000) and pays at least 2 ticks, and the lease's `paidIntervals` grows.
   4. Then `charter_allowance_stop`. Expected: a revoke tx, then a refund tx of exactly the credit, then state `ended` / `stopped`, all on chain.
 - [ ] **Step 5: Push, publish charter-mcp 0.5.0** (Drew approves the staged publish), then the MCP registry. Expected: `npm view charter-mcp version` prints `0.5.0`.

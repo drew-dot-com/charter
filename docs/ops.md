@@ -622,6 +622,104 @@ alerting until it is stopped; that is intended.
 empty or `health.json` is older than 10 minutes (the process is down: `docker logs charter-fund`). Run it by
 hand: `charter-fund-check.sh` prints the state and alerts nothing; `--alert` alerts.
 
+## Allowances
+
+A person approves a Base spend permission once (on `https://charterhome.dev/allow?id=<allowanceId>`) and the
+biller keeps one home paid from it: it pulls up to 24 ticks of USDC at a time into its own wallet and pays
+the home's hourly tick through the door, exactly as the grant fund does. Design:
+`docs/superpowers/specs/2026-11-24-spend-permission-allowance-design.md`.
+
+**What runs where.** The container `charter-allow` on the Hetzner box, beside `charter-door` and
+`charter-fund` (compose `deploy/allow/docker-compose.yml`, image built from the repo root, no ports,
+`stop_grace_period: 90s`). Files under `/root/charter-allow` (uid 1000, mode 700):
+
+- `allow.env`: `CHARTER_ALLOW_DOOR_URL` only, optional (`deploy/allow/allow.env.example`).
+- `secrets/allow-key` (the spender key, from `node deploy/allow/new-allow-key.mjs <file>`, which prints the
+  address; same rules as `new-fund-key.mjs` above), `secrets/allow-token` (the same token the door reads as
+  `CHARTER_ALLOW_TOKEN_FILE`), `secrets/rpc-url` (a Base RPC URL). Each 0400, owned by 1000.
+- The door's `door.env` needs BOTH `CHARTER_ALLOW_TOKEN_FILE` and `CHARTER_ALLOW_ADDRESS` (the address
+  `new-allow-key.mjs` printed). Without either, no allowance route exists. With an address that is not the
+  biller's key, the biller does nothing and reports `spender_mismatch` (below).
+- `data/state.json`: what the biller pulled, paid and refunded, per allowance. Back it up (the nightly backup
+  carries it); a file that does not parse stops the biller at boot instead of starting fresh.
+- `data/stops.json`, `data/resolutions.json`: written only by the commands below; the loop reads them at
+  the start of every cycle.
+- `data/health.json`: `{ at, problems: [{ key, msg, at }], ethWei, usdcMicro }`, written every cycle. A
+  problem is dropped an hour after it was last reported.
+- `data/loop.lock`: the running loop's lock. A second loop on the same data dir (a `docker compose run`,
+  a stray `node dist/allow/main.js` with no arguments) refuses to run and exits. The commands below never
+  take it. A lock left by a crash is taken over by the next start: at once in the same container, after 5
+  minutes from another one. Remove it by hand only when no loop runs anywhere.
+
+**Alerts.** `charter-allow-check.sh` (in `charter-ops-check.sh`) alerts under key `allow` when `problems` is
+not empty or `health.json` is older than 10 minutes (the process is down: `docker logs charter-allow`). Run
+it by hand: no argument prints the state and alerts nothing; `--alert` alerts.
+
+**The commands.** From the box; each takes effect at the start of the next cycle (within a minute):
+
+```
+docker exec charter-allow node dist/allow/main.js status                              # JSON: entries, stops, resolutions, problems; never the key
+docker exec charter-allow node dist/allow/main.js stop <allowanceId>                  # revoke on chain, refund the credit, end as operator
+docker exec charter-allow node dist/allow/main.js resolve-refund <allowanceId> sent    # the lost refund landed: credit 0, the end completes
+docker exec charter-allow node dist/allow/main.js resolve-refund <allowanceId> unsent  # it did not land: the next cycle refunds again
+docker exec charter-allow node dist/allow/main.js resolve-refund <allowanceId> abandon # it can never land: end as operator, no refund
+```
+
+`allowanceId` is the 32 hex characters `status` lists. `stop` is for a person who writes in; an agent stops
+its own with its owner token (`POST /v1/allowances/<id>/stop`).
+
+**A refund with no answer** (problem key `refund`). The biller sent the credit back to the person's account
+and the answer was lost. It is never sent again blind, and the allowance does not end until Drew decides.
+Look on Basescan for a USDC transfer from the biller's address to the account the problem names, of the
+amount it names, after the time it names. Found: `resolve-refund <id> sent`. Not found (and the nonce has
+moved on, so it is not pending): `resolve-refund <id> unsent`.
+
+**A refund that can never land.** A refund that fails before it is sent (`the refund ... was not sent`) is
+tried again every cycle. When it cannot succeed (the person's account is USDC-blacklisted, or the biller's
+wallet holds less USDC than the credit), run `resolve-refund <id> abandon`: the credit is written off to the
+entry's `abandonedMicro`, the allowance ends as `operator`, and the loop logs it (`docker logs
+charter-allow`), not as a problem. The USDC stays in the biller's wallet; Drew settles with the person by
+hand. `abandon` only applies to an allowance whose end is already decided (stop it first).
+
+**Editing state.json by hand.** Only with the container stopped: the running loop rewrites the file every
+cycle and would overwrite the edit. `docker compose -f deploy/allow/docker-compose.yml stop charter-allow`,
+copy `data/state.json` aside, edit, check it parses (`jq . data/state.json`), then `start`. The one problem
+that asks for this: a pull lost across a period reset (key `pull`, "the permission's period has reset
+since"): if Basescan shows the pull landed, add its amount to that allowance's `creditMicro`.
+
+**ETH for gas.** The biller pays gas for every pull, revoke and refund (on the spike an approve, two pulls and
+a revoke used about 0.0000022 ETH together). Below 0.0001 ETH it reports `low_eth` with its
+address: send ETH on Base to that address. About 0.0005 ETH lasts on the order of a thousand pulls.
+
+**Other problem keys.**
+
+- `spender_mismatch`: the door's `CHARTER_ALLOW_ADDRESS` is not the biller key's address. The biller does
+  nothing at all until they agree. Fix `door.env` (and redeploy the door) or mount the right key.
+- `price`: a lease asks more an hour than the price the person approved (the allowance's `tickMicro`).
+  Nothing is paid or re-opened; the allowance's `reason` reads "price rose above what was approved". It
+  resumes by itself if the price comes back down; otherwise the agent asks for a new link at the new price.
+- `pull`: a pull would not go through for a reason the biller does not know (an unreadable revert). An
+  approved allowance stays approved and is tried every cycle; stop it if it never clears.
+- `tick`, `open`: a tick or re-open got no answer and its lease cannot be read. It is kept for an hour (or
+  until an end is pending), then booked as spent: the person bears at most that one tick.
+- `allowance`: one allowance could not be acted on this cycle; the message names it. "carries the same
+  permission as another live allowance": look at both with `status` and stop the wrong one.
+- `door`, `balance`, `cycle`, `stops`: the door, the RPC or a data file did not answer or read; the next
+  cycle tries again.
+
+**Task 9 deploy checks** (the mainnet proof, with Drew):
+
+1. Docker was not run on the Mac: build the image on the box (`docker compose -f deploy/allow/docker-compose.yml
+   build`) and check it starts.
+2. `door.env` backup first (`.bak-<date>-preallow`), then set `CHARTER_ALLOW_TOKEN_FILE` and
+   `CHARTER_ALLOW_ADDRESS`; deploy the door, then `charter-allow`.
+3. `curl -sI https://charterhome.dev/allow | grep -ic content-security-policy` prints 1, and a real browser
+   run shows the Coinbase dialog not blocked by `style-src` or `font-src` (widen for `/allow` only if so).
+4. `charter-allow status` is clean and `charter-allow-check.sh` prints ok, with no `spender_mismatch`.
+5. The smallest allowance the door takes is 720 ticks (30 days of the home): 5.04 USDC at 0.007.
+6. The person-side cancel (`requestRevoke`) is proven before `CANCEL_TESTED` is set true in `web/allow.ts`;
+   until then the page tells the person to ask the agent or the operator to stop it.
+
 ## charter-social
 
 Charter's own X account: it posts when something real happens on Charter and replies to mentions, with no

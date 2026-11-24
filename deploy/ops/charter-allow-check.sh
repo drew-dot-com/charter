@@ -5,8 +5,8 @@
 #
 # The biller process (container charter-allow) writes ${CHARTER_ALLOW_HOME}/data/health.json every cycle (60 s):
 #   { "at": <epoch ms>, "problems": [ { "key", "msg", "at" } ] }
-# It fails when problems is not empty (a refund held until Drew resolves it keeps reporting, which is
-# intended) or `at` is older than 10 minutes (the process is down or stuck). With --alert that goes through
+# It fails when problems is not empty (a refund held until Drew runs resolve-refund keeps reporting, which is
+# intended; the runbook is docs/ops.md, section Allowances) or `at` is older than 10 minutes (the process is down or stuck). With --alert that goes through
 # charter-alert.sh under the key allow. Without it, the state is printed and nothing is alerted.
 set -uo pipefail
 export PATH="/usr/local/bin:/usr/bin:/bin"
@@ -43,7 +43,7 @@ if [ "$age" -gt "$STALE_MS" ]; then
   exit 1
 fi
 if [ "$n" -gt 0 ]; then
-  msg="$n problem(s): $list. Read docs/ops.md, Allowances."
+  msg="$n problem(s): $list. Read docs/ops.md, section Allowances (docker exec charter-allow node dist/allow/main.js status)."
   echo "FAIL: $msg"
   [ "$alert" = 1 ] && "$here/charter-alert.sh" allow fail "$title" "$msg"
   exit 1
