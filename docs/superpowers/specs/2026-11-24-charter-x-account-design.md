@@ -210,8 +210,10 @@ write endpoints. Going live is Drew setting `DRY_RUN=0`.
 
 ## 7. Money and limits
 
-X is pay-per-use for both reading mentions and posting. The builder checks current prices on
-docs.x.com before building and writes them into this section. A daily spend ceiling
+X is pay-per-use for both reading mentions and posting. Prices used (docs.x.com pricing page,
+read 2026-11-24, USD): create post 0.015, create post with URL 0.20, mention read 0.001 per
+returned post (the owned-reads rate; the general Posts: Read rate is 0.005). They live in
+`X_PRICE_USD` in `src/social/x.ts`; recheck the Developer Console, prices change. A daily spend ceiling
 (`SPEND_CAP_USD_DAY`, default 2) counted in code from known per-call prices stops both
 loops and alerts Drew. Gemini calls are capped per day the same way.
 
