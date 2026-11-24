@@ -29,8 +29,11 @@ export function detectEvents(src: Sources, seen: ReadonlySet<string>, cfg: { fir
     const grantId = grantOfLease.get(l.leaseId);
     const payer = l.payer?.toLowerCase();
     let outsider: string | undefined;
+    // A probe wallet never produces a public post, grant lease or not.
+    if (payer && cfg.probes.has(payer)) continue;
     if (grantId === undefined) {
-      if (!payer || cfg.firstParty.has(payer) || cfg.probes.has(payer)) continue;
+      // Only a grant lease is exempt from the first-party exclusion.
+      if (!payer || cfg.firstParty.has(payer)) continue;
       outsider = payer;
       const id = `returned:${l.leaseId}`;
       if (hours >= 2 && !seen.has(id)) out.push({ id, kind: 'renter_returned', at, leaseId: l.leaseId, payer, hoursPaid: hours });

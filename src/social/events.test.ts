@@ -85,3 +85,9 @@ test('seen ids are never returned again', () => {
   assert.equal(detectEvents(s, none, cfg).length, 3);
   assert.deepEqual(detectEvents(s, new Set(['returned:L1', 'milestone:L1:24', 'grant:G']), cfg), []);
 });
+
+test('a grant lease whose payer is in PROBE_PAYERS yields nothing', () => {
+  const grants = [{ grantId: 'G1', state: 'active', leaseId: 'L1', updatedAt: 1 }];
+  const ev = detectEvents(src({ leases: [lease({ payer: '0xProbe', ticksPaidByRenter: 30 })], grants }), new Set(['grant:G1']), cfg);
+  assert.deepEqual(ev, []);
+});
