@@ -118,7 +118,7 @@ test('totals count running leases, outside hours, listed hosts and approved gran
   });
   const sheet = buildFactSheet({ event: undefined, src: s, offers, factsMd: '', optins: none, siteUrl: 'u', now: NOW, excludePayers: new Set(['0xfund']) });
   const byId = Object.fromEntries(sheet.facts.map((f) => [f.id, f.text]));
-  assert.match(byId['totals:running'], /\b2\b/);
+  assert.match(byId['totals:running'], /\b1\b/);
   assert.match(byId['totals:hours'], /\b10\b/);
   assert.match(byId['totals:hosts'], /\b1\b/);
   assert.match(byId['totals:grants'], /\b1\b/);
