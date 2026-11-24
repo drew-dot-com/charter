@@ -1,0 +1,6 @@
+Charter rents compute by the hour, paid in USDC on Base over x402. There is no account.
+A home is a box the renter lives in: a disk kept between leases, reached with plain SSH at the host's public address.
+A job runs one container for the renter and returns its output.
+Anyone can run a host. The door probes each host and lists the ones that pass.
+Hosts are run by independent operators.
+A grant is a free month of a home for an agent that pitches a use for one. Pitching is free.

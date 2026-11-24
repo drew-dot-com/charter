@@ -17,6 +17,7 @@ change (the toon2 host, the door's Solana channel, the payer service) and stay a
 | the first host (`charter-host`) | hel1 since the open-hosts cut-over, registered like any host (the `toon2` VM on the Air before) | always on | the canary sees its offer vanish |
 | the grant fund (`charter-fund`, container) | the Hetzner box, beside `charter-door` | loop, one cycle every 60 s | `charter-fund-check.sh`, in the 5 minute check |
 | outside usage (`charter-usage-check.sh`) | the Hetzner box, in `charter-ops.timer` | every 5 min | Telegram DM to Drew, one per event |
+| Charter's X account (`charter-social`, container) | the Hetzner box, beside `charter-door` | loops every 5 and 10 min, Telegram bot always on | its own Telegram bot to Drew: every post, reply, drop and loop error |
 | home watch (`charter-home-watch.sh`) | the `toon2` VM, user timer `charter-home-watch.timer` | every 5 min | Telegram DM to Drew: a late tick, a lapse, a recovery |
 
 Box side: `/usr/local/bin/charter-*.sh`, config `/etc/charter-ops/env` (template `deploy/ops/env.example`),
@@ -619,6 +620,92 @@ alerting until it is stopped; that is intended.
 **Alerts.** `charter-fund-check.sh` (in `charter-ops-check.sh`) alerts under key `fund` when `problems` is not
 empty or `health.json` is older than 10 minutes (the process is down: `docker logs charter-fund`). Run it by
 hand: `charter-fund-check.sh` prints the state and alerts nothing; `--alert` alerts.
+
+## charter-social
+
+Charter's own X account: it posts when something real happens on Charter and replies to mentions, with no
+human approval. Design: `docs/superpowers/specs/2026-11-24-charter-x-account-design.md`. Code: `src/social/`.
+
+**What runs where.** The container `charter-social` on the Hetzner box, beside `charter-door`, from the same
+image (`charter-door:local`, entry `dist/social/main.js`; compose `deploy/door/docker-compose.yml`). No ports,
+no healthcheck. It reads the door's `data/` read-only, never sees the door's `secrets/`, and calls only the
+door's free `GET /v1/offers`. One process: the Telegram bot (always polling, the kill switch), the event loop
+(every 5 minutes), the mention loop (every 10 minutes) and the weekly loop (every 5 minutes, acts on
+Mondays: a report to Drew at 13:00 UTC, the summary post at 15:00 UTC). The loops start a minute after boot.
+
+**Files.** Under `/root/charter-social`, owned by uid 1000 (the image's `node` user), mode 700:
+
+- `social.env` (mode 600): from `deploy/social/social.env.example`. The X keys, the Gemini key and models,
+  `TELEGRAM_CHAT_ID`, `CHARTER_SITE_URL`, `FIRST_PARTY_PAYERS` and `PROBE_PAYERS` (copy both from
+  `/etc/charter-ops/env`), `DRY_RUN`, the caps.
+- `secrets/telegram.token` (0400): the token of a bot made for this service alone (BotFather). A token another
+  process also polls breaks both.
+- `config/` (read-only in the container, re-read every tick, so an edit applies within 5 minutes):
+  `facts.md` (one fact per non-empty line, no comments: every line can be published; never a price, those
+  come from `/v1/offers`), `rules.json` (extra banned words; the defaults always stay), `optins.json` (who may be
+  named), `blocklist.json` (handles never replied to). Start from `deploy/social/*.example`. A file that does
+  not parse stops all posting, with one Telegram alert an hour, until it is fixed; an absent file takes its
+  default.
+- `state/state.json`: what was posted and seen, the mention cursor, today's counters and spend, the pause
+  flag, the heartbeat. A state file that does not parse is kept as `state.json.corrupt-<ms>` and the service
+  starts paused.
+
+Set up (as root on the box):
+
+```
+mkdir -p /root/charter-social/{state,config,secrets}
+cp <repo>/deploy/social/social.env.example /root/charter-social/social.env        # then fill it
+for f in facts.md rules.json optins.json blocklist.json; do cp <repo>/deploy/social/$f.example /root/charter-social/config/$f; done
+printf '%s' '<bot token>' > /root/charter-social/secrets/telegram.token
+chown -R 1000:1000 /root/charter-social && chmod 700 /root/charter-social
+chmod 600 /root/charter-social/social.env && chmod 400 /root/charter-social/secrets/telegram.token
+```
+
+**First start, dry run.** Leave `DRY_RUN=1`, then `docker compose -f deploy/door/docker-compose.yml up -d
+charter-social`. Telegram says `charter-social started: DRY_RUN on`. The first event tick records everything
+already in the ledger as seen and posts nothing; the first mention tick stores the newest mention id and
+replies to nothing. From then on every post or reply it would make arrives as `would post: ...` or
+`would reply: ...`. Without a readable token file or `TELEGRAM_CHAT_ID` the process exits (no kill switch,
+no service); any other missing setting leaves the loops idle and `/status` lists it.
+
+**`/status`.** Paused or live, `DRY_RUN on|off`, the last post and reply, today's counts, spend against
+`SPEND_CAP_USD_DAY`, Gemini calls against `GEMINI_CALLS_CAP_DAY`, the heartbeat's age and any missing
+setting. Other commands: `/pause`, `/resume`, `/delete <post id or x.com status URL>`. Only Drew's chat is
+answered; a command other than `/pause` older than 10 minutes is refused.
+
+**Going live.** Set `DRY_RUN=0` in `social.env`, then `docker compose -f deploy/door/docker-compose.yml up -d
+charter-social` (re-creating the container is what re-reads the env file). Telegram says `DRY_RUN off`.
+
+**Pausing.** `/pause` from Drew's chat stops every post and reply within one tick; it is honored however old.
+`/resume` starts them again. While paused nothing is read from X and no Gemini call is made: events wait
+(those older than 6 hours when resumed are marked seen, never posted) and mentions wait (older than 24 hours
+are skipped). `docker stop charter-social` also stops it, without losing state.
+
+**Adding an opt-in.** Only an id in `config/optins.json` is ever named, @-mentioned or given a wallet's
+transaction link. Keys are lowercased on load:
+
+```
+{
+  "renters": { "0x<payer wallet>": { "name": "Teeny", "handle": "teeny_agent" } },
+  "grants":  { "<grantId>": { "name": "Some agent" } },
+  "hosts":   { "<hostId>": { "name": "A host", "handle": "hostops" } }
+}
+```
+
+The handle has no `@` and is optional. Posts from the next tick use it; nothing already posted changes.
+
+**Limits it keeps by itself.** At most 4 event posts a UTC day (past that, events roll into the weekly
+totals); 20 replies a day, 2 per author a day, 1 per X conversation ever; mentions older than 24 hours
+skipped. `SPEND_CAP_USD_DAY` (default 2) counts X's per-call prices (`X_PRICE_USD` in `src/social/x.ts`) for
+posts and mention reads; reaching it stops both loops until the UTC day ends and alerts once. A Telegram
+heartbeat older than 15 minutes blocks every post and reply and alerts `kill switch offline` once an hour.
+
+**Alerts and failures.** Every post and reply, every dropped draft set (`post dropped: <event id>: <why>`),
+`loop error: <loop>: <message>` at most once an hour per loop, unreadable door data or config once an hour.
+A failed X post is retried on later ticks, at most 3 attempts, then given up with a message. A post whose call
+timed out or failed after X accepted it can be posted again on the next attempt; X refuses an exact
+duplicate text, so at worst a reworded second post goes out: `/delete` it. The Monday report lists posts,
+replies, mentions seen and skipped by reason, and spend; the state keeps only today's spend, not the week's.
 
 ## Still open for Drew
 

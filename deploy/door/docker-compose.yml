@@ -35,6 +35,31 @@ services:
     networks: [relay_deploy_net]
     restart: unless-stopped
 
+  # charter-social: Charter's X account (docs/ops.md, "charter-social"). Same image, its own entry. It reads the
+  # door's data read-only and never sees the door's secrets. CHARTER_SOCIAL_HOME (default /root/charter-social),
+  # owned by uid 1000, mode 700: social.env (deploy/social/social.env.example), state/, config/ (facts.md,
+  # rules.json, optins.json, blocklist.json), secrets/telegram.token (0400).
+  charter-social:
+    image: charter-door:local
+    container_name: charter-social
+    command: ['node', 'dist/social/main.js']
+    env_file: ${CHARTER_SOCIAL_HOME:-/root/charter-social}/social.env
+    environment:
+      CHARTER_DATA_DIR: /data
+      STATE_DIR: /state
+      CONFIG_DIR: /config
+      CHARTER_DOOR_URL: http://charter-door:3701
+      TELEGRAM_BOT_TOKEN_FILE: /secrets/telegram.token
+    volumes:
+      - ${CHARTER_DOOR_HOME:-/root/charter-door}/data:/data:ro
+      - ${CHARTER_SOCIAL_HOME:-/root/charter-social}/state:/state
+      - ${CHARTER_SOCIAL_HOME:-/root/charter-social}/config:/config:ro
+      - ${CHARTER_SOCIAL_HOME:-/root/charter-social}/secrets:/secrets:ro
+    healthcheck:
+      disable: true
+    networks: [relay_deploy_net]
+    restart: unless-stopped
+
 networks:
   relay_deploy_net:
     external: true

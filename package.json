@@ -44,6 +44,7 @@
   "bin": {
     "charter": "dist/cli.js",
     "charter-host": "dist/host/main.js",
-    "charter-door": "dist/door/main.js"
+    "charter-door": "dist/door/main.js",
+    "charter-social": "dist/social/main.js"
   }
 }
