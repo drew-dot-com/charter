@@ -97,5 +97,14 @@
     "channel": "5LQE2aPTxZbqC8YBkDUs5bBmYWX2FDEDmW3Rcq9gpxEu",
     "voucher_before": "133220",
     "voucher_after": "137850"
+  },
+  {
+    "bytes": 1101,
+    "date": "2026-11-24T15:00:01.991Z",
+    "file": "site/moved.html",
+    "paid": "free (Turbo, under 100 KiB; signer had 0 credits)",
+    "sha256": "e172e9f82ba20a5b3a874b25325f369efcee00d27cf85c70bdc12e5b02c3c008",
+    "signer": "DQCzjWpsDsbwaTkAvzu9pD3QhEK8QAHCmNHvUmgAKdQt",
+    "txid": "EKxsZP-wQZ8p0VJxRO37ParEW-tHm-oXu8Q_9CdvOPg"
   }
 ]
