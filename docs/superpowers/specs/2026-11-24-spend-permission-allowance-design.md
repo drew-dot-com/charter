@@ -1,7 +1,8 @@
 # Spend-permission allowance: a person approves once, Charter keeps the home paid
 
-Status: **SHELVED, ready to build.** Written 2026-11-24 after a mainnet spike. Build it when the trigger
-below happens, not before.
+Status: **APPROVED, building.** Written 2026-11-24 after a mainnet spike. It was shelved until the trigger
+below, then Drew chose the same day to build it now (a Base-native story for grant applications, and
+readiness).
 
 ## Why
 
