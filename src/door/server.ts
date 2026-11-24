@@ -570,6 +570,8 @@ export function doorApp(deps: DoorDeps): express.Express {
       if (a.state !== 'waiting') return void res.status(409).json({ error: 'not_waiting' });
       const v = validatePermission(req.body, { spender, tickMicro: BigInt(a.tickMicro), now: now() });
       if (!v.ok) return void res.status(400).json({ error: v.error });
+      // One permission, one allowance: a permission is public on chain once used, so a copy is refused.
+      if (allowances.permissionHolder(v.signed.permission.account, v.signed.permission.salt) !== undefined) return void res.status(409).json({ error: 'permission_in_use' });
       res.json(allowancePageView(allowances.update(id, { state: 'approved', signed: v.signed, account: v.signed.permission.account }), spender));
     });
     app.post('/v1/allowances/:id/stop', (req, res) => {

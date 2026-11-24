@@ -7,7 +7,7 @@
 // Crash safety: every send (pull, tick, re-open, refund) is recorded in the state file before it goes out,
 // and a send whose answer was lost is settled from what the chain or the host shows, never sent again blind.
 // One allowance's error is a problem and the pass goes on with the next.
-import type { AllowanceState, EndReason, SignedPermission } from '../door/allowances.js';
+import { permissionKey, type AllowanceState, type EndReason, type SignedPermission } from '../door/allowances.js';
 import { BASE_USDC, type Answer, type DoorClient } from '../fund/door-client.js';
 import { MAX_TICK_MICRO, tickDue } from '../fund/paymaster.js';
 import { NotSent, type Chain } from './chain.js';
@@ -90,12 +90,27 @@ export async function cycle(d: BillerDeps): Promise<void> {
     return problem('door', `listing allowances: ${errText(e)}`);
   }
   if (a.status !== 200 || !isObj(a.body) || !Array.isArray(a.body.allowances)) return problem('door', `listing allowances answered ${a.status}`);
+  // One permission on chain held by two allowances would book each one's pulls to both: act on neither.
+  const holders = new Map<string, number>();
+  const keyOf = (raw: unknown): string | undefined => {
+    const q = isObj(raw) && HANDLED.includes(raw.state) && isObj(raw.signed) && isObj(raw.signed.permission) ? raw.signed.permission : undefined;
+    return q && typeof q.account === 'string' && typeof q.salt === 'string' ? permissionKey(q.account, q.salt) : undefined;
+  };
+  for (const raw of a.body.allowances as unknown[]) {
+    const k = keyOf(raw);
+    if (k) holders.set(k, (holders.get(k) ?? 0) + 1);
+  }
   for (const raw of a.body.allowances as unknown[]) {
     if (!isObj(raw) || typeof raw.allowanceId !== 'string' || !ID.test(raw.allowanceId)) {
       problem('allowance', 'the door listed an allowance whose id is not 32 hex characters; skipped');
       continue;
     }
     if (!HANDLED.includes(raw.state)) continue;
+    const k = keyOf(raw);
+    if (k && (holders.get(k) ?? 0) > 1) {
+      problem('allowance', `allowance ${raw.allowanceId} carries the same permission as another live allowance; neither is acted on. Drew: look at both.`);
+      continue;
+    }
     try {
       await new One(d, raw as DoorAllowance, problem).run();
     } catch (e) {
@@ -179,7 +194,7 @@ class One {
     await this.settleTick();
     await this.settleOpen();
     // An end already decided: finish it, and pay, open or pull nothing more.
-    if (this.e.ending) return this.finish(this.e.ending);
+    if (this.e.ending) return this.finish(this.e.ending, st);
 
     const stopping = this.a.state === 'stopping';
     if (stopping || this.d.stops.has(this.id)) return this.stop(st, stopping ? 'stopped' : 'operator');
@@ -244,16 +259,14 @@ class One {
 
   /**
    * Books every pull the chain shows: any spend this period above what was booked is a pull that landed
-   * unbooked (its answer lost, or given up and landed later), and goes to credit. Then settles the record of
-   * a pull sent last time whose answer never came.
+   * unbooked (its answer lost, or given up and landed later), and goes to credit.
    */
-  private settlePull(st: Status): void {
+  private book(st: Status): void {
     const e = this.e;
     const f = e.pullInFlight;
     const before = JSON.stringify([e.creditMicro, e.periodPulled]);
     let pp = e.periodPulled ?? { periodEndsAt: f?.periodEndsAt ?? st.periodEndsAt, micro: f ? (e.periodSpentSeen ?? '0') : st.periodSpentMicro.toString() };
-    const newPeriod = pp.periodEndsAt !== st.periodEndsAt;
-    if (newPeriod) pp = { periodEndsAt: st.periodEndsAt, micro: '0' };
+    if (pp.periodEndsAt !== st.periodEndsAt) pp = { periodEndsAt: st.periodEndsAt, micro: '0' };
     const landed = st.periodSpentMicro - BigInt(pp.micro);
     if (landed > 0n) {
       e.creditMicro = (this.credit + landed).toString();
@@ -261,6 +274,13 @@ class One {
     }
     e.periodPulled = pp;
     if (JSON.stringify([e.creditMicro, e.periodPulled]) !== before) this.save();
+  }
+
+  /** Books what the chain shows, then settles the record of a pull sent last time whose answer never came. */
+  private settlePull(st: Status): void {
+    this.book(st);
+    const e = this.e;
+    const f = e.pullInFlight;
     if (!f) return;
 
     const micro = BigInt(f.micro);
@@ -325,7 +345,7 @@ class One {
    * Sends the credit back to the permission's account, then posts `patch` (an end). A refund whose answer
    * was lost is never sent again; one that certainly sent nothing (NotSent) is tried again next cycle.
    */
-  private async finish(decided: Ending): Promise<void> {
+  private async finish(decided: Ending, st: Status): Promise<void> {
     // Recorded before anything is sent: whatever is lost from here, later cycles only finish this end.
     if (!this.e.ending) {
       this.e.ending = decided;
@@ -338,6 +358,12 @@ class One {
         'refund',
         `allowance ${this.id}: a refund of ${r.micro} micro-USDC to ${r.to} sent at ${new Date(r.at).toISOString()} got no answer and is not sent again. Drew: check the chain for it, then clear refundInFlight in the state file; the allowance does not end until then.`,
       );
+    }
+    if (!st.isRevoked && !st.isExpired) {
+      // Revoked first (mined before this goes on), so nothing more can be spent; then whatever the chain
+      // shows was spent is booked, so the refund is exactly what left the account and was not paid out.
+      await this.d.chain.revoke(this.p);
+      this.book(await this.d.chain.status(this.p));
     }
     const credit = this.credit;
     if (credit > 0n) {
@@ -369,20 +395,17 @@ class One {
 
   // ---- ending ----
 
-  /** The agent's or Drew's stop: revoke on chain if still live, refund, end. */
+  /** The agent's or Drew's stop: revoke on chain if still live, refund, end (`finish` does all three). */
   private async stop(st: Status, endReason: EndReason): Promise<void> {
-    // `approved -> ended` is not a move the door takes: an allowance never active goes through `stopping`.
-    if (this.a.state === 'approved' && !(await this.post({ state: 'stopping' }))) return;
-    if (!st.isRevoked) await this.d.chain.revoke(this.p);
-    await this.finish({ state: 'ended', endReason });
+    await this.finish({ state: 'ended', endReason }, st);
   }
 
   /** The person revoked it on chain (or it expired). */
   private async cancelled(st: Status): Promise<void> {
     if (this.a.state === 'approved') {
-      return this.finish({ state: 'refused', endReason: 'cancelled', reason: st.isRevoked ? 'cancelled before activation' : 'the permission is not in force (before its start or past its end)' });
+      return this.finish({ state: 'refused', endReason: 'cancelled', reason: st.isRevoked ? 'cancelled before activation' : 'the permission is not in force (before its start or past its end)' }, st);
     }
-    await this.finish({ state: 'ended', endReason: 'cancelled' });
+    await this.finish({ state: 'ended', endReason: 'cancelled' }, st);
   }
 
   // ---- approval ----
@@ -420,7 +443,7 @@ class One {
   private async tend(st: Status): Promise<void> {
     await this.post({ remainingMicro: st.remainingMicro.toString(), periodEndsAt: st.periodEndsAt, creditMicro: this.e.creditMicro });
     const h = await this.home();
-    if (!h.hostKnown) return this.finish({ state: 'ended', endReason: 'home_gone' });
+    if (!h.hostKnown) return this.finish({ state: 'ended', endReason: 'home_gone' }, st);
     if (h.grantLive) return; // a grant pays this home; the biller starts at the hour after its last
     if (h.leaseId === null) return this.problem('lease', `allowance ${short(this.id)}: the door has no lease for home ${this.a.homeId}; nothing paid`);
 
@@ -436,7 +459,7 @@ class One {
         this.e.lapsedSince = this.t;
         this.save();
       }
-      if (this.t - this.e.lapsedSince > LAPSE_END_MS) return this.finish({ state: 'ended', endReason: 'home_gone' });
+      if (this.t - this.e.lapsedSince > LAPSE_END_MS) return this.finish({ state: 'ended', endReason: 'home_gone' }, st);
       if (tick === undefined) return this.backOff('price', `lease ${short(leaseId)} has no usable tick price; not re-opened`);
       return this.reopen(h, leaseId, tick, interval, st);
     }
@@ -498,6 +521,9 @@ class One {
       return false;
     }
     delete this.e.nextTryAt;
+    // The checks above took time: the end-of-period guard is checked again on the clock now, and the pull is
+    // booked to the period it checked.
+    if (this.d.now() >= st.periodEndsAt - PERIOD_EDGE_MS) return false;
     // Saved before the send: if the answer is lost, the period's spend settles it next cycle.
     this.e.pullInFlight = { micro: need.toString(), at: this.t, periodEndsAt: st.periodEndsAt };
     this.e.periodSpentSeen = st.periodSpentMicro.toString();
@@ -594,7 +620,7 @@ class One {
     }
     if (a.status === 409 && errOf(a) === 'home_host_gone') {
       this.save();
-      return this.finish({ state: 'ended', endReason: 'home_gone' });
+      return this.finish({ state: 'ended', endReason: 'home_gone' }, st);
     }
     this.backOff('open', `the re-open on offer ${offerId} answered ${a.status} ${errOf(a)}; trying again in 5 minutes`);
   }

@@ -166,6 +166,42 @@ test('POST permission: approves a waiting allowance, then 409 not_waiting', asyn
   s.close();
 });
 
+test('POST permission: the same permission on a second allowance is 409 permission_in_use', async () => {
+  const s = await start();
+  try {
+    const a = await made(s);
+    assert.equal((await s.call('POST', `/v1/allowances/${a.allowanceId}/permission`, permission())).status, 200);
+    // Another home's allowance, given a copy of the first one's permission (salt spelled another way).
+    const other = s.allowances.add({ sshKeys: normalizeSshKeys([KEY2])!, image: 'charter-home', tickMicro: 5100n }, 'tok2');
+    const copy = permission({ salt: '0x0001', account: ('0x' + '11'.repeat(20)).toUpperCase().replace('0X', '0x') });
+    const r = await s.call('POST', `/v1/allowances/${other.allowanceId}/permission`, copy);
+    assert.equal(r.status, 409);
+    assert.deepEqual(await r.json(), { error: 'permission_in_use' });
+    assert.equal(s.allowances.get(other.allowanceId)!.state, 'waiting');
+    assert.equal(s.allowances.get(other.allowanceId)!.signed, undefined);
+    // A different salt is a different permission.
+    assert.equal((await s.call('POST', `/v1/allowances/${other.allowanceId}/permission`, permission({ salt: '0x02' }))).status, 200);
+  } finally {
+    s.close();
+  }
+});
+
+test('POST permission: a permission stays refused after its first allowance ended', async () => {
+  const s = await start();
+  try {
+    const a = await made(s);
+    assert.equal((await s.call('POST', `/v1/allowances/${a.allowanceId}/permission`, permission())).status, 200);
+    s.allowances.update(a.allowanceId, { state: 'stopping' });
+    s.allowances.update(a.allowanceId, { state: 'ended', endReason: 'stopped' });
+    const b = await made(s);
+    const r = await s.call('POST', `/v1/allowances/${b.allowanceId}/permission`, permission());
+    assert.equal(r.status, 409);
+    assert.deepEqual(await r.json(), { error: 'permission_in_use' });
+  } finally {
+    s.close();
+  }
+});
+
 test('POST permission: a bad permission is 400 with the validator error; unknown id 404', async () => {
   const s = await start();
   const a = await made(s);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { appendFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AllowanceStore, BadMove, EXPIRE_MS, billerView, ownerView, pageView, validatePermission, validateRequest } from './allowances.js';
+import { AllowanceStore, BadMove, EXPIRE_MS, billerView, ownerView, pageView, permissionKey, validatePermission, validateRequest } from './allowances.js';
 
 const KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl me@host';
 const SPENDER = '0x1111111111111111111111111111111111aAaAaA';
@@ -157,4 +157,25 @@ test('pageView hides keys, homeId, token hash, signature and leaseId; ownerView 
   const bv = billerView(a);
   assert.equal('tokenHash' in bv, false);
   assert.ok('signed' in bv && 'sshKeys' in bv);
+});
+
+test('permissionHolder finds the allowance that ever stored a permission, by account and salt', () => {
+  const { s, file } = store();
+  const a = s.add(req(), 'tok');
+  const v = validatePermission(perm(), o());
+  assert.equal(v.ok, true);
+  const signed = (v as Extract<typeof v, { ok: true }>).signed;
+  assert.equal(s.permissionHolder(ACCOUNT, signed.permission.salt), undefined);
+  s.update(a.allowanceId, { state: 'approved', signed, account: ACCOUNT });
+  // Any case of the account, any hex spelling of the salt: the same permission.
+  assert.equal(s.permissionHolder(ACCOUNT.toLowerCase(), '0x1'), a.allowanceId);
+  assert.equal(s.permissionHolder(ACCOUNT.toUpperCase().replace('0X', '0x'), '0x' + '00'.repeat(31) + '01'), a.allowanceId);
+  assert.equal(s.permissionHolder(ACCOUNT, '0x2'), undefined);
+  assert.equal(s.permissionHolder('0x' + '22'.repeat(20), '0x1'), undefined);
+  // Still held once the allowance is over, and after a reload.
+  s.update(a.allowanceId, { state: 'stopping' });
+  s.update(a.allowanceId, { state: 'ended', endReason: 'stopped' });
+  assert.equal(s.permissionHolder(ACCOUNT, '0x1'), a.allowanceId);
+  assert.equal(new AllowanceStore(file, () => 1).permissionHolder(ACCOUNT, '0x1'), a.allowanceId);
+  assert.equal(permissionKey('0xAB', '0x0a'), permissionKey('0xab', '0xA'));
 });

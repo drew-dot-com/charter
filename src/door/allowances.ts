@@ -128,6 +128,17 @@ export function validatePermission(
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 
+/** One spend permission on chain: its account (any case) and salt (any hex spelling of the same number). */
+export function permissionKey(account: string, salt: string): string {
+  let n: string;
+  try {
+    n = BigInt(salt).toString(16);
+  } catch {
+    n = salt.toLowerCase();
+  }
+  return `${account.toLowerCase()}:${n}`;
+}
+
 export class AllowanceStore {
   private readonly items = new Map<string, Allowance>();
 
@@ -205,6 +216,18 @@ export class AllowanceStore {
     this.items.set(id, next);
     this.append(next);
     return { ...next };
+  }
+
+  /**
+   * The allowance, in any state, that ever stored a permission for this account and salt (one permission on
+   * chain), or undefined. Keyed on the permission's own fields, never on a client-sent hash.
+   */
+  permissionHolder(account: string, salt: string): string | undefined {
+    const key = permissionKey(account, salt);
+    for (const a of this.items.values()) {
+      if (a.signed && permissionKey(a.signed.permission.account, a.signed.permission.salt) === key) return a.allowanceId;
+    }
+    return undefined;
   }
 
   tokenOk(id: string, token: string): boolean {

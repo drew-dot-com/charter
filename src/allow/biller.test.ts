@@ -44,6 +44,7 @@ class FakeDoor implements DoorClient {
   onFund?: (method: string, path: string, json: any) => Answer | undefined;
   /** What the saved state looked like when each pay was sent. */
   savedAtPay: string[] = [];
+  private salts = 0;
 
   constructor(readonly clock: { t: number }, readonly saved: { s: string }) {}
 
@@ -63,7 +64,8 @@ class FakeDoor implements DoorClient {
       tickMicro: '7000',
       createdAt: this.clock.t - DAY,
       updatedAt: this.clock.t - DAY,
-      signed: signed(),
+      // Each allowance its own permission (salt), as the door's permission_in_use check keeps them.
+      signed: { ...signed(), permission: { ...signed().permission, salt: '0x' + (++this.salts).toString(16) } },
       account: ACCOUNT,
       hoursPaid: 0,
       ...over,
@@ -179,8 +181,12 @@ class FakeChain implements Chain {
     return { isRevoked: this.revoked, isExpired: this.expired, remainingMicro: left, periodSpentMicro: this.spent, periodEndsAt: this.periodEndsAt };
   }
 
+  onCanPull?: () => void;
+  onRevoke?: () => void;
+
   async canPull(_p: SignedPermission, micro: bigint) {
     this.calls.push(`canPull:${micro}`);
+    this.onCanPull?.();
     return this.canPullAnswer ?? { ok: true as const };
   }
 
@@ -195,6 +201,7 @@ class FakeChain implements Chain {
 
   async revoke(_p: SignedPermission) {
     this.calls.push('revoke');
+    this.onRevoke?.();
     this.revoked = true;
     return { tx: '0xrevoke' };
   }
@@ -622,7 +629,7 @@ test('ends as home_gone when the door no longer knows the host', async () => {
   r.state.entries[id] = { allowanceId: id, creditMicro: '7000' };
   r.door.homes.get(homeId)!.hostKnown = false;
   await r.run();
-  assert.deepEqual(r.chain.sends(), [`refund:${ACCOUNT}:7000`]);
+  assert.deepEqual(r.chain.sends(), ['revoke', `refund:${ACCOUNT}:7000`]);
   assert.equal(r.door.stateOf(id), 'ended');
   assert.equal(r.door.a(id).endReason, 'home_gone');
 });
@@ -670,7 +677,7 @@ test('ends as home_gone on 409 home_host_gone', async () => {
   r.state.entries[id] = { allowanceId: id, creditMicro: '14000' };
   r.door.onPay = (path) => (path === '/v1/rent' ? { status: 409, body: { error: 'home_host_gone' } } : undefined);
   await r.run();
-  assert.deepEqual(r.chain.sends(), [`refund:${ACCOUNT}:14000`]);
+  assert.deepEqual(r.chain.sends(), ['revoke', `refund:${ACCOUNT}:14000`]);
   assert.equal(r.door.stateOf(id), 'ended');
   assert.equal(r.door.a(id).endReason, 'home_gone');
 });
@@ -688,7 +695,7 @@ test('ends as home_gone after 7 days lapsed', async () => {
   assert.equal(r.door.stateOf(id), 'spent_for_period');
   r.clock.t = T0 + LAPSE_END_MS + 60_000;
   await r.run();
-  assert.deepEqual(r.chain.sends(), [`refund:${ACCOUNT}:3000`]);
+  assert.deepEqual(r.chain.sends(), ['revoke', `refund:${ACCOUNT}:3000`]);
   assert.equal(r.door.stateOf(id), 'ended');
   assert.equal(r.door.a(id).endReason, 'home_gone');
   assert.equal(r.door.pays.length, 0);
@@ -786,7 +793,7 @@ test('an end decided by home_host_gone is remembered after a lost refund', async
     await r.run();
   }
   assert.equal(r.door.pays.length, 1);
-  assert.deepEqual(r.chain.sends(), [`refund:${ACCOUNT}:14000`]);
+  assert.deepEqual(r.chain.sends(), ['revoke', `refund:${ACCOUNT}:14000`]);
   assert.equal(r.state.entries[id]?.ending?.endReason, 'home_gone');
   assert.ok(r.problems.some((p) => /refund/.test(p.msg) && /14000/.test(p.msg)));
 });
@@ -807,7 +814,7 @@ test('an end decided by home_host_gone is remembered after a failed ended post',
   assert.equal(r.door.stateOf(id), 'ended');
   assert.equal(r.door.a(id).endReason, 'home_gone');
   assert.equal(r.door.pays.length, 1);
-  assert.deepEqual(r.chain.sends(), [`refund:${ACCOUNT}:14000`]);
+  assert.deepEqual(r.chain.sends(), ['revoke', `refund:${ACCOUNT}:14000`]);
 });
 
 test('an expired permission ends the allowance and refunds', async () => {
@@ -836,4 +843,83 @@ test('inForce: a permission is in force from its start until its end', () => {
   assert.equal(inForce(p, 1000), true);
   assert.equal(inForce(p, 1999), true);
   assert.equal(inForce(p, 2000), false);
+});
+
+// ---- fix round 2 ----
+
+test('two allowances carrying one permission are both left alone', async () => {
+  const r = rig();
+  const one = r.door.home();
+  const two = r.door.home();
+  const s2 = signed();
+  s2.permission.account = ACCOUNT.toUpperCase().replace('0X', '0x');
+  s2.permission.salt = '0x0001';
+  r.door.a(two.id).signed = s2;
+  const third = r.door.home();
+  const s3 = signed();
+  s3.permission.salt = '0x02';
+  r.door.a(third.id).signed = s3;
+  await r.run();
+  assert.deepEqual(r.chain.sends(), ['pull:168000']);
+  assert.deepEqual(r.door.tickPays().map((p) => p.path), [`/v1/leases/${third.leaseId}/ticks`]);
+  assert.equal(r.state.entries[one.id], undefined);
+  assert.equal(r.state.entries[two.id], undefined);
+  assert.equal(r.problems.filter((p) => /same permission/.test(p.msg)).length, 2);
+});
+
+test('every end revokes a live permission before it refunds', async () => {
+  const r = rig();
+  const { id, homeId } = r.door.home({ state: 'short' });
+  r.state.entries[id] = { allowanceId: id, creditMicro: '7000' };
+  r.door.homes.get(homeId)!.hostKnown = false;
+  await r.run();
+  assert.deepEqual(r.chain.sends(), ['revoke', `refund:${ACCOUNT}:7000`]);
+  assert.equal(r.door.stateOf(id), 'ended');
+  assert.equal(r.door.a(id).endReason, 'home_gone');
+});
+
+test('a pull that lands before the revoke is mined is refunded too', async () => {
+  const r = rig();
+  const { id } = r.door.home({ state: 'stopping' });
+  r.state.entries[id] = { allowanceId: id, creditMicro: '7000' };
+  // A pull given up earlier lands just before the revoke does.
+  r.chain.onRevoke = () => void (r.chain.spent += 168000n);
+  await r.run();
+  assert.deepEqual(r.chain.sends(), ['revoke', `refund:${ACCOUNT}:175000`]);
+  assert.equal(r.door.stateOf(id), 'ended');
+  assert.equal(r.credit(id), '0');
+});
+
+test('an end whose revoke failed revokes again, then books and refunds', async () => {
+  const r = rig();
+  const { id, homeId } = r.door.home();
+  r.state.entries[id] = { allowanceId: id, creditMicro: '7000' };
+  r.door.homes.get(homeId)!.hostKnown = false;
+  const real = r.chain.revoke.bind(r.chain);
+  r.chain.revoke = async () => {
+    r.chain.calls.push('revoke');
+    throw new Error('receipt wait timed out');
+  };
+  await r.run();
+  assert.equal(r.door.stateOf(id), 'active');
+  assert.equal(r.state.entries[id]?.ending?.endReason, 'home_gone');
+  r.chain.revoke = real;
+  r.door.homes.get(homeId)!.hostKnown = true;
+  r.clock.t += 60_000;
+  await r.run();
+  assert.deepEqual(r.chain.sends(), ['revoke', 'revoke', `refund:${ACCOUNT}:7000`]);
+  assert.equal(r.door.stateOf(id), 'ended');
+  assert.equal(r.door.a(id).endReason, 'home_gone');
+  assert.equal(r.door.pays.length, 0);
+});
+
+test('a pull is not sent when the period edge is reached during the checks', async () => {
+  const r = rig();
+  const { id } = r.door.home();
+  r.chain.periodEndsAt = T0 + 6 * 60_000;
+  r.chain.onCanPull = () => void (r.clock.t = T0 + 2 * 60_000);
+  await r.run();
+  assert.deepEqual(r.chain.sends(), []);
+  assert.equal(r.state.entries[id]?.pullInFlight, undefined);
+  assert.equal(r.door.pays.length, 0);
 });
