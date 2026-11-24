@@ -1,14 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { LEDGER_FILE, TICK_TXS_FILE } from '../door/ledger.js';
 import type { DoorLease } from '../door/ledger.js';
 import type { Grant } from '../door/grants.js';
+import { HOSTS_FILE } from '../door/hosts.js';
 import type { HostRecord } from '../door/hosts.js';
 
-// Names repeated from the door (types only are imported, so no door class can run and write a file).
-const LEDGER_FILE = 'door-ledger.json';
-const TICK_TXS_FILE = 'tick-txs.jsonl';
+// The door has no exported constant for this name; it is set in src/door/main.ts.
 const GRANTS_FILE = 'grants.jsonl';
-const HOSTS_FILE = 'hosts.json';
 
 export interface TickTx { leaseId: string; tick: number; tx: string; at: number }
 
