@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadConfigFiles } from './files.js';
+import { DEFAULT_BANNED, loadConfigFiles } from './files.js';
 
 const tmp = (): string => mkdtempSync(join(tmpdir(), 'social-files-'));
 
@@ -39,4 +39,24 @@ test('loadConfigFiles throws on a malformed file rather than defaulting open', (
   const d = tmp();
   writeFileSync(join(d, 'blocklist.json'), '{nope');
   assert.throws(() => loadConfigFiles(d));
+});
+
+test('a wrong-shaped blocklist.json throws rather than becoming empty', () => {
+  for (const body of ['{"handles":["a"]}', 'null', '["a", 5]', '"a"']) {
+    const d = tmp();
+    writeFileSync(join(d, 'blocklist.json'), body);
+    assert.throws(() => loadConfigFiles(d), undefined, body);
+  }
+});
+
+test('rules.json banned adds to the defaults and never removes them', () => {
+  const d = tmp();
+  writeFileSync(join(d, 'rules.json'), '{"banned": []}');
+  const empty = loadConfigFiles(d).rules.banned;
+  for (const w of DEFAULT_BANNED) assert.ok(empty.includes(w), w);
+  writeFileSync(join(d, 'rules.json'), '{"banned": ["Moon", "TOKEN"]}');
+  const more = loadConfigFiles(d).rules.banned;
+  for (const w of DEFAULT_BANNED) assert.ok(more.includes(w), w);
+  assert.ok(more.includes('moon'));
+  assert.equal(more.filter((w) => w === 'token').length, 1);
 });

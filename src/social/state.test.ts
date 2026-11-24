@@ -18,10 +18,56 @@ test('StateStore survives a missing file', () => {
   assert.equal(s.paused, false);
 });
 
-test('StateStore survives a corrupt file', () => {
-  const f = join(dir(), 'state.json');
+test('a missing file is a fresh, unpaused state', () => {
+  assert.equal(new StateStore(join(dir(), 'state.json'), () => D1).get().paused, false);
+});
+
+test('a corrupt file is set aside and the bot comes up paused', () => {
+  const d = dir();
+  const f = join(d, 'state.json');
   writeFileSync(f, '{nope');
-  assert.equal(new StateStore(f, () => D1).get().initialized, false);
+  const s = new StateStore(f, () => D1).get();
+  assert.equal(s.paused, true);
+  assert.equal(s.initialized, false);
+  assert.ok(readdirSync(d).some((n) => n.startsWith('state.json.corrupt-')));
+  assert.equal(existsSync(f), false);
+});
+
+test('a wrong root type is treated as corrupt', () => {
+  const d = dir();
+  const f = join(d, 'state.json');
+  writeFileSync(f, '[1,2]');
+  assert.equal(new StateStore(f, () => D1).get().paused, true);
+  assert.ok(readdirSync(d).some((n) => n.startsWith('state.json.corrupt-')));
+});
+
+test('wrong-typed fields fall back to fresh defaults; a bad paused falls back to true', () => {
+  const f = join(dir(), 'state.json');
+  writeFileSync(f, JSON.stringify({
+    initialized: true, day: '2026-11-24', seen: 5, repliedConversations: [1], week: null, log: 'x',
+    attempts: { a: 'x' }, postsToday: 'many', paused: 'no', alertedAt: [], authorRepliesToday: null,
+  }));
+  const s = new StateStore(f, () => D1).get();
+  assert.equal(s.initialized, true);
+  assert.deepEqual(s.seen, []);
+  assert.deepEqual(s.repliedConversations, []);
+  assert.deepEqual(s.week, { key: '', hoursPaidAtStart: 0, summaryPosted: false, reportSent: false });
+  assert.deepEqual(s.log, []);
+  assert.deepEqual(s.attempts, {});
+  assert.deepEqual(s.alertedAt, {});
+  assert.deepEqual(s.authorRepliesToday, {});
+  assert.equal(s.postsToday, 0);
+  assert.equal(s.paused, true);
+});
+
+test('an absent paused stays false and well-typed fields are kept', () => {
+  const f = join(dir(), 'state.json');
+  writeFileSync(f, JSON.stringify({ seen: ['a'], attempts: { a: 2 }, log: [{ at: 1, kind: 'post', text: 't' }] }));
+  const s = new StateStore(f, () => D1).get();
+  assert.equal(s.paused, false);
+  assert.deepEqual(s.seen, ['a']);
+  assert.deepEqual(s.attempts, { a: 2 });
+  assert.equal(s.log.length, 1);
 });
 
 test('StateStore rewrites atomically: a temp file then a rename, nothing left behind', () => {

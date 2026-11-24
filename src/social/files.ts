@@ -39,7 +39,9 @@ function optinMap(raw: unknown): Record<string, Optin> {
 /**
  * Loads the files Drew edits: facts.md, rules.json, optins.json, blocklist.json. An absent file takes its default
  * (nobody opted in, nobody blocked); a file that exists but does not parse throws, so a typo never opens the gates.
- * `toon` is always banned.
+ * The effective banned list is the union of DEFAULT_BANNED and
+ * the words in rules.json (lowercased, deduped): the file can add words, never remove one, and `toon` is always present.
+ * blocklist.json must be an array of strings; any other shape throws.
  */
 export function loadConfigFiles(dir: string): ConfigFiles {
   const factsMd = read(dir, 'facts.md') ?? '';
@@ -47,7 +49,7 @@ export function loadConfigFiles(dir: string): ConfigFiles {
   const rulesText = read(dir, 'rules.json');
   const rulesRaw = rulesText === undefined ? undefined : (JSON.parse(rulesText) as { banned?: unknown });
   const fromFile = Array.isArray(rulesRaw?.banned) ? rulesRaw.banned.filter((w): w is string => typeof w === 'string') : undefined;
-  const banned = [...new Set([...(fromFile ?? DEFAULT_BANNED), 'toon'].map((w) => w.trim().toLowerCase()).filter(Boolean))];
+  const banned = [...new Set([...DEFAULT_BANNED, ...(fromFile ?? []), 'toon'].map((w) => w.trim().toLowerCase()).filter(Boolean))];
 
   const optText = read(dir, 'optins.json');
   const optRaw = (optText === undefined ? {} : JSON.parse(optText)) as Record<string, unknown>;
@@ -55,9 +57,8 @@ export function loadConfigFiles(dir: string): ConfigFiles {
 
   const blockText = read(dir, 'blocklist.json');
   const blockRaw = blockText === undefined ? [] : (JSON.parse(blockText) as unknown);
-  const blocklist = new Set(
-    (Array.isArray(blockRaw) ? blockRaw : []).filter((h): h is string => typeof h === 'string').map((h) => bare(h).toLowerCase()).filter(Boolean),
-  );
+  if (!Array.isArray(blockRaw) || blockRaw.some((h) => typeof h !== 'string')) throw new Error('blocklist.json must be an array of handle strings');
+  const blocklist = new Set((blockRaw as string[]).map((h) => bare(h).toLowerCase()).filter(Boolean));
 
   return { factsMd, rules: { banned }, optins, blocklist };
 }

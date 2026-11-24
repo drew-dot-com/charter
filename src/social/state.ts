@@ -75,11 +75,21 @@ export class StateStore {
   private load(): SocialState {
     const day = utcDay(this.now());
     let s = fresh(day);
+    let text: string | undefined;
     try {
-      const raw = JSON.parse(readFileSync(this.file, 'utf8')) as Partial<SocialState>;
-      s = { ...s, ...raw };
-    } catch {
-      // Missing or unreadable: start fresh.
+      text = readFileSync(this.file, 'utf8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') s = this.setAside(day);
+    }
+    if (text !== undefined) {
+      let raw: unknown;
+      try {
+        raw = JSON.parse(text);
+      } catch {
+        raw = undefined;
+      }
+      if (!isObj(raw)) s = this.setAside(day);
+      else s = checked(raw, day);
     }
     if (s.day !== day) {
       // New UTC day: the counters restart. paused, seen, replies, heartbeat, alerts, week and log carry over.
@@ -93,4 +103,54 @@ export class StateStore {
     }
     return s;
   }
+
+  /** An unreadable or malformed file: keep it for Drew as `<file>.corrupt-<ms>` (best effort) and start paused, so caps and pauses are not silently forgotten. */
+  private setAside(day: string): SocialState {
+    try {
+      renameSync(this.file, `${this.file}.corrupt-${this.now()}`);
+    } catch {
+      // Best effort.
+    }
+    const s = fresh(day);
+    s.paused = true;
+    return s;
+  }
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const isStrs = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string');
+const isNumMap = (v: unknown): v is Record<string, number> => isObj(v) && Object.values(v).every((x) => typeof x === 'number' && Number.isFinite(x));
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+const KINDS = ['post', 'reply', 'skip', 'error'];
+const isLogRow = (v: unknown): v is LogRow =>
+  isObj(v) && isNum(v.at) && typeof v.kind === 'string' && KINDS.includes(v.kind) && typeof v.text === 'string' && (v.id === undefined || typeof v.id === 'string');
+
+/** Each field of the file that has the wrong type falls back to its fresh default; `paused` falls back to true. */
+function checked(raw: Record<string, unknown>, day: string): SocialState {
+  const d = fresh(day);
+  const w = raw.week;
+  const week =
+    isObj(w) && typeof w.key === 'string' && isNum(w.hoursPaidAtStart) && typeof w.summaryPosted === 'boolean' && typeof w.reportSent === 'boolean'
+      ? { key: w.key, hoursPaidAtStart: w.hoursPaidAtStart, summaryPosted: w.summaryPosted, reportSent: w.reportSent }
+      : d.week;
+  const s: SocialState = {
+    initialized: typeof raw.initialized === 'boolean' ? raw.initialized : d.initialized,
+    seen: isStrs(raw.seen) ? raw.seen : d.seen,
+    attempts: isNumMap(raw.attempts) ? raw.attempts : d.attempts,
+    repliedConversations: isStrs(raw.repliedConversations) ? raw.repliedConversations : d.repliedConversations,
+    day: typeof raw.day === 'string' ? raw.day : d.day,
+    postsToday: isNum(raw.postsToday) ? raw.postsToday : d.postsToday,
+    repliesToday: isNum(raw.repliesToday) ? raw.repliesToday : d.repliesToday,
+    authorRepliesToday: isNumMap(raw.authorRepliesToday) ? raw.authorRepliesToday : d.authorRepliesToday,
+    spendUsdToday: isNum(raw.spendUsdToday) ? raw.spendUsdToday : d.spendUsdToday,
+    geminiCallsToday: isNum(raw.geminiCallsToday) ? raw.geminiCallsToday : d.geminiCallsToday,
+    capAlerted: typeof raw.capAlerted === 'boolean' ? raw.capAlerted : d.capAlerted,
+    paused: raw.paused === undefined ? d.paused : typeof raw.paused === 'boolean' ? raw.paused : true,
+    alertedAt: isNumMap(raw.alertedAt) ? raw.alertedAt : d.alertedAt,
+    week,
+    log: Array.isArray(raw.log) && raw.log.every(isLogRow) ? raw.log : d.log,
+  };
+  if (typeof raw.mentionSinceId === 'string') s.mentionSinceId = raw.mentionSinceId;
+  if (isNum(raw.heartbeatAt)) s.heartbeatAt = raw.heartbeatAt;
+  return s;
 }
