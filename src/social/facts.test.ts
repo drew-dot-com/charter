@@ -114,7 +114,7 @@ test('totals count running leases, outside hours, listed hosts and approved gran
       lease({ leaseId: 'D', ticksPaidByRenter: 100, payer: '0xfund' }),
     ],
     grants: [{ grantId: 'G1', state: 'active', updatedAt: 1 }, { grantId: 'G2', state: 'queued', updatedAt: 1 }, { grantId: 'G3', state: 'declined', updatedAt: 1 }],
-    hosts: [{ hostId: 'H1', probes: { passed: 1 } }, { hostId: 'H2', probes: { passed: 0 } }],
+    hosts: [{ hostId: 'H1', state: 'listed', probes: { passed: 1 } }, { hostId: 'H2', state: 'probing', probes: { passed: 0 } }],
   });
   const sheet = buildFactSheet({ event: undefined, src: s, offers, factsMd: '', optins: none, siteUrl: 'u', now: NOW, excludePayers: new Set(['0xfund']) });
   const byId = Object.fromEntries(sheet.facts.map((f) => [f.id, f.text]));
@@ -148,8 +148,8 @@ test('price is per hour even when the interval is not an hour, and non-home offe
 });
 
 test('an uneven interval states the price per interval', () => {
-  const sheet = sheetFor([{ offerId: 'o', tickPrice: '7000', intervalSeconds: 7, images: [] }]);
-  assert.ok(all(sheet).includes('0.007 USDC per 7 seconds'));
+  const sheet = sheetFor([{ offerId: 'o', tickPrice: '7000', intervalSeconds: 11, images: [] }]);
+  assert.ok(all(sheet).includes('0.007 USDC per 11 seconds'));
 });
 
 test('hosts listed counts only listed hosts', () => {
