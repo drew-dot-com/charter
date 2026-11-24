@@ -107,7 +107,7 @@ On the Hetzner box (`ssh -i ~/.ssh/toon_node root@167.233.221.236`):
   is 2 USDC; SOL pays a later close and settle). Verify the balances on Solscan.
 - [x] `/root/charter-door/door.env` from `deploy/door/door.env.example`: `CHARTER_PAY_TO` = Drew's Base
   address (**needed from Drew**), `CHARTER_DOOR_HOSTS` = `<toon2 offer pubkey>=g.toon.69b2a212547e7a9c`.
-- [x] `cd /opt/charter && docker compose -f deploy/door/docker-compose.yml up -d --build`.
+- [x] `cd /opt/charter && docker compose -f deploy/door/docker-compose.yml up -d --build charter-door`.
   Check: `docker logs charter-door` says `channel ready, headroom 2000000` (the boot opens the channel).
 - [x] Caddy: back up `/opt/toon-relay/deploy/Caddyfile`, append `deploy/door/Caddy.snippet` by writing
   the file in place (never `sed -i`), `docker cp` it to `deploy-caddy-1:/tmp/Caddyfile`, then

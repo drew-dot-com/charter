@@ -73,7 +73,7 @@ On the box, as in `docs/ops.md` ("Changing a price", step 3):
 ```bash
 cp -a /opt/charter /opt/charter.bak-20261116-preopenhuman
 # from the Mac, in the branch's tree: rsync without node_modules, dist, web/dist, .git, .superpowers, .worktrees; no --delete
-docker compose -f /opt/charter/deploy/door/docker-compose.yml up -d --build
+docker compose -f /opt/charter/deploy/door/docker-compose.yml up -d --build charter-door
 ```
 
 Check: `curl -s https://charter.mainnet.toonprotocol.dev/llms.txt | grep -c "OpenHuman on Charter"` is 1;
@@ -97,7 +97,7 @@ docker tag charter-hermes:pre-1116 charter-hermes:latest
 
 A home created meanwhile keeps running on the image it was created from until its next re-create. The
 door: `rm -rf /opt/charter && mv /opt/charter.bak-20261116-preopenhuman /opt/charter`, then the same
-`compose up -d --build`.
+`compose up -d --build charter-door`.
 
 ## Not covered
 

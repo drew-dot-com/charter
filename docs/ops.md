@@ -335,7 +335,8 @@ Done 2026-11-04 (TOON era), 30 s at 5000 to one hour at 7000, no live lease, in 
    (172.18.0.2 is `deploy-connector-rust-1`; the answer echoes the route with `"source":"runtime"`). Read back
    at `https://connector.mainnet.toonprotocol.dev/ilp` under `routes`.
 3. Door: `cp -a /opt/charter /opt/charter.bak-<date>`, rsync the tree from the Mac (no `node_modules`, `dist`,
-   `web/dist`, `.git`, `.superpowers`), `docker compose -f /opt/charter/deploy/door/docker-compose.yml up -d --build`.
+   `web/dist`, `.git`, `.superpowers`), `docker compose -f /opt/charter/deploy/door/docker-compose.yml up -d --build charter-door`
+   (always name the service: the compose file also holds `charter-social`).
    `GET /v1/offers` shows the new offer once the host has published it; a bare `POST /v1/leases/<id>/ticks`
    answers 402 with the new amount on both schemes.
 4. Proof over TOON from the `toon` VM (Edison's node): lease `d5668d8cc9a9c79a646d1c29a79c4063`, a 120 s python
@@ -667,10 +668,12 @@ container would crash-loop. With Drew's go, after the tree in `/opt/charter` is 
 `docker compose -f /opt/charter/deploy/door/docker-compose.yml build charter-door`. That rebuilds the image
 the door runs too, so the door picks up whatever code is in the tree the next time its container is
 re-created. Only build; do not run a bare `up -d` or `up -d --build` here, which would re-create the door now.
+`charter-social` is in the compose profile `social`, so a command without `--profile social` never sees it
+and never needs `social.env`; door commands still name `charter-door`.
 
 **First start, dry run.** Leave `DRY_RUN=1`, then
-`docker compose -f /opt/charter/deploy/door/docker-compose.yml up -d charter-social` (naming the service
-leaves the door alone). Telegram says `charter-social started: DRY_RUN on`. The first event tick records
+`docker compose -f /opt/charter/deploy/door/docker-compose.yml --profile social up -d charter-social` (naming the
+service leaves the door alone). Telegram says `charter-social started: DRY_RUN on`. The first event tick records
 everything already in the ledger as seen and posts nothing; the first mention read stores the newest mention
 id and replies to nothing. From then on every post or reply it would make arrives as `would post: ...` or
 `would reply: ...`. A dry-run event is marked seen and a dry-run reply reserves its conversation, the same
@@ -684,7 +687,7 @@ setting. Other commands: `/pause`, `/resume`, `/delete <post id or x.com status 
 answered; a command other than `/pause` older than 10 minutes is refused.
 
 **Going live.** Set `DRY_RUN=0` in `social.env`, then
-`docker compose -f /opt/charter/deploy/door/docker-compose.yml up -d charter-social` (re-creating the container
+`docker compose -f /opt/charter/deploy/door/docker-compose.yml --profile social up -d charter-social` (re-creating the container
 is what re-reads the env file). Telegram says `DRY_RUN off`.
 
 **Pausing.** `/pause` from Drew's chat stops every post and reply within one tick; it is honored however old.

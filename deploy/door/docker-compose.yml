@@ -39,7 +39,10 @@ services:
   # door's data read-only and never sees the door's secrets. CHARTER_SOCIAL_HOME (default /root/charter-social),
   # owned by uid 1000, mode 700: social.env (deploy/social/social.env.example), state/, config/ (facts.md,
   # rules.json, optins.json, blocklist.json), secrets/telegram.token (0400).
+  # Profile `social`: a plain `up` or `config` leaves it out (and never needs social.env); start it with
+  # `--profile social up -d charter-social`.
   charter-social:
+    profiles: [social]
     image: charter-door:local
     container_name: charter-social
     command: ['node', 'dist/social/main.js']
