@@ -5,8 +5,8 @@ import { requestRevoke, requestSpendPermission } from '@base-org/account/spend-p
 import { esc } from './grants.js';
 import { BEFORE_YOU_START, clampAllowance, errorWords, formatUsdc, hoursFor, stateWords, stopWords } from './allow-copy.js';
 
-/** The cancel button stays hidden until the revoke call is proven on mainnet (plan Task 9 step 2). */
-const CANCEL_TESTED = false;
+/** The cancel button: the revoke call was proven on mainnet 2026-11-25 (plan Task 9 step 2, docs/demo.md). */
+const CANCEL_TESTED = true;
 const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const BASE = 8453;
 const REFRESH_MS = 30_000;

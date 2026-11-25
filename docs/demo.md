@@ -791,3 +791,23 @@ Rules an agent should know:
 
 Not yet done: the live rate and host list (`CHARTER_REFERRAL_BPS` 1000, `CHARTER_REFERRAL_HOSTS`), the deploy, and
 the first real payout. Each needs Drew.
+
+## 21. Monthly allowance: period reset and person-side cancel (2026-11-24/25)
+
+Both were run on Base mainnet in the throwaway spike, with a test Base Account
+(`0xCAa32aC8bD59741Fd6Aab2432Cc4802fd0DCa334`) and a test spender, before the allowance was switched on.
+
+Period reset (permission `0xd3468891…7104`, 0.05 USDC per day):
+
+- 2026-11-24: the full 0.05 was pulled (`0xa0a28a60…` approveWithSignature, `0xf5143a26…` spend), and the contract
+  refused one more tick that day (revert `0xfd1ebc88`).
+- The next period began 2026-11-25 21:13:53Z. A pull of 0.007 after it went through:
+  `0x9bdbe86bd085faf2e97fe9735b03ac3b1a4ae50cd4828676f5a55cbd29848fbb`, 92,678 gas, and the permission then read
+  0.043 remaining.
+
+Person-side cancel (`requestRevoke` from the Base Account, same permission):
+
+- Call id `0x1c2321c6baac9917ca0ae64013adbcbc4361810fade9a7fa8296b06443305253…2105`.
+- After it the permission read `isRevoked: true`, `isActive: false`, and the contract refused a 0.007 spend
+  (`eth_call`, revert `0x282b9f97`, the same revert a spender-side revoke gives).
+- So the approval page now shows its cancel button (`CANCEL_TESTED = true` in `web/allow.ts`).
