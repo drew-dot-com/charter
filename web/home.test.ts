@@ -20,7 +20,6 @@ test('home page links only the charterhome.dev names', () => {
   assert.match(html, /property="og:url" content="https:\/\/charterhome\.dev\/"/);
   assert.match(html, /href="https:\/\/charterhome\.dev\/agents"/);
   assert.match(html, /href="https:\/\/rent\.charterhome\.dev\/"/);
-  // Arweave may appear as where Lading archives a home's notes; the page itself no longer claims to live there.
   assert.doesNotMatch(html, /toonprotocol\.dev|ar\.io|ArNS|file on Arweave/i);
 });
 
