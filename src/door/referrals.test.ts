@@ -57,6 +57,16 @@ test('store: hold and release', () => {
   assert.equal(s.get(R)?.held, undefined);
 });
 
+test('store: hold on an address never seen creates a held record with nothing owed', () => {
+  const f = file();
+  const s = new ReferralStore(f);
+  s.hold(R.toUpperCase().replace('0X', '0x'), 'unresolved payout x');
+  assert.deepEqual(s.get(R), { earned: 0n, paid: 0n, hours: 0, held: 'unresolved payout x' });
+  assert.equal(new ReferralStore(f).get(R)?.held, 'unresolved payout x');
+  s.release('0x' + '99'.repeat(20));
+  assert.equal(s.get('0x' + '99'.repeat(20)), undefined);
+});
+
 test('store: bindHome keeps the first; setHome replaces and unbinds', () => {
   const s = new ReferralStore(file());
   const other = '0x' + 'cd'.repeat(20);

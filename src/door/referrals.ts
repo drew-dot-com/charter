@@ -99,10 +99,12 @@ export class ReferralStore {
     this.save();
   }
 
+  /** An address never seen gets a record with nothing earned, so an open payout to it is still held. */
   hold(address: string, reason: string): void {
-    const r = this.referrers.get(address.toLowerCase());
-    if (!r) return;
+    const a = address.toLowerCase();
+    const r = this.referrers.get(a) ?? { earned: 0n, paid: 0n, hours: 0 };
     r.held = reason;
+    this.referrers.set(a, r);
     this.save();
   }
 
