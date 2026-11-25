@@ -133,9 +133,14 @@ Jonathan on 2026-10-23, because a renter may name its own address and so get a d
   1. appends an `intent` line (payout id, address, amount, time) and flushes it to disk;
   2. sends one USDC `transfer` from the door's wallet and waits for the receipt;
   3. appends a `sent` line with the transaction hash and adds the amount to the address's paid total.
-- The amount is everything owed to that address at the time of the intent.
+     `markPaid` is counted once per payout id and runs before the `sent` line is written, so a crash between
+     the two leaves an open intent, never a resend or a double count (amended during the build, 2026-11-25).
+- The amount is everything owed to that address at the time of the intent. When the day's cap has less left
+  than that, the amount is what is left of the cap, if that is at least `CHARTER_REFERRAL_MIN_PAYOUT`; the rest
+  stays owed (amended during the build, 2026-11-25).
 - `CHARTER_REFERRAL_DAILY_CAP` (default 5000000, which is 5 USDC) bounds the total sent in one UTC day. An
-  address that does not fit under what is left of the cap waits for the next day.
+  address that does not fit whole under what is left of the cap is paid part (see the amount above) or, when
+  the part is under the minimum, waits for the next day (amended during the build, 2026-11-25).
 - A payout never takes the wallet's free USDC below `CHARTER_REFERRAL_KEEP` (default 5000000, which is 5
   USDC), so referral pay cannot starve the deposits the door makes to hosts. A payout that would is skipped
   and an alert is raised. No intent is written for it.
@@ -157,6 +162,7 @@ Jonathan on 2026-10-23, because a renter may name its own address and so get a d
   `charter-door referrals release <address>` clears a hold;
   `charter-door referrals bind <homeId> <address>` and `... unbind <homeId>` set a home's binding. It writes through a file the running door
   rereads, the way `charter-door unblock` does.
+  The running door applies these within a minute and waits while a payout send is in flight (amended during the build, 2026-11-25).
 - The sweep keeps `CHARTER_SWEEP_KEEP` plus the total owed to all addresses, so owed money is never swept
   away.
 

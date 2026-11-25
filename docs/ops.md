@@ -168,7 +168,105 @@ every USDC above `CHARTER_SWEEP_KEEP` (micro-USDC, default 15000000) to `CHARTER
 Channel deposits are already out of the wallet, so only the free balance is swept. The transfer is a Base USDC
 `transfer` from the payer key, so the payer wallet must keep a little ETH for gas. A failed sweep logs at error
 level with the prefix `charter-door sweep failed:`; the ops check can grep for it. A success logs the amount and
-the transaction hash, never the key.
+the transaction hash, never the key. With referrals on, the payouts run just before the sweep and the sweep keeps
+what referrers are owed (see Referrals).
+
+## Referrals
+
+A rent request can name a referral address, and that address earns a share of every hour the renter pays for.
+The door adds up what each address earned and pays it in USDC on Base from the door's own wallet. Design:
+`docs/superpowers/specs/2026-11-25-referral-payouts-design.md`. For agents: README "Referrals".
+
+**Config** (`door.env`; all five are in `docs/env.md`):
+
+| variable | default | meaning |
+| --- | --- | --- |
+| `CHARTER_REFERRAL_BPS` | `0` | share in basis points; 0 turns accrual and payout off; at most 5000. The live door uses 1000. |
+| `CHARTER_REFERRAL_MIN_PAYOUT` | `100000` | micro-USDC an address must be owed before it is paid (0.10 USDC) |
+| `CHARTER_REFERRAL_DAILY_CAP` | `5000000` | micro-USDC all payouts together may total in a UTC day (5 USDC) |
+| `CHARTER_REFERRAL_KEEP` | `5000000` | micro-USDC of free balance a payout must leave in the wallet (5 USDC) |
+| `CHARTER_REFERRAL_HOSTS` | empty | comma list of host ids (64 hex) where the full share is earned; elsewhere it is capped at the door's fee on that lease, which is 0 today |
+
+With the rate above 0 and the grant fund on (`CHARTER_FUND_TOKEN_FILE`), the door will not start unless
+`CHARTER_FUND_ADDRESS` is set: without it the door cannot refuse the fund's own wallet as a referral, and hours
+the fund pays earn nothing. Lowering the rate applies to the next hour paid, not to leases already open; at 0
+nothing accrues or is paid, but `GET /v1/referrals/<address>` still answers and what was owed stays owed.
+
+**Who pays.** The door's wallet. At the current price the wallet has no income of its own (a renter's hour comes
+in and the same amount goes out to the host), so referral pay is funded by you topping up the payer address with
+USDC on Base. Top it up at the current price: each hour paid on a listed host owes the referrer 10% of it, so a
+rate of 1000 at 0.007 USDC an hour is 0.0007 USDC an hour owed, on top of the host deposits. The sweep leaves
+what is owed in the wallet (it keeps `CHARTER_SWEEP_KEEP` plus the total owed), and a payout never takes the
+free balance below `CHARTER_REFERRAL_KEEP`.
+
+**The daily run.** At start and then once a day the door runs the payouts, and always before that day's sweep
+(they share the timer; with the rate at 0 no run happens). For each address owed at least the minimum, oldest
+first, it writes an `intent` line to `referral-payouts.jsonl` in the data dir, sends one USDC transfer, waits for
+the receipt, and writes a `sent` line with the transaction hash. When the day's cap has less left than an address
+is owed, the door pays what is left, if that is at least the minimum; the rest stays owed. A payout that is not
+sent, or whose outcome is unknown, never lowers anything in the books by itself. The door never resends on its
+own. The files: `referrals.json` (per address earned, paid, hours; per home the bound address),
+`referral-payouts.jsonl` (the payout log), `referral-ops.jsonl` (the operator's commands).
+
+**Alerts** (the door prints `charter-door <text>` at error level, so the ops check can grep for
+`charter-door referral`):
+
+- `referral payout skipped: wallet short for <address>`: paying it would leave the free balance under
+  `CHARTER_REFERRAL_KEEP`. Nothing was written for it. Top up the wallet; the next run pays it.
+- `referral payout skipped: balance unreadable`: the wallet balance could not be read (RPC). The run did nothing.
+  It retries at the next run.
+- `referral payout reverted: <amount> micro-USDC to <address>; address held`: the transfer was mined and failed.
+  The amount stays owed and the address is held: it keeps earning but is not paid. Find out why (a USDC-blocked
+  recipient is the usual cause), then `release` it.
+- `referral payout not sent: <amount> micro-USDC to <address>: <reason>; retried next run`: the door could not
+  even send it, so it closed the intent as failed. Nothing to do unless it repeats.
+- `referral payout unresolved: <payoutId>, <amount> micro-USDC to <address>: <reason>; address held`: the send
+  went out and the door could not learn the result (an RPC error, no receipt in time). The money may have moved.
+  The door holds the address and does not resend. The same alert is raised at start for an intent left open by
+  a crash. Resolve it by hand (below). Until then the amount counts against the day's cap.
+- `referral payout run failed: <reason>`: an unexpected error stopped the run. Read the log.
+- `charter-door referral accrual failed: <reason>`: a store write failed on a renter's request. The request
+  went through; the hour was not counted. Check the data dir (disk, permissions).
+
+**The command.** `charter-door referrals ...` reads `CHARTER_DATA_DIR` only. Run it as the other door commands,
+for example `docker compose -f deploy/door/docker-compose.yml run --rm charter-door node dist/door/main.js referrals`.
+The writing forms append a line to `referral-ops.jsonl`; the running door applies it within a minute, and waits
+while a payout send is in flight, so a command may take longer than a minute while one is. Exit codes: 0 ok, 1
+nothing there, 2 usage.
+
+```
+charter-door referrals [list]
+charter-door referrals resolve <payoutId> sent <0x tx hash (64 hex)>
+charter-door referrals resolve <payoutId> failed
+charter-door referrals release <0x address>
+charter-door referrals bind <homeId (64 hex)> <0x address>
+charter-door referrals unbind <homeId (64 hex)>
+```
+
+- `list` prints one line per address (`<address> earned <n> paid <n> owed <n>`, with `held: <reason>` when held)
+  and one `open <payoutId> <amount> micro-USDC to <address>, written <time>` line per open intent. An intent
+  still in flight (a send is waiting for its receipt) lists as open too, exactly like a stuck one.
+  Example: `charter-door referrals`.
+- `resolve <payoutId> sent <txhash>` counts that payout as paid in that transaction and closes the intent.
+  Example: `charter-door referrals resolve 3f9c0a5e7d1b4c2a8e6f0b1d2c3a4e5f sent 0x<64 hex>`.
+- `resolve <payoutId> failed` closes the intent as failed; the amount stays owed. Example:
+  `charter-door referrals resolve 3f9c0a5e7d1b4c2a8e6f0b1d2c3a4e5f failed`.
+- `release <address>` clears a hold, so the next run pays what is owed. It exits 1 for an address the store has
+  never seen. Example: `charter-door referrals release 0xabc...` (the full 40 hex address).
+- `bind <homeId> <address>` sets a home's referrer by hand, replacing any it had; `unbind <homeId>` removes it.
+  Example: `charter-door referrals bind <64 hex home id> 0x<40 hex address>`.
+
+**An unresolved payout.** Only resolve an intent that has raised a `referral payout unresolved` alert: an intent
+that is merely in flight also lists as open, and it closes by itself when the send ends. For one that has, look the address up on a Base explorer first (basescan.org, the USDC contract's
+transfers to that address, around the intent's written time), then choose:
+
+- a USDC transfer of that amount from the door's wallet to that address is there: `resolve <payoutId> sent
+  <txhash>`. The amount is counted paid once per payout id.
+- no such transfer is there, and you are sure it will not land: `resolve <payoutId> failed`, then `release
+  <address>`. The amount stays owed and the next run pays it. Never choose `failed` for a transfer that is
+  still pending: it would be sent a second time.
+
+Resolving does not release the hold; run `release <address>` after it.
 
 ## Backup
 

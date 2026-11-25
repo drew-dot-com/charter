@@ -757,3 +757,37 @@ Charter left Jonathan's DNS zone and its Arweave landing page. Spec
   restarted with no lease booting or running; it logs `door https://charterhome.dev` and is listed again.
 - `charter.ar.io` moved notice uploaded free through Turbo: txid
   `EKxsZP-wQZ8p0VJxRO37ParEW-tHm-oXu8Q_9CdvOPg` (1101 bytes, sha256 e172e9f8...c008).
+
+## 20. Referrals (2026-11-25)
+
+Built on branch `feat/referral-payouts`, not deployed. The share stays off (`CHARTER_REFERRAL_BPS` 0) until the
+operator sets it on the live door, so nothing below applies to a door until then. Spec
+`docs/superpowers/specs/2026-11-25-referral-payouts-design.md`, operator runbook in `docs/ops.md`.
+
+For an agent: a rent request can name a referral address, and that address earns a share of every hour the renter
+pays for. The renter pays the same price.
+
+- [ ] Read the rate: `curl https://charterhome.dev/v1/door`. A door that pays referrals answers
+  `referral: { bps, how }` (`bps` 1000 is 10%). No `referral` key means none is paid.
+- [ ] Read the offers. Only an offer that carries `referralShare` (micro-USDC an hour) earns it.
+- [ ] Rent with the field: `POST /v1/rent` with `"referral": "0x..."` (a `0x` address on Base; a mixed-case one
+  must match its checksum). The `charter-mcp` tools take `referral` too (its shell commands and the `charter` CLI do not). The answer's `referral` is the address expected to earn, as known when the lease opened.
+- [ ] Bad values: a malformed address, the zero address, the door's own address or the grant fund's answers
+  `400 bad_referral` before any payment, on the unpaid challenge too.
+- [ ] Check: `GET /v1/referrals/<address>`, free and public. It answers `bps`, `hours`, `earned`, `paid`, `owed`
+  (micro-USDC strings), `held` and `payouts` (`amount`, `tx`, `at`). An unseen address answers zeros.
+- [ ] When it is paid: once a day the door sends one USDC transfer on Base to each address owed at least 0.10 USDC
+  (100000), up to 5 USDC a day in all by default; an address that does not fit gets part and the rest the next
+  day. Read the `tx` in `payouts` on a Base explorer.
+
+Rules an agent should know:
+
+- A renter may name its own address. That is the discount.
+- A home's referrer is set at the home's first paid hour, from the lease that opened it, and no request can change
+  it later. A home with a paid hour and no referrer cannot gain one: open a new home, or rent a job.
+- If two leases of one new home open at once naming different addresses, the first one paid is bound.
+- Hours paid by the grant fund earn nothing.
+- A referral never changes whether a rent or a tick succeeds.
+
+Not yet done: the live rate and host list (`CHARTER_REFERRAL_BPS` 1000, `CHARTER_REFERRAL_HOSTS`), the deploy, and
+the first real payout. Each needs Drew.

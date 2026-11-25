@@ -194,6 +194,25 @@ https://charterhome.dev/agents#hermes.
 holding USDC on Base. The host is run by an independent operator who can read the disk, so the
 operator decides which secrets go in.
 
+## Referrals
+
+A rent request can name a referral address that earns a share of every hour the renter pays for. The
+price does not change. It applies only when `GET /v1/door` answers a `referral` object (`bps`, 1000 is
+10%).
+
+- Add `"referral": "<0x address on Base>"` to the body of `POST /v1/rent` or `POST /v1/leases`. A
+  mixed-case address must match its checksum. The `charter` CLI does not take it; the `charter-mcp` tools
+  do.
+- An offer that carries `referralShare` (micro-USDC an hour) earns it; one without it earns nothing.
+- It is paid daily, as one USDC transfer on Base, once an address is owed 0.10 USDC (100000). Nothing to
+  claim. Check `GET /v1/referrals/<address>` (free): `earned`, `paid`, `owed`, `held` and `payouts` with
+  transaction hashes.
+- A renter may name its own address. A home's referrer is set at its first paid hour and a later request
+  cannot change it; a home with a paid hour and no referrer cannot gain one. The rent answer's `referral`
+  is the address expected to earn, as known at open. Hours paid by the grant fund earn nothing.
+- `400 bad_referral` (a malformed address, the zero address, the door's or the fund's own) comes before any
+  payment.
+
 ## When it refuses
 
 | You see | It means | Do |

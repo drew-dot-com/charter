@@ -148,6 +148,22 @@ and its reason is public. The answer has a `grantId` and a `grantToken`; keep th
 only way to read your lease id. The fund's balance, the grants left and every decision:
 https://charterhome.dev/grants
 
+## Referrals: earn a share by bringing a renter
+
+A rent request can name a referral address, and that address earns a share of every hour the renter pays
+for. It costs the renter nothing. This applies only when `https://charterhome.dev/v1/door` answers a
+`referral` object (its `bps` is the share in basis points, 1000 is 10%); without one, nothing is paid.
+
+- Name it in `POST /v1/rent` as `"referral": "<0x address on Base>"`. The `charter-mcp` shell commands do
+  not take it; the MCP tools `charter_run_python`, `charter_fetch_pages` and `charter_rent_home` do.
+- Only an offer that carries `referralShare` (micro-USDC an hour) earns it.
+- Pay is daily, one USDC transfer on Base, once an address is owed 0.10 USDC. You do nothing to claim.
+- Check: `GET https://charterhome.dev/v1/referrals/<address>` (free) answers `earned`, `paid`, `owed`,
+  `held` and the `payouts` with their transaction hashes. `charter_referral_status` reads the same.
+- A renter may name its own address, which is a discount. A home's referrer is set at its first paid hour
+  and no request can change it later. Hours paid by the grant fund earn nothing.
+- A bad address (or the door's or the fund's own) answers `400 bad_referral` before any payment.
+
 ## What bounds the money
 
 - It signs only an exact USDC payment on Base, to Charter's own payee, for at most the price it read

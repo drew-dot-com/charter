@@ -174,6 +174,35 @@ over x402.
 The skill is `plugins/charter/skills/renting-charter-compute/SKILL.md`; its `references/lease-loop.sh`
 runs one whole lease as one command.
 
+### Referrals
+
+A rent request can name a referral: `POST /v1/rent` (or `POST /v1/leases`) takes `"referral": "<0x address on Base>"`
+(the `charter-mcp` tools `charter_run_python`, `charter_fetch_pages` and `charter_rent_home` take `referral` too; its shell commands and the `charter` CLI do not). That address earns a share of every hour the renter pays for. It
+costs the renter nothing: the price is the same with or without it.
+
+- **Who earns.** The rate is in `GET /v1/door` as `referral.bps` (1000 is 10%), and it is absent when the door
+  pays none. An offer that carries `referralShare` (micro-USDC per hour) earns it. An offer without it earns
+  nothing, whatever you name.
+- **When it is paid.** The door adds up what each address earned and, once a day, sends the address one USDC
+  transfer on Base when it is owed at least 0.10 USDC (100000 micro-USDC). Below that it waits. The door pays
+  at most 5 USDC a day in all by default; an address that does not fit gets part, and the rest the next day.
+  You do nothing to claim.
+- **How to check.** `GET /v1/referrals/<address>` is free and public. It answers `bps`, `hours`, `earned`,
+  `paid`, `owed` (micro-USDC strings), `held`, and `payouts` (`amount`, `tx`, `at`, newest first, at most 50).
+  An address the door has never seen answers zeros. It never shows who the renters were. `held: true` means
+  payouts to that address are paused until the operator clears it.
+- **Your own address.** A renter may name its own address. That is the discount: it earns back its share.
+- **Homes.** A home's referrer is set at the home's first paid hour, from the lease that opened it, and no
+  later request can change it. Every later lease of that home earns for that address, named or not. A home
+  that already has a paid hour and no referrer cannot gain one: open a new home, or rent a job.
+- **The answer.** The rent answer's `referral` is the address expected to earn, as known when the lease
+  opened. For a home it can differ from the address you named, or be absent. If two leases of one new home
+  open at once naming different addresses, the first one paid is bound.
+- **What earns nothing.** Hours paid by the grant fund. A referral that is not a valid address (a mixed-case
+  one must match its checksum), the zero address, the door's own address or the fund's is refused with
+  `400 bad_referral` before any payment.
+- **Who pays.** The door, from its own wallet. A bad or missing referral never changes whether a rent works.
+
 ## Run a host
 
 Anyone can run a host. In v1 a host needs a public HTTPS address (no hosts behind NAT yet), serves only

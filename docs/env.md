@@ -84,6 +84,11 @@ back); the running door picks it up and withdraws the host's channels once no le
 | `CHARTER_HOST_DAILY_LOSS` | no | `50000` | micro-USDC one host's refused ticks (it took the door's payment and refused or never answered) may cost the door in a UTC day, kept in `door-ledger.json.hostloss`. Past it the host is hidden until its next probe passes; these losses never count toward the door-wide daily cap. |
 | `CHARTER_DEPOSIT_TIMEOUT_DAILY_CAP` | no | `100000` | micro-USDC that hosts' first deposit timeouts of a UTC day (a tick carrying a deposit got no answer in time) may cost the door, all hosts together, kept in `door-ledger.json.deposittimeouts`. Within it such a timeout is door spend, credited back if the deposit lapses unlanded the same UTC day; a host's second deposit timeout that day, or any past this cap, counts against its `CHARTER_HOST_DAILY_LOSS`. |
 | `CHARTER_DOOR_SELF_ADDRS` | no | none | Comma list of the box's own IPs or CIDRs. A registered host URL resolving to one is refused, as loopback and private addresses always are. |
+| `CHARTER_REFERRAL_BPS` | no | `0` | The referrer's share of what a renter paid for an hour, in basis points (1000 is 10%). 0 turns accrual and payout off; at most 5000. With it above 0 and the grant fund on, `CHARTER_FUND_ADDRESS` is required. The live door uses 1000. |
+| `CHARTER_REFERRAL_MIN_PAYOUT` | no | `100000` | micro-USDC an address must be owed before the daily run pays it (0.10 USDC). |
+| `CHARTER_REFERRAL_DAILY_CAP` | no | `5000000` | micro-USDC all referral payouts together may total in a UTC day (5 USDC). An address that does not fit gets part, if the part is at least the minimum. |
+| `CHARTER_REFERRAL_KEEP` | no | `5000000` | micro-USDC of free USDC a payout must leave in the payer wallet (5 USDC). |
+| `CHARTER_REFERRAL_HOSTS` | no | none | Comma list of host ids (64 hex) on which a referral earns its full share; on any other host the share is capped at the door's fee on that lease. |
 
 Fixed, not configurable: 10 host registrations (`POST /v1/hosts`) an hour per IP and 1 per host URL; 10 opens an hour per IP and 30 across all IPs; 120 GETs a minute per IP on
 `/v1/leases/*`; 30 tick POSTs a minute per IP; at most 500000 micro-USDC a UTC day of door spend no
