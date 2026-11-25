@@ -196,9 +196,11 @@ function refusal(what: string, r: Answer): Error {
       ? `the wallet's payment was turned down${r.reason ? ` (${r.reason})` : ''}. Most often the wallet holds too little USDC on Base: call charter_wallet for the balance and the address to fund`
       : error === 'busy'
         ? 'the machine is busy (every slot is taken). Try again in a few minutes'
-        : error === 'payer_blocked'
-          ? 'this wallet is blocked by the door because an earlier payment from it failed to settle'
-          : error;
+        : error === 'bad_referral'
+          ? 'the referral address was refused by the door (it must be a 0x address with a valid checksum; check the capitals or use all lower case)'
+          : error === 'payer_blocked'
+            ? 'this wallet is blocked by the door because an earlier payment from it failed to settle'
+            : error;
   const unpaid = r.body?.leaseId ? ` The lease ${r.body.leaseId} exists unpaid and lapses by itself in 90 seconds.` : '';
   return new Error(`${what} was refused: ${why}. A refused call never settles, so nothing was charged.${unpaid}`);
 }
@@ -211,15 +213,24 @@ export interface Rented {
   tx?: string;
 }
 
-/** Opens a lease and pays its first interval: one paid call. */
-export async function rent(d: Deps, job: Job): Promise<Rented> {
+const REFERRAL = /^0x[0-9a-fA-F]{40}$/;
+
+/** The referral address as given (the door checks the checksum), or an error before any request. */
+function referralArg(referral: unknown): string {
+  if (typeof referral !== 'string' || !REFERRAL.test(referral)) throw new Error('the referral must be a 0x address: 0x and 40 hex digits; nothing was sent or paid');
+  return referral;
+}
+
+/** Opens a lease and pays its first interval: one paid call. A `referral` is the address that earns a share of each hour. */
+export async function rent(d: Deps, job: Job, referral?: string): Promise<Rented> {
+  const ref = referral === undefined ? undefined : referralArg(referral);
   const pay = needWallet(d);
   const offer = await firstFitOffer(d, job);
   const cost = price(offer.tickPrice);
   if (cost > d.maxHour) {
     throw new CapError(`one interval costs ${microToUsdc(cost)} USDC, over this server's cap of ${microToUsdc(d.maxHour)} (CHARTER_MAX_USDC_PER_HOUR). Nothing was paid.`);
   }
-  const r = await capped(d, cost, (limit) => pay('/v1/rent', { ...job, offerId: offer.offerId }, limit));
+  const r = await capped(d, cost, (limit) => pay('/v1/rent', { ...job, offerId: offer.offerId, ...(ref ? { referral: ref } : {}) }, limit));
   if (r.status !== 200 || !LEASE_ID.test(String(r.body?.leaseId))) throw refusal('the rent', r);
   return {
     leaseId: r.body.leaseId,
@@ -351,8 +362,8 @@ export interface JobResult {
 }
 
 /** Rents a python or fetch job, waits for it to finish (it has one paid hour), and hands back the output. */
-export async function runJob(d: Deps, job: Job, waitSeconds: number): Promise<JobResult> {
-  const rented = await rent(d, job);
+export async function runJob(d: Deps, job: Job, waitSeconds: number, referral?: string): Promise<JobResult> {
+  const rented = await rent(d, job, referral);
   const until = d.now() + waitSeconds * 1000;
   let seen: LeaseView | undefined;
   let lastError = '';
@@ -558,4 +569,25 @@ export async function allowanceStop(d: Pick<Deps, 'post'>, allowanceId: string, 
   if (r.status === 409) throw new Error('this allowance is not live (not_live), so there is nothing to stop');
   if (r.status !== 200) throw new Error(`the allowance stop answered ${r.status}`);
   return r.body;
+}
+
+
+const money = (v: unknown): string => (/^\d{1,18}$/.test(String(v)) ? microToUsdc(String(v)) : String(v));
+
+/** What a referral address has earned and been paid (free): the door's answer with each amount also in USDC. */
+export async function referralStatus(d: Pick<Deps, 'get'>, address: string): Promise<unknown> {
+  const a = referralArg(address);
+  const r = await d.get(`/v1/referrals/${a}`);
+  if (r.status === 400) throw new Error('the referral address was refused by the door (bad_referral): it must be a 0x address with a valid checksum');
+  if (r.status !== 200 || typeof r.body !== 'object' || r.body === null) throw new Error(`the referral read answered ${r.status}`);
+  const b = r.body;
+  const payouts = Array.isArray(b.payouts) ? b.payouts.map((p: any) => ({ ...p, amountUsdc: money(p?.amount) })) : [];
+  return {
+    ...b,
+    earnedUsdc: money(b.earned),
+    paidUsdc: money(b.paid),
+    owedUsdc: money(b.owed),
+    heldUsdc: money(b.held),
+    payouts,
+  };
 }

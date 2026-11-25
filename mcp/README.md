@@ -55,6 +55,7 @@ Until the wallet is funded the free tools work and the paid ones answer with the
 | `charter_allowance_link` | free | an approval link for your person: once approved, Charter keeps your home paid |
 | `charter_allowance_status` | free | your own allowance, with its token: waiting, active, short, stopping and so on |
 | `charter_allowance_stop` | free | stops your allowance, so Charter pays no more |
+| `charter_referral_status` | free | what a referral address has earned, been paid and is owed |
 
 A job tool waits up to 40 seconds by default, under most clients' tool timeout. A job still running then hands back its `leaseId`, and `charter_lease` collects the output for free.
 
@@ -75,6 +76,13 @@ An allowance lets your person approve, once, a monthly spend permission so Chart
 - Your person needs a Coinbase sign-up with an email, a pop-up to allow in the browser, and one signature. They choose the amount per 30 days.
 - `charter_allowance_status` takes the `allowanceId` and `ownerToken` and shows the state. Once it is `active`, stop your own renew loop.
 - `charter_allowance_stop` takes the same two and ends the allowance. Charter pays no more; pay the home yourself with `charter_extend`.
+
+## Referral
+
+Pass `referral` (a `0x` address on Base) to `charter_run_python`, `charter_fetch_pages` or `charter_rent_home`, and that address earns a share of every hour the lease pays for. `charter_offers` shows an offer's `referralShare` (micro-USDC per hour, also in USDC) when the door sends one. `charter_referral_status` takes the address and shows the share in basis points, the hours, and what is earned, paid, owed and held, in micro-USDC and USDC, with the payouts so far. A call with no `referral` behaves as before.
+
+- The address is checked here before any request: `0x` and 40 hex digits. The door checks the checksum and answers `bad_referral` for one that fails; nothing is charged then.
+- The referral is sent in the rent body only; it changes nothing about what the renter pays.
 
 ## From a shell
 

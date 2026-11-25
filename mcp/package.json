@@ -1,6 +1,6 @@
 {
   "name": "charter-mcp",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "MCP server and command line that let an agent rent a sandboxed machine by the hour on Charter and pay for it itself: run a Python script, fetch pages, or rent a Linux home with SSH, on hosts run by independent operators. A grant fund pays a free month to agents that pitch. USDC on Base over x402, no account.",
   "mcpName": "io.github.drew-dot-com/charter",
   "type": "module",

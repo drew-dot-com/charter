@@ -93,10 +93,10 @@ const done = (stdout: string) => ({
   [`/v1/leases/${ID}/output/0`]: { part: 0, parts: 1, data: Buffer.from(JSON.stringify({ kind: 'python', exitCode: 0, stdout, stderr: '' })).toString('base64') },
 });
 
-test('the server lists its twelve tools, and every paid one says PAID first', async () => {
+test('the server lists its thirteen tools, and every paid one says PAID first', async () => {
   const { client } = await connect(options(), door({}).fetchFn);
   const { tools } = await client.listTools();
-  assert.deepEqual(tools.map((t) => t.name).sort(), ['charter_allowance_link', 'charter_allowance_status', 'charter_allowance_stop', 'charter_extend', 'charter_fetch_pages', 'charter_grant_pitch', 'charter_grant_status', 'charter_lease', 'charter_offers', 'charter_rent_home', 'charter_run_python', 'charter_wallet']);
+  assert.deepEqual(tools.map((t) => t.name).sort(), ['charter_allowance_link', 'charter_allowance_status', 'charter_allowance_stop', 'charter_extend', 'charter_fetch_pages', 'charter_grant_pitch', 'charter_grant_status', 'charter_lease', 'charter_offers', 'charter_referral_status', 'charter_rent_home', 'charter_run_python', 'charter_wallet']);
   for (const t of tools) {
     const paid = ['charter_extend', 'charter_fetch_pages', 'charter_rent_home', 'charter_run_python'].includes(t.name);
     assert.equal(t.description!.startsWith('PAID.'), paid, t.name);
@@ -436,4 +436,63 @@ test('charter_allowance_status and stop send the owner token as a header', async
     { method: 'GET', url: `${DOOR}/v1/allowances/${AID}`, token: 'tok9' },
     { method: 'POST', url: `${DOOR}/v1/allowances/${AID}/stop`, token: 'tok9' },
   ]);
+});
+
+const REFERRAL = '0x' + 'AbCdEf0123'.repeat(4);
+const SHARE = 'Pass referral (a 0x address on Base) and that address earns a share of every hour this lease pays for; see charter_referral_status.';
+
+test('the three paid rent tools and charter_offers carry the referral sentence verbatim', async () => {
+  const { client } = await connect(options(), door({}).fetchFn);
+  const { tools } = await client.listTools();
+  for (const n of ['charter_run_python', 'charter_fetch_pages', 'charter_rent_home', 'charter_offers']) {
+    assert.ok(tools.find((t) => t.name === n)!.description!.includes(SHARE), n);
+  }
+});
+
+test('a referral on charter_run_python reaches the door in the rent body, and is left out when not given', async () => {
+  const bodies: any[] = [];
+  const d = door({ '/v1/offers': [OFFER], ...done('4\n') });
+  const inner = d.fetchFn;
+  const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const req = input instanceof Request ? input.clone() : new Request(input, init);
+    if (req.method === 'POST' && req.headers.get('payment-signature')) bodies.push(await req.json());
+    return inner(input, init);
+  }) as typeof fetch;
+  const { call } = await connect(options(), fetchFn);
+  assert.equal((await call('charter_run_python', { script: 'print(4)', referral: REFERRAL, waitSeconds: 10 })).isError, false);
+  await call('charter_run_python', { script: 'print(4)', waitSeconds: 10 });
+  assert.equal(bodies[0].referral, REFERRAL);
+  assert.equal('referral' in bodies[1], false);
+});
+
+test('a bad referral on a paid tool is refused before any request', async () => {
+  const d = door({ '/v1/offers': [OFFER] });
+  const { call } = await connect(options(), d.fetchFn);
+  const r = await call('charter_run_python', { script: 'print(1)', referral: 'nope' });
+  assert.equal(r.isError, true);
+  assert.deepEqual(d.seen.unpaidPosts, []);
+  assert.deepEqual(d.seen.urls, []);
+});
+
+test('charter_referral_status reads the right path and shows USDC; a bad address sends nothing', async () => {
+  const body = { address: REFERRAL.toLowerCase(), bps: 1000, hours: 3, earned: '21000', paid: '0', owed: '21000', held: '0', payouts: [] };
+  const d = door({ [`/v1/referrals/${REFERRAL}`]: body });
+  const { call } = await connect(options({ makeKey: false }), d.fetchFn);
+  const r = JSON.parse((await call('charter_referral_status', { address: REFERRAL })).text);
+  assert.equal(r.earnedUsdc, '0.021');
+  assert.equal(r.owedUsdc, '0.021');
+  assert.ok(d.seen.urls.some((u) => new URL(u).pathname === `/v1/referrals/${REFERRAL}`));
+  const before = d.seen.urls.length;
+  const bad = await call('charter_referral_status', { address: '0x12' });
+  assert.equal(bad.isError, true);
+  assert.equal(d.seen.urls.length, before);
+});
+
+test('charter_offers passes referralShare through when the door sends it', async () => {
+  const d = door({ '/v1/offers': [{ ...OFFER, referralShare: '700' }, OFFER] });
+  const { call } = await connect(options({ makeKey: false }), d.fetchFn);
+  const offers = JSON.parse((await call('charter_offers')).text);
+  assert.equal(offers.offers[0].referralShare, '700');
+  assert.equal(offers.offers[0].referralShareUsdc, '0.0007');
+  assert.equal('referralShare' in offers.offers[1], false);
 });

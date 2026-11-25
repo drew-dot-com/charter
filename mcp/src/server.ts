@@ -35,6 +35,7 @@ import {
   onlyDoorExact,
   output,
   pitch,
+  referralStatus,
   rent,
   runJob,
   usdcToMicro,
@@ -45,7 +46,7 @@ import {
   type SpendBook,
 } from './core.js';
 
-export const VERSION = '0.5.0';
+export const VERSION = '0.6.0';
 
 export interface Options {
   door: string;
@@ -193,9 +194,9 @@ const SSH_KEY = /^(ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa) [A-Za-z0-9
 export interface Actions {
   offers(): Promise<unknown>;
   wallet(): Promise<unknown>;
-  runPython(script: string, waitSeconds?: number): Promise<unknown>;
-  fetchPages(urls: string[], waitSeconds?: number): Promise<unknown>;
-  rentHome(sshKeys: string[], image?: string): Promise<unknown>;
+  runPython(script: string, waitSeconds?: number, referral?: string): Promise<unknown>;
+  fetchPages(urls: string[], waitSeconds?: number, referral?: string): Promise<unknown>;
+  rentHome(sshKeys: string[], image?: string, referral?: string): Promise<unknown>;
   lease(leaseId: string): Promise<unknown>;
   extend(leaseId: string, hours: number): Promise<unknown>;
   pitch(p: Pitch): Promise<unknown>;
@@ -203,6 +204,7 @@ export interface Actions {
   allowanceLink(p: AllowanceRequest): Promise<unknown>;
   allowanceStatus(allowanceId: string, ownerToken: string): Promise<unknown>;
   allowanceStop(allowanceId: string, ownerToken: string): Promise<unknown>;
+  referralStatus(address: string): Promise<unknown>;
 }
 
 export interface Built {
@@ -349,6 +351,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
           home: x.home ?? null,
           operator: x.operator ?? null,
           record: x.record ?? null,
+          ...(x.referralShare !== undefined ? { referralShare: x.referralShare, referralShareUsdc: /^\d+$/.test(String(x.referralShare)) ? microToUsdc(x.referralShare) : x.referralShare } : {}),
         })),
         docs: `${o.door}/agents`,
         ...caps(),
@@ -368,19 +371,19 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
         pays: 'Only Charter: exact USDC on Base, to the payee the door names, within the caps above. The operator changes the caps with CHARTER_MAX_USDC_PER_HOUR and CHARTER_MAX_USDC_PER_DAY.',
       };
     },
-    runPython: async (script, waitSeconds) => {
+    runPython: async (script, waitSeconds, referral) => {
       if (typeof script !== 'string' || script.length === 0) throw new Error('the script is empty; nothing was paid');
       if (Buffer.byteLength(script, 'utf8') > 8192) throw new Error('the script is over 8192 bytes; nothing was paid');
-      return runJob(deps, { python: { script } }, wait(waitSeconds));
+      return runJob(deps, { python: { script } }, wait(waitSeconds), referral);
     },
-    fetchPages: async (urls, waitSeconds) => {
+    fetchPages: async (urls, waitSeconds, referral) => {
       if (!Array.isArray(urls) || urls.length < 1 || urls.length > 5) throw new Error('give one to five URLs; nothing was paid');
       for (const u of urls) {
         if (typeof u !== 'string' || !/^https?:\/\//i.test(u) || !URL.canParse(u)) throw new Error(`not an http or https URL: ${String(u).slice(0, 80)}; nothing was paid`);
       }
-      return runJob(deps, { urls }, wait(waitSeconds));
+      return runJob(deps, { urls }, wait(waitSeconds), referral);
     },
-    rentHome: async (sshKeys, image) => {
+    rentHome: async (sshKeys, image, referral) => {
       const keys = (Array.isArray(sshKeys) ? sshKeys : []).map((k) => String(k).trim()).filter(Boolean);
       if (keys.length < 1 || keys.length > 8) throw new Error('give 1 to 8 SSH public keys; nothing was paid');
       const bad = keys.find((k) => k.length > 1023 || !SSH_KEY.test(k));
@@ -392,7 +395,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
         );
       }
       if (image !== undefined && image !== 'charter-home' && image !== 'charter-hermes') throw new Error('the image is charter-home or charter-hermes; nothing was paid');
-      const rented = await rent(deps, { home: { sshKeys: keys, ...(image ? { image } : {}) } });
+      const rented = await rent(deps, { home: { sshKeys: keys, ...(image ? { image } : {}) } }, referral);
       return {
         ...rented,
         next: 'Read the lease about once a minute until it shows ssh (access may be filled at once; poll about once a minute while it is null). Pay more time before paidThrough; a home that lapses keeps its disk 7 days and opens again with the same keys.',
@@ -412,6 +415,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
     allowanceLink: (p) => allowanceLink(deps, p),
     allowanceStatus: (id, tok) => allowanceStatus(deps, id, tok),
     allowanceStop: (id, tok) => allowanceStop(deps, id, tok),
+    referralStatus: (address) => referralStatus(deps, address),
   };
 
   const answer = async (run: () => Promise<unknown>) => {
@@ -422,6 +426,8 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
     }
   };
 
+  const referralNote = 'Pass referral (a 0x address on Base) and that address earns a share of every hour this lease pays for; see charter_referral_status.';
+  const referralField = z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional().describe('optional 0x address on Base that earns a share of every hour this lease pays for; see charter_referral_status');
   const server = new McpServer({ name: 'charter', version: VERSION });
   const cost = 'Costs one interval of the first machine in the door\'s ranking that runs it within this server\'s cap (hosts set their own price; 0.007 USDC an hour today; see charter_offers), paid from this server\'s own wallet in USDC on Base. Hosts are run by independent operators, not vetted by Charter.';
 
@@ -430,7 +436,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
     {
       title: 'Charter machines on sale',
       description:
-        'Free. The machines for rent on Charter right now: price per interval in USDC (hosts set their own; 0.007 an hour today), CPU, memory, the job images each runs, how many home slots it has and whether its home is tested, and the host\'s record (probes passed, leases finished, success rate). Hosts are run by independent operators, not vetted by Charter, and an operator can see what runs on its machine. Charter rents a sandboxed machine by the hour with no account: a Python job, a page-fetch job, or a Linux home with SSH. Call this first to see the price before any paid tool.',
+        'Free. The machines for rent on Charter right now: price per interval in USDC (hosts set their own; 0.007 an hour today), CPU, memory, the job images each runs, how many home slots it has and whether its home is tested, and the host\'s record (probes passed, leases finished, success rate). Hosts are run by independent operators, not vetted by Charter, and an operator can see what runs on its machine. Charter rents a sandboxed machine by the hour with no account: a Python job, a page-fetch job, or a Linux home with SSH. Call this first to see the price before any paid tool. ' + referralNote,
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -453,42 +459,45 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
     'charter_run_python',
     {
       title: 'Run a Python script on a rented machine',
-      description: `PAID. ${cost} Runs your Python 3 script once in a sandbox on a rented machine and returns its stdout, stderr and exit code. NumPy is installed; there is no network and no other package; the script is at most 8 KiB. Most scripts finish in seconds. If it is still running when the wait ends, the leaseId comes back and charter_lease collects the output for free.`,
+      description: `PAID. ${cost} Runs your Python 3 script once in a sandbox on a rented machine and returns its stdout, stderr and exit code. NumPy is installed; there is no network and no other package; the script is at most 8 KiB. Most scripts finish in seconds. If it is still running when the wait ends, the leaseId comes back and charter_lease collects the output for free. ${referralNote}`,
       inputSchema: {
         script: z.string().min(1).max(8192).describe('the Python 3 source, at most 8192 bytes'),
         waitSeconds: z.number().int().min(10).max(240).optional().describe('how long to wait for the job before handing back the leaseId (default 40, under most clients\' 60 s tool timeout)'),
+        referral: referralField,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    ({ script, waitSeconds }) => answer(() => actions.runPython(script, waitSeconds)),
+    ({ script, waitSeconds, referral }) => answer(() => actions.runPython(script, waitSeconds, referral)),
   );
 
   server.registerTool(
     'charter_fetch_pages',
     {
       title: 'Fetch pages in a headless browser',
-      description: `PAID. ${cost} Loads up to five http or https pages in a headless browser on a rented machine and returns each page's text. On an offer with hiddenEgress the pages load through an exit on the Anyone network, so the site sees neither you nor the host. Useful when a page needs JavaScript or your own address is refused. Slow (a page can take a minute) and some sites refuse shared exits. If it is still running when the wait ends, charter_lease collects the output for free.`,
+      description: `PAID. ${cost} Loads up to five http or https pages in a headless browser on a rented machine and returns each page's text. On an offer with hiddenEgress the pages load through an exit on the Anyone network, so the site sees neither you nor the host. Useful when a page needs JavaScript or your own address is refused. Slow (a page can take a minute) and some sites refuse shared exits. If it is still running when the wait ends, charter_lease collects the output for free. ${referralNote}`,
       inputSchema: {
         urls: z.array(z.string().url().regex(/^https?:\/\//i)).min(1).max(5).describe('one to five http or https URLs'),
         waitSeconds: z.number().int().min(10).max(240).optional().describe('how long to wait for the job before handing back the leaseId (default 40, under most clients\' 60 s tool timeout; pages often need longer, so expect to collect with charter_lease)'),
+        referral: referralField,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    ({ urls, waitSeconds }) => answer(() => actions.fetchPages(urls, waitSeconds)),
+    ({ urls, waitSeconds, referral }) => answer(() => actions.fetchPages(urls, waitSeconds, referral)),
   );
 
   server.registerTool(
     'charter_rent_home',
     {
       title: 'Rent a Linux home with SSH',
-      description: `PAID. ${cost} Opens a Linux box of your own (Debian, 1 CPU, 1 GiB memory, the offer's home.diskGiB of disk kept 7 days after the lease ends, login "tenant", and "root" with apt on a host whose offer says home.root) and pays its first interval. The host's operator can read its disk. Pass 1 to 8 SSH PUBLIC keys; the key set is the home's identity, so the same keys open the same disk again. Read this before renting: SSH is plain: ssh -p <port> tenant@<host> to the public address the lease shows, no special client needed (some hosts publish an onion address on the Anyone network instead, which needs an Anyone client); outbound traffic may be slow; homes are limited (home.slots in the offer) and an open answers busy when they are full. After renting, call charter_lease about once a minute until it shows the SSH address, and charter_extend before the paid time runs out.`,
+      description: `PAID. ${cost} Opens a Linux box of your own (Debian, 1 CPU, 1 GiB memory, the offer's home.diskGiB of disk kept 7 days after the lease ends, login "tenant", and "root" with apt on a host whose offer says home.root) and pays its first interval. The host's operator can read its disk. Pass 1 to 8 SSH PUBLIC keys; the key set is the home's identity, so the same keys open the same disk again. Read this before renting: SSH is plain: ssh -p <port> tenant@<host> to the public address the lease shows, no special client needed (some hosts publish an onion address on the Anyone network instead, which needs an Anyone client); outbound traffic may be slow; homes are limited (home.slots in the offer) and an open answers busy when they are full. After renting, call charter_lease about once a minute until it shows the SSH address, and charter_extend before the paid time runs out. ${referralNote}`,
       inputSchema: {
         sshKeys: z.array(z.string().max(1023)).min(1).max(8).describe('SSH public key lines (ssh-ed25519, ecdsa-sha2-nistp256/384/521 or ssh-rsa). Public keys only: never a private key.'),
         image: z.enum(['charter-home', 'charter-hermes']).optional().describe('charter-home (default) is a plain box; charter-hermes has Hermes Agent preinstalled'),
+        referral: referralField,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    ({ sshKeys, image }) => answer(() => actions.rentHome(sshKeys, image)),
+    ({ sshKeys, image, referral }) => answer(() => actions.rentHome(sshKeys, image, referral)),
   );
 
   server.registerTool(
@@ -594,6 +603,20 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     },
     ({ allowanceId, ownerToken }) => answer(() => actions.allowanceStop(allowanceId, ownerToken)),
+  );
+
+  server.registerTool(
+    'charter_referral_status',
+    {
+      title: 'Read what a referral address has earned',
+      description:
+        'Free. What a referral address has earned from leases rented with it: the share in basis points, hours paid for, and earned, paid, owed and held, each in micro-USDC and in USDC, with the payouts made so far (amount, transaction, time). Needs only the address; it is public. See the referral sentence on charter_offers for how an address earns.',
+      inputSchema: {
+        address: z.string().regex(/^0x[0-9a-fA-F]{40}$/).describe('the 0x address on Base that was passed as referral'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    ({ address }) => answer(() => actions.referralStatus(address)),
   );
 
   return { server, address: account?.address, actions };

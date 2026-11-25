@@ -19,6 +19,7 @@ import {
   allowanceStatus,
   allowanceStop,
   rent,
+  referralStatus,
   sshHow,
   runJob,
   usdcToMicro,
@@ -487,4 +488,52 @@ test('allowanceStop posts with the token header and maps not_live', async () => 
   d.postAnswer = { status: 403, body: { error: 'bad_token' } };
   await assert.rejects(allowanceStop(d, AID, 'x'), /the token does not match this allowance/);
   await assert.rejects(allowanceStop(d, '../x', 'x'), /allowanceId/);
+});
+
+const REF = '0x' + 'AbCdEf0123'.repeat(4);
+
+test('rent sends referral in the body when given and leaves it out when not', async () => {
+  const d = fake({ '/v1/offers': offers }, rentOk);
+  await rent(d, { python: { script: 'print(1)' } }, REF);
+  assert.deepEqual(d.paid[0]!.json, { python: { script: 'print(1)' }, offerId: 'host:one', referral: REF });
+  const e = fake({ '/v1/offers': offers }, rentOk);
+  await rent(e, { urls: ['https://example.com'] });
+  assert.equal('referral' in e.paid[0]!.json, false);
+});
+
+test('a bad referral is refused before any request, and the door\'s bad_referral is said in plain words', async () => {
+  const d = fake({ '/v1/offers': offers }, rentOk);
+  for (const bad of ['0x123', 'abc', REF.slice(2), '0x' + 'g'.repeat(40), REF + '00']) {
+    await assert.rejects(rent(d, { python: { script: 'print(1)' } }, bad), /referral must be a 0x address/);
+  }
+  assert.deepEqual(d.gets, []);
+  assert.deepEqual(d.paid, []);
+  const refused = fake({ '/v1/offers': offers }, () => ({ status: 400, body: { error: 'bad_referral' }, signed: false }));
+  await assert.rejects(rent(refused, { python: { script: 'print(1)' } }, REF), /referral address was refused.*checksum.*nothing was charged/s);
+});
+
+const RS = { address: REF.toLowerCase(), bps: 1000, hours: 12, earned: '84000', paid: '50000', owed: '34000', held: '0', payouts: [{ amount: '50000', tx: '0xdead', at: 1764000000000 }] };
+
+test('referralStatus reads GET /v1/referrals/<address> and shows amounts in USDC too', async () => {
+  const d = fake({ [`/v1/referrals/${REF}`]: { status: 200, body: RS } });
+  const r: any = await referralStatus(d, REF);
+  assert.deepEqual(d.gets, [`/v1/referrals/${REF}`]);
+  assert.equal(r.bps, 1000);
+  assert.equal(r.hours, 12);
+  assert.equal(r.earned, '84000');
+  assert.equal(r.earnedUsdc, '0.084');
+  assert.equal(r.paidUsdc, '0.05');
+  assert.equal(r.owedUsdc, '0.034');
+  assert.equal(r.heldUsdc, '0');
+  assert.deepEqual(r.payouts, [{ amount: '50000', amountUsdc: '0.05', tx: '0xdead', at: 1764000000000 }]);
+});
+
+test('referralStatus refuses a bad address before any request and maps the door\'s 400', async () => {
+  const d = fake({});
+  await assert.rejects(referralStatus(d, 'nope'), /0x address/);
+  assert.deepEqual(d.gets, []);
+  const bad = fake({ [`/v1/referrals/${REF}`]: { status: 400, body: { error: 'bad_referral' } } });
+  await assert.rejects(referralStatus(bad, REF), /referral address was refused/);
+  const other = fake({ [`/v1/referrals/${REF}`]: { status: 500, body: {} } });
+  await assert.rejects(referralStatus(other, REF), /answered 500/);
 });
