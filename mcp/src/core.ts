@@ -221,9 +221,9 @@ function referralArg(referral: unknown): string {
   return referral;
 }
 
-/** Opens a lease and pays its first interval: one paid call. A `referral` is the address that earns a share of each hour. */
-export async function rent(d: Deps, job: Job, referral?: string): Promise<Rented> {
-  const ref = referral === undefined ? undefined : referralArg(referral);
+/** Opens a lease and pays its first interval: one paid call. A `referral` is the address that earns a share of each hour; null is none. */
+export async function rent(d: Deps, job: Job, referral?: string | null): Promise<Rented> {
+  const ref = referral === undefined || referral === null ? undefined : referralArg(referral);
   const pay = needWallet(d);
   const offer = await firstFitOffer(d, job);
   const cost = price(offer.tickPrice);
@@ -362,7 +362,7 @@ export interface JobResult {
 }
 
 /** Rents a python or fetch job, waits for it to finish (it has one paid hour), and hands back the output. */
-export async function runJob(d: Deps, job: Job, waitSeconds: number, referral?: string): Promise<JobResult> {
+export async function runJob(d: Deps, job: Job, waitSeconds: number, referral?: string | null): Promise<JobResult> {
   const rented = await rent(d, job, referral);
   const until = d.now() + waitSeconds * 1000;
   let seen: LeaseView | undefined;
@@ -571,10 +571,9 @@ export async function allowanceStop(d: Pick<Deps, 'post'>, allowanceId: string, 
   return r.body;
 }
 
-
 const money = (v: unknown): string => (/^\d{1,18}$/.test(String(v)) ? microToUsdc(String(v)) : String(v));
 
-/** What a referral address has earned and been paid (free): the door's answer with each amount also in USDC. */
+/** What a referral address has earned and been paid (free): the door's answer with each amount also in USDC. `held` is the door's boolean. */
 export async function referralStatus(d: Pick<Deps, 'get'>, address: string): Promise<unknown> {
   const a = referralArg(address);
   const r = await d.get(`/v1/referrals/${a}`);
@@ -587,7 +586,6 @@ export async function referralStatus(d: Pick<Deps, 'get'>, address: string): Pro
     earnedUsdc: money(b.earned),
     paidUsdc: money(b.paid),
     owedUsdc: money(b.owed),
-    heldUsdc: money(b.held),
     payouts,
   };
 }

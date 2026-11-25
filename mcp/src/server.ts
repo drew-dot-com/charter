@@ -194,9 +194,9 @@ const SSH_KEY = /^(ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa) [A-Za-z0-9
 export interface Actions {
   offers(): Promise<unknown>;
   wallet(): Promise<unknown>;
-  runPython(script: string, waitSeconds?: number, referral?: string): Promise<unknown>;
-  fetchPages(urls: string[], waitSeconds?: number, referral?: string): Promise<unknown>;
-  rentHome(sshKeys: string[], image?: string, referral?: string): Promise<unknown>;
+  runPython(script: string, waitSeconds?: number, referral?: string | null): Promise<unknown>;
+  fetchPages(urls: string[], waitSeconds?: number, referral?: string | null): Promise<unknown>;
+  rentHome(sshKeys: string[], image?: string, referral?: string | null): Promise<unknown>;
   lease(leaseId: string): Promise<unknown>;
   extend(leaseId: string, hours: number): Promise<unknown>;
   pitch(p: Pitch): Promise<unknown>;
@@ -427,7 +427,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
   };
 
   const referralNote = 'Pass referral (a 0x address on Base) and that address earns a share of every hour this lease pays for; see charter_referral_status.';
-  const referralField = z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional().describe('optional 0x address on Base that earns a share of every hour this lease pays for; see charter_referral_status');
+  const referralField = z.string().regex(/^0x[0-9a-fA-F]{40}$/).nullable().optional().describe('optional 0x address on Base that earns a share of every hour this lease pays for (null is the same as leaving it out); see charter_referral_status');
   const server = new McpServer({ name: 'charter', version: VERSION });
   const cost = 'Costs one interval of the first machine in the door\'s ranking that runs it within this server\'s cap (hosts set their own price; 0.007 USDC an hour today; see charter_offers), paid from this server\'s own wallet in USDC on Base. Hosts are run by independent operators, not vetted by Charter.';
 
@@ -610,7 +610,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
     {
       title: 'Read what a referral address has earned',
       description:
-        'Free. What a referral address has earned from leases rented with it: the share in basis points, hours paid for, and earned, paid, owed and held, each in micro-USDC and in USDC, with the payouts made so far (amount, transaction, time). Needs only the address; it is public. See the referral sentence on charter_offers for how an address earns.',
+        'Free. What a referral address has earned from leases rented with it: the share in basis points, hours paid for, and earned, paid and owed, each in micro-USDC and in USDC, with the payouts made so far (amount, transaction, time). held is true while payouts to the address are paused by the operator. Needs only the address; it is public. An address earns when it is passed as the referral parameter of charter_run_python, charter_fetch_pages or charter_rent_home.',
       inputSchema: {
         address: z.string().regex(/^0x[0-9a-fA-F]{40}$/).describe('the 0x address on Base that was passed as referral'),
       },

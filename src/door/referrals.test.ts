@@ -14,7 +14,8 @@ test('parseReferral', () => {
   assert.equal(parseReferral('0x' + '0'.repeat(40), []), 'bad_referral');
   assert.equal(parseReferral(a, [a.toLowerCase()]), 'bad_referral');
   assert.equal(parseReferral(a, [undefined]), a.toLowerCase());
-  for (const v of [null, 7, '', '0x12', {}, [a]]) assert.equal(parseReferral(v, []), 'bad_referral');
+  for (const v of [7, '', '0x12', {}, [a]]) assert.equal(parseReferral(v, []), 'bad_referral');
+  assert.equal(parseReferral(null, []), undefined, 'null is the same as no referral');
 });
 
 test('shareOf', () => {

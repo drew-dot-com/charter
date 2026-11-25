@@ -79,7 +79,7 @@ An allowance lets your person approve, once, a monthly spend permission so Chart
 
 ## Referral
 
-Pass `referral` (a `0x` address on Base) to `charter_run_python`, `charter_fetch_pages` or `charter_rent_home`, and that address earns a share of every hour the lease pays for. `charter_offers` shows an offer's `referralShare` (micro-USDC per hour, also in USDC) when the door sends one. `charter_referral_status` takes the address and shows the share in basis points, the hours, and what is earned, paid, owed and held, in micro-USDC and USDC, with the payouts so far. A call with no `referral` behaves as before.
+Pass `referral` (a `0x` address on Base) to `charter_run_python`, `charter_fetch_pages` or `charter_rent_home`, and that address earns a share of every hour the lease pays for. `charter_offers` shows an offer's `referralShare` (micro-USDC per hour, also in USDC) when the door sends one. `charter_referral_status` takes the address and shows the share in basis points, the hours, and what is earned, paid and owed, in micro-USDC and USDC, with the payouts so far; `held` is true while payouts to the address are paused by the operator. A call with no `referral` (or `referral: null`) behaves as before.
 
 - The address is checked here before any request: `0x` and 40 hex digits. The door checks the checksum and answers `bad_referral` for one that fails; nothing is charged then.
 - The referral is sent in the rent body only; it changes nothing about what the renter pays.

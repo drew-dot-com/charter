@@ -206,6 +206,21 @@ test('no referral: answers carry no referral field and nothing accrues', async (
   });
 });
 
+test('referral: null is the same as none, on rent and on open', async () => {
+  await withDoor({}, async (d) => {
+    const r = await d.rent({ referral: null });
+    assert.equal(r.status, 200);
+    const j = (await r.json()) as Record<string, unknown>;
+    assert.equal('referral' in j, false);
+    assert.equal(d.ledger.get(j.leaseId as string)!.referral, undefined);
+    const o = await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS, referral: null });
+    assert.equal(o.status, 200);
+    const oj = (await o.json()) as Record<string, unknown>;
+    assert.equal('referral' in oj, false);
+    assert.deepEqual(d.store.all(), []);
+  });
+});
+
 test('an open with a referral and no paid hour creates no store entry', async () => {
   await withDoor({}, async (d) => {
     const o = await d.post('/v1/leases', { offerId: OFFER_ID, home: { sshKeys: [KEY] }, referral: A });

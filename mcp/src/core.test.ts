@@ -499,6 +499,9 @@ test('rent sends referral in the body when given and leaves it out when not', as
   const e = fake({ '/v1/offers': offers }, rentOk);
   await rent(e, { urls: ['https://example.com'] });
   assert.equal('referral' in e.paid[0]!.json, false);
+  const n = fake({ '/v1/offers': offers }, rentOk);
+  await rent(n, { urls: ['https://example.com'] }, null);
+  assert.equal('referral' in n.paid[0]!.json, false, 'null is the same as not given');
 });
 
 test('a bad referral is refused before any request, and the door\'s bad_referral is said in plain words', async () => {
@@ -512,7 +515,7 @@ test('a bad referral is refused before any request, and the door\'s bad_referral
   await assert.rejects(rent(refused, { python: { script: 'print(1)' } }, REF), /referral address was refused.*checksum.*nothing was charged/s);
 });
 
-const RS = { address: REF.toLowerCase(), bps: 1000, hours: 12, earned: '84000', paid: '50000', owed: '34000', held: '0', payouts: [{ amount: '50000', tx: '0xdead', at: 1764000000000 }] };
+const RS = { address: REF.toLowerCase(), bps: 1000, hours: 12, earned: '84000', paid: '50000', owed: '34000', held: false, payouts: [{ amount: '50000', tx: '0xdead', at: 1764000000000 }] };
 
 test('referralStatus reads GET /v1/referrals/<address> and shows amounts in USDC too', async () => {
   const d = fake({ [`/v1/referrals/${REF}`]: { status: 200, body: RS } });
@@ -524,7 +527,8 @@ test('referralStatus reads GET /v1/referrals/<address> and shows amounts in USDC
   assert.equal(r.earnedUsdc, '0.084');
   assert.equal(r.paidUsdc, '0.05');
   assert.equal(r.owedUsdc, '0.034');
-  assert.equal(r.heldUsdc, '0');
+  assert.equal(r.held, false);
+  assert.equal('heldUsdc' in r, false);
   assert.deepEqual(r.payouts, [{ amount: '50000', amountUsdc: '0.05', tx: '0xdead', at: 1764000000000 }]);
 });
 

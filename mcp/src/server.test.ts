@@ -461,8 +461,10 @@ test('a referral on charter_run_python reaches the door in the rent body, and is
   const { call } = await connect(options(), fetchFn);
   assert.equal((await call('charter_run_python', { script: 'print(4)', referral: REFERRAL, waitSeconds: 10 })).isError, false);
   await call('charter_run_python', { script: 'print(4)', waitSeconds: 10 });
+  assert.equal((await call('charter_run_python', { script: 'print(4)', referral: null, waitSeconds: 10 })).isError, false);
   assert.equal(bodies[0].referral, REFERRAL);
   assert.equal('referral' in bodies[1], false);
+  assert.equal('referral' in bodies[2], false, 'null is the same as not given');
 });
 
 test('a bad referral on a paid tool is refused before any request', async () => {
@@ -475,12 +477,14 @@ test('a bad referral on a paid tool is refused before any request', async () => 
 });
 
 test('charter_referral_status reads the right path and shows USDC; a bad address sends nothing', async () => {
-  const body = { address: REFERRAL.toLowerCase(), bps: 1000, hours: 3, earned: '21000', paid: '0', owed: '21000', held: '0', payouts: [] };
+  const body = { address: REFERRAL.toLowerCase(), bps: 1000, hours: 3, earned: '21000', paid: '0', owed: '21000', held: false, payouts: [] };
   const d = door({ [`/v1/referrals/${REFERRAL}`]: body });
   const { call } = await connect(options({ makeKey: false }), d.fetchFn);
   const r = JSON.parse((await call('charter_referral_status', { address: REFERRAL })).text);
   assert.equal(r.earnedUsdc, '0.021');
   assert.equal(r.owedUsdc, '0.021');
+  assert.equal(r.held, false);
+  assert.equal('heldUsdc' in r, false);
   assert.ok(d.seen.urls.some((u) => new URL(u).pathname === `/v1/referrals/${REFERRAL}`));
   const before = d.seen.urls.length;
   const bad = await call('charter_referral_status', { address: '0x12' });
