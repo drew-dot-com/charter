@@ -16,6 +16,12 @@ const GUIDANCE = [
   `The whole procedure, prices, what to tell your operator and the trust section: ${AGENTS}`,
 ].join(' ');
 
+const REFERRAL_PROPERTY = {
+  type: 'string',
+  description: 'Optional: a 0x address on Base that earns a share of every hour this renter pays for, paid in USDC on Base. Read GET /v1/referrals/{address}.',
+};
+const RENT_BODY = { ...RENT_INPUT_SCHEMA, properties: { ...RENT_INPUT_SCHEMA.properties, referral: REFERRAL_PROPERTY } };
+
 const json = (schema: object, description = 'OK') => ({ description, content: { 'application/json': { schema } } });
 const error = (description: string) => json({ type: 'object', properties: { error: { type: 'string' } }, required: ['error'] }, description);
 const allowanceIdParam = { name: 'id', in: 'path', required: true, schema: { type: 'string', pattern: '^[0-9a-f]{32}$' } };
@@ -55,8 +61,9 @@ export function openApiDoc(prices: Micro[], max: Micro, usd: (m: Micro) => strin
           operationId: 'rent',
           summary: 'Rent compute: open a lease and pay its first interval in one call',
           tags: ['Compute'],
+          description: 'Add "referral": "<0x address on Base>" and that address earns a share of every hour you pay for, paid in USDC on Base.',
           'x-payment-info': { price, protocols: [{ x402: {} }] },
-          requestBody: { required: true, content: { 'application/json': { schema: RENT_INPUT_SCHEMA, example: { python: { script: 'print(2 + 2)' } } } } },
+          requestBody: { required: true, content: { 'application/json': { schema: RENT_BODY, example: { python: { script: 'print(2 + 2)' } } } } },
           responses: {
             '200': json(
               {
@@ -68,6 +75,7 @@ export function openApiDoc(prices: Micro[], max: Micro, usd: (m: Micro) => strin
                   paidThrough: { type: 'integer', description: 'Epoch ms the paid time runs out.' },
                   next: { type: 'object', properties: { path: { type: 'string' }, index: { type: 'integer' } } },
                   offer: { type: 'object' },
+                  referral: { type: 'string', description: 'The address earning a share of this lease, when one is.' },
                 },
                 required: ['leaseId', 'paidIntervals', 'paidThrough', 'next'],
                 example: RENT_OUTPUT_EXAMPLE,
@@ -92,6 +100,33 @@ export function openApiDoc(prices: Micro[], max: Micro, usd: (m: Micro) => strin
           tags: ['Compute'],
           security: [],
           responses: { '200': json({ type: 'array', items: { type: 'object' } }) },
+        },
+      },
+      '/v1/referrals/{address}': {
+        get: {
+          operationId: 'getReferral',
+          summary: 'What a referral address has earned and been paid: hours, earned, paid, owed, held and the newest 50 payouts',
+          tags: ['Referrals'],
+          security: [],
+          parameters: [{ name: 'address', in: 'path', required: true, schema: { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$' } }],
+          responses: {
+            '200': json({
+              type: 'object',
+              properties: {
+                address: { type: 'string' },
+                bps: { type: 'integer' },
+                hours: { type: 'integer' },
+                earned: { type: 'string' },
+                paid: { type: 'string' },
+                owed: { type: 'string' },
+                held: { type: 'boolean' },
+                payouts: { type: 'array', items: { type: 'object', properties: { amount: { type: 'string' }, tx: { type: 'string' }, at: { type: 'integer' } } } },
+              },
+              required: ['address', 'bps', 'hours', 'earned', 'paid', 'owed', 'held', 'payouts'],
+            }),
+            '400': error('bad_referral'),
+            '429': error('rate_limited'),
+          },
         },
       },
       '/v1/hosts': {
@@ -124,8 +159,8 @@ export function openApiDoc(prices: Micro[], max: Micro, usd: (m: Micro) => strin
           summary: 'Open a lease without paying (then pay index 0 on the tick route); POST /v1/rent does both',
           tags: ['Compute'],
           security: [],
-          requestBody: { required: true, content: { 'application/json': { schema: { ...RENT_INPUT_SCHEMA, required: ['offerId'] } } } },
-          responses: { '200': json({ type: 'object', properties: { leaseId: { type: 'string' }, state: { type: 'string' } } }) },
+          requestBody: { required: true, content: { 'application/json': { schema: { ...RENT_BODY, required: ['offerId'] } } } },
+          responses: { '200': json({ type: 'object', properties: { leaseId: { type: 'string' }, state: { type: 'string' }, referral: { type: 'string', description: 'The address earning a share of this lease, when one is.' } } }) },
         },
       },
       '/v1/leases/{leaseId}': {

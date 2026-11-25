@@ -20,6 +20,7 @@ import { MAX_TIMEOUT_SECONDS, MIN_WINDOW_SECONDS, SETTLE_MARGIN_SECONDS, isPayer
 import { realGate, stubGate } from './x402.js';
 import { openApiDoc } from './openapi.js';
 import { parseReferral, shareOf, type ReferralStore } from './referrals.js';
+import type { PayoutLog } from './referral-payouts.js';
 
 export interface DoorDeps {
   /** Live offers. The door caches the answer for 60 s. */
@@ -82,7 +83,7 @@ export interface DoorDeps {
   /** Where the approval page lives. Default: https://charterhome.dev/allow. */
   allowPageUrl?: string;
   /** Referral accrual. Left out: the field is still checked, recorded and echoed, and nothing accrues. */
-  referrals?: { store: ReferralStore; bps: number; hosts: Set<string> };
+  referrals?: { store: ReferralStore; bps: number; hosts: Set<string>; log?: PayoutLog };
 }
 
 const PITCHES_PER_HOUR = 5;
@@ -148,7 +149,7 @@ function findOfferExact(offers: Offer[], ref: string): Offer | undefined {
  * An offer as the door shows it: what `GET /v1/offers` lists, and what a lease's status carries. `tickPrice` is
  * what the renter pays: the host's tick plus the door's `fee`. Every host is run by an independent operator.
  */
-function publicOffer(o: Offer, r: HostRecord | undefined, fee: Micro, fundingWaiting = false) {
+function publicOffer(o: Offer, r: HostRecord | undefined, fee: Micro, fundingWaiting = false, referralShare: bigint = 0n) {
   return {
     offerId: offerIdOf(o),
     cpu: o.cpu,
@@ -161,9 +162,14 @@ function publicOffer(o: Offer, r: HostRecord | undefined, fee: Micro, fundingWai
     expiresAt: o.expiresAt,
     ...(o.home ? { home: { ...o.home, tested: r?.homeTested ?? false } } : {}),
     operator: 'independent' as const,
+    ...(referralShare > 0n ? { referralShare: referralShare.toString() } : {}),
     ...(r ? { record: publicRecord(r, fundingWaiting) } : {}),
   };
 }
+
+/** How `GET /v1/door` tells an agent to name a referral. */
+const REFERRAL_HOW =
+  'Add "referral": "<0x address on Base>" to POST /v1/rent. That address earns a share of every hour the renter pays for, paid in USDC on Base. Read GET /v1/referrals/<address>.';
 
 /** The lease's free-read budget is spent. */
 class BudgetError extends Error {}
@@ -272,6 +278,13 @@ export function doorApp(deps: DoorDeps): express.Express {
     const fee = BigInt(rec.fee ?? '0');
     const share = shareOf({ paid: BigInt(rec.offer.tickPrice) + fee, fee, bps: r.bps, hostListed: r.hosts.has(rec.offer.hostId) });
     if (share > 0n) r.store.accrue(earner, share, now());
+  };
+
+  /** What a referrer earns from one hour of this offer at this fee, as a public offer shows it; 0 when none is earned. */
+  const shareFor = (o: Offer, f: Micro): bigint => {
+    const r = deps.referrals;
+    if (!r || r.bps === 0) return 0n;
+    return shareOf({ paid: o.tickPrice + f, fee: f, bps: r.bps, hostListed: r.hosts.has(o.hostId) });
   };
 
   /**
@@ -461,7 +474,8 @@ export function doorApp(deps: DoorDeps): express.Express {
   if (deps.x402 !== 'free-for-tests') {
     const { payTo, network } = deps.x402;
     const payer = deps.payer;
-    app.get('/v1/door', (_req, res) => void res.json({ payTo, network, ...(payer ? { payer } : {}) }));
+    const referralBps = deps.referrals?.bps ?? 0;
+    app.get('/v1/door', (_req, res) => void res.json({ payTo, network, ...(payer ? { payer } : {}), ...(referralBps > 0 ? { referral: { bps: referralBps, how: REFERRAL_HOW } } : {}) }));
   }
 
   if (deps.grants) {
@@ -722,7 +736,7 @@ export function doorApp(deps: DoorDeps): express.Express {
     }
     res.json(
       doorOrder(list.filter((o) => trusted(o) && o.images.some((i) => JOB_IMAGES.includes(i)) && o.expiresAt > now() && listed(o.hostId)))
-        .map((o) => ({ ...publicOffer(o, registry.get(o.hostId), fee, waiting(o.hostId)), ...hostStats(o.hostId) })),
+        .map((o) => ({ ...publicOffer(o, registry.get(o.hostId), fee, waiting(o.hostId), shareFor(o, fee)), ...hostStats(o.hostId) })),
     );
   });
 
@@ -1123,7 +1137,7 @@ export function doorApp(deps: DoorDeps): express.Express {
       leaseId,
       0,
       offer,
-      (t) => ({ leaseId, state: 'running', ...t, next: { path: `/v1/leases/${leaseId}/ticks`, index: 1 }, offer: publicOffer(offer, registry.get(offer.hostId), fee), ...(earner ? { referral: earner } : {}) }),
+      (t) => ({ leaseId, state: 'running', ...t, next: { path: `/v1/leases/${leaseId}/ticks`, index: 1 }, offer: publicOffer(offer, registry.get(offer.hostId), fee, false, shareFor(offer, fee)), ...(earner ? { referral: earner } : {}) }),
       { leaseId },
     );
   };
@@ -1156,6 +1170,27 @@ export function doorApp(deps: DoorDeps): express.Express {
     readFailure(res, e);
   };
 
+  // What a referrer has earned and been paid. Free; a hold shows as `held`, never its reason.
+  app.get('/v1/referrals/:address', (req, res) => {
+    if (!allowGet(req.ip ?? 'unknown')) return void res.status(429).json({ error: 'rate_limited' });
+    const a = parseReferral(req.params.address, []);
+    if (a === undefined || a === 'bad_referral') return void res.status(400).json({ error: 'bad_referral' });
+    const r = deps.referrals;
+    const rec = r?.store.get(a);
+    const earned = rec?.earned ?? 0n;
+    const paid = rec?.paid ?? 0n;
+    res.json({
+      address: a,
+      bps: r?.bps ?? 0,
+      hours: rec?.hours ?? 0,
+      earned: earned.toString(),
+      paid: paid.toString(),
+      owed: (earned - paid).toString(),
+      held: rec?.held !== undefined,
+      payouts: (r?.log?.sentTo(a, 50) ?? []).map((p) => ({ amount: p.amount.toString(), tx: p.tx, at: p.at })),
+    });
+  });
+
   app.use('/v1/leases', (req, res, next) => {
     if (req.method === 'GET' && !allowGet(req.ip ?? 'unknown')) return void res.status(429).json({ error: 'rate_limited' });
     next();
@@ -1168,7 +1203,7 @@ export function doorApp(deps: DoorDeps): express.Express {
       const lease = await leaseStatus(id);
       const rec = ledger.get(id);
       const offer = rec && offerOfSnapshot(rec.offer);
-      res.json({ lease, stopped: rec?.stopped ?? false, ...(offer ? { offer: publicOffer(offer, registry.get(offer.hostId), leaseFee(id)) } : {}) });
+      res.json({ lease, stopped: rec?.stopped ?? false, ...(offer ? { offer: publicOffer(offer, registry.get(offer.hostId), leaseFee(id), false, shareFor(offer, leaseFee(id))) } : {}) });
     } catch (e) {
       failRead(res, e);
     }

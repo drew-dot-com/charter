@@ -11,6 +11,7 @@ import { HOURLY, listedRegistry } from '../tenant/test-host.js';
 import type { Lease, Micro, Offer } from '../types.js';
 import { DoorLedger } from './ledger.js';
 import { REFERRALS_FILE, ReferralStore } from './referrals.js';
+import { PAYOUTS_FILE, PayoutLog } from './referral-payouts.js';
 import { doorApp, type DoorDeps } from './server.js';
 import { homeIdOf, normalizeSshKeys } from '../jobs.js';
 
@@ -62,6 +63,7 @@ interface Opts {
   hosts?: string[];
   fee?: Micro;
   referrals?: false;
+  log?: (file: string) => PayoutLog;
   store?: (file: string) => ReferralStore;
   settleFails?: boolean;
   over?: Partial<DoorDeps>;
@@ -72,6 +74,7 @@ async function start(o: Opts = {}) {
   const ledger = new DoorLedger(join(dir, 'ledger.json'));
   const storeFile = join(dir, REFERRALS_FILE);
   const store = o.store ? o.store(storeFile) : new ReferralStore(storeFile);
+  const log = o.log ? o.log(join(dir, PAYOUTS_FILE)) : new PayoutLog(join(dir, PAYOUTS_FILE));
   const host = fakeHost();
   const clock = { t: 1_000_000 };
   const settle = { fail: o.settleFails ?? false };
@@ -88,7 +91,7 @@ async function start(o: Opts = {}) {
     fundAddress: FUND,
     allowAddress: ALLOW,
     ...(o.fee !== undefined ? { fee: o.fee } : {}),
-    ...(o.referrals === false ? {} : { referrals: { store, bps: o.bps ?? 1000, hosts: new Set(o.hosts ?? [OFFER.hostId]) } }),
+    ...(o.referrals === false ? {} : { referrals: { store, log, bps: o.bps ?? 1000, hosts: new Set(o.hosts ?? [OFFER.hostId]) } }),
     testHooks: {
       settle: () => {
         if (settle.fail) throw new Error('invalid_exact_evm_insufficient_balance');
@@ -102,7 +105,8 @@ async function start(o: Opts = {}) {
   const post = (path: string, body: unknown, payer = PAYER) =>
     fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-test-payer': payer }, body: JSON.stringify(body) });
   return {
-    base, dir, ledger, store, storeFile, host, settle, post,
+    base, dir, ledger, store, log, storeFile, host, settle, post,
+    get: (path: string) => fetch(base + path),
     close: () => void server.close(),
     rent: (b: Record<string, unknown>, payer?: string) => post('/v1/rent', { offerId: OFFER_ID, urls: URLS, ...b }, payer),
     rentHome: (b: Record<string, unknown> = {}, payer?: string) => post('/v1/rent', { home: { sshKeys: [KEY] }, ...b }, payer),
@@ -333,4 +337,137 @@ test('a store whose accrue throws: the hour still answers 200 and is booked', as
   }
   assert.equal(logged.length, 1);
   assert.match(String(logged[0]![0]), /^charter-door referral accrual failed: /);
+});
+
+interface Answer {
+  address: string;
+  bps: number;
+  hours: number;
+  earned: string;
+  paid: string;
+  owed: string;
+  held: boolean;
+  payouts: Array<{ amount: string; tx: string; at: number }>;
+}
+
+test('GET /v1/referrals/:address: zeros for an unknown address, in lower case, whatever case it was asked in', async () => {
+  await withDoor({}, async (d) => {
+    const r = await d.get(`/v1/referrals/${getAddress(B)}`);
+    assert.equal(r.status, 200);
+    assert.deepEqual(await r.json(), { address: B, bps: 1000, hours: 0, earned: '0', paid: '0', owed: '0', held: false, payouts: [] });
+  });
+});
+
+test('GET /v1/referrals/:address: an address with accruals shows hours, earned and owed', async () => {
+  await withDoor({}, async (d) => {
+    assert.equal((await d.rent({ referral: A })).status, 200);
+    const j = (await (await d.get(`/v1/referrals/${A}`)).json()) as Answer;
+    assert.deepEqual(j, { address: A, bps: 1000, hours: 1, earned: '700', paid: '0', owed: '700', held: false, payouts: [] });
+  });
+});
+
+test('GET /v1/referrals/:address: a held address says held and never why', async () => {
+  await withDoor({}, async (d) => {
+    d.store.accrue(A, 700n, 1);
+    d.store.hold(A, 'secret operator reason');
+    const r = await d.get(`/v1/referrals/${A}`);
+    const text = await r.text();
+    assert.equal((JSON.parse(text) as Answer).held, true);
+    assert.doesNotMatch(text, /secret operator reason|reason/);
+  });
+});
+
+test('GET /v1/referrals/:address: a malformed address is 400 bad_referral', async () => {
+  await withDoor({}, async (d) => {
+    for (const bad of ['nope', '0x123', brokenChecksum(A), '0x' + '0'.repeat(40)]) {
+      const r = await d.get(`/v1/referrals/${bad}`);
+      assert.equal(r.status, 400, bad);
+      assert.deepEqual(await r.json(), { error: 'bad_referral' });
+    }
+  });
+});
+
+test('GET /v1/referrals/:address: 51 sent payouts give the newest 50, and paid is the store total of all 51', async () => {
+  await withDoor({}, async (d) => {
+    let total = 0n;
+    for (let i = 1; i <= 51; i++) {
+      d.store.accrue(A, 1000n, i);
+      const id = d.log.intent(A, 1000n, i * 10);
+      d.log.sent(id, '0x' + i.toString(16).padStart(64, '0'), i * 10 + 1);
+      d.store.markPaid(A, 1000n, id);
+      total += 1000n;
+    }
+    const j = (await (await d.get(`/v1/referrals/${A}`)).json()) as Answer;
+    assert.equal(j.payouts.length, 50);
+    assert.equal(j.paid, total.toString());
+    assert.equal(j.owed, '0');
+    assert.equal(j.payouts[0]!.tx, '0x' + (51).toString(16).padStart(64, '0'));
+    assert.deepEqual(Object.keys(j.payouts[0]!).sort(), ['amount', 'at', 'tx']);
+    assert.equal(j.payouts[0]!.amount, '1000');
+    assert.ok(j.payouts[0]!.at > j.payouts[49]!.at);
+  });
+});
+
+test('GET /v1/referrals/:address with bps 0 still shows what is owed', async () => {
+  await withDoor({ bps: 0 }, async (d) => {
+    d.store.accrue(A, 700n, 1);
+    const j = (await (await d.get(`/v1/referrals/${A}`)).json()) as Answer;
+    assert.equal(j.bps, 0);
+    assert.equal(j.owed, '700');
+  });
+});
+
+test('GET /v1/referrals/:address with no referral deps: zeros and bps 0', async () => {
+  await withDoor({ referrals: false }, async (d) => {
+    const r = await d.get(`/v1/referrals/${A}`);
+    assert.equal(r.status, 200);
+    assert.deepEqual(await r.json(), { address: A, bps: 0, hours: 0, earned: '0', paid: '0', owed: '0', held: false, payouts: [] });
+  });
+});
+
+test('GET /v1/offers carries referralShare only when above 0: a listed host 700, an unlisted one with fee 0 none, bps 0 none', async () => {
+  await withDoor({}, async (d) => {
+    const [o] = (await (await d.get('/v1/offers')).json()) as Array<{ referralShare?: string }>;
+    assert.equal(o!.referralShare, '700');
+  });
+  await withDoor({ hosts: [] }, async (d) => {
+    const [o] = (await (await d.get('/v1/offers')).json()) as Array<Record<string, unknown>>;
+    assert.equal('referralShare' in o!, false);
+  });
+  await withDoor({ bps: 0 }, async (d) => {
+    const [o] = (await (await d.get('/v1/offers')).json()) as Array<Record<string, unknown>>;
+    assert.equal('referralShare' in o!, false);
+  });
+  await withDoor({ referrals: false }, async (d) => {
+    const [o] = (await (await d.get('/v1/offers')).json()) as Array<Record<string, unknown>>;
+    assert.equal('referralShare' in o!, false);
+  });
+});
+
+test('GET /v1/door carries referral { bps, how } only when bps is above 0', async () => {
+  const x402 = { payTo: PAY_TO, network: 'eip155:8453', facilitatorUrl: 'http://127.0.0.1:1', claimKey: CLAIM_KEY, channelDir: mkdtempSync(join(tmpdir(), 'ch-')) };
+  await withDoor({ over: { x402 } }, async (d) => {
+    const j = (await (await d.get('/v1/door')).json()) as { referral?: { bps: number; how: string } };
+    assert.equal(j.referral?.bps, 1000);
+    assert.equal(
+      j.referral?.how,
+      'Add "referral": "<0x address on Base>" to POST /v1/rent. That address earns a share of every hour the renter pays for, paid in USDC on Base. Read GET /v1/referrals/<address>.',
+    );
+  });
+  await withDoor({ bps: 0, over: { x402 } }, async (d) => {
+    assert.equal('referral' in ((await (await d.get('/v1/door')).json()) as object), false);
+  });
+});
+
+test('GET /openapi.json has the referral property on rent and open, and the referrals path', async () => {
+  await withDoor({}, async (d) => {
+    const doc = (await (await d.get('/openapi.json')).json()) as {
+      paths: Record<string, Record<string, { description?: string; requestBody?: { content: { 'application/json': { schema: { properties: Record<string, unknown> } } } } }>>;
+    };
+    for (const [p, m] of [['/v1/rent', 'post'], ['/v1/leases', 'post']] as const) {
+      assert.ok(doc.paths[p]![m]!.requestBody!.content['application/json'].schema.properties.referral, `${p} takes referral`);
+    }
+    assert.match(doc.paths['/v1/rent']!.post!.description!, /referral/);
+    assert.ok(doc.paths['/v1/referrals/{address}']!.get);
+  });
 });
