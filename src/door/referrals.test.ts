@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseReferral, shareOf } from './referrals.js';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parseReferral, shareOf, ReferralStore, REFERRALS_FILE } from './referrals.js';
 
 test('parseReferral', () => {
   const a = '0x52908400098527886E0F7030069857D2E4169EE7'; // valid checksum
@@ -21,4 +24,70 @@ test('shareOf', () => {
   assert.equal(shareOf({ paid: 7700n, fee: 300n, bps: 1000, hostListed: false }), 300n);
   assert.equal(shareOf({ paid: 7001n, fee: 0n, bps: 1000, hostListed: true }), 700n); // floor
   assert.equal(shareOf({ paid: 7000n, fee: 0n, bps: 0, hostListed: true }), 0n);
+});
+
+const R = '0x' + 'ab'.repeat(20);
+const file = () => join(mkdtempSync(join(tmpdir(), 'referrals-')), REFERRALS_FILE);
+
+test('store: accrue keeps the first owedSince; markPaid to zero clears it; a later accrue sets a new one', () => {
+  const s = new ReferralStore(file());
+  s.accrue(R, 700n, 1_000);
+  s.accrue(R, 300n, 2_000);
+  assert.deepEqual(s.get(R), { earned: 1000n, paid: 0n, hours: 2, owedSince: 1_000 });
+  assert.equal(s.owed(R), 1000n);
+  assert.equal(s.totalOwed(), 1000n);
+  s.markPaid(R, 400n);
+  assert.equal(s.get(R)?.owedSince, 1_000);
+  s.markPaid(R, 600n);
+  assert.equal(s.owed(R), 0n);
+  assert.equal(s.get(R)?.owedSince, undefined);
+  s.accrue(R, 5n, 9_000);
+  assert.equal(s.get(R)?.owedSince, 9_000);
+  assert.equal(s.owed('0xunknown'), 0n);
+  assert.equal(s.get('0xunknown'), undefined);
+  assert.deepEqual(s.all().map((r) => r.address), [R]);
+});
+
+test('store: hold and release', () => {
+  const s = new ReferralStore(file());
+  s.accrue(R, 1n, 1);
+  s.hold(R, 'bad transfer');
+  assert.equal(s.get(R)?.held, 'bad transfer');
+  s.release(R);
+  assert.equal(s.get(R)?.held, undefined);
+});
+
+test('store: bindHome keeps the first; setHome replaces and unbinds', () => {
+  const s = new ReferralStore(file());
+  const other = '0x' + 'cd'.repeat(20);
+  assert.equal(s.bindHome('h1', R), true);
+  assert.equal(s.bindHome('h1', other), false);
+  assert.equal(s.homeReferrer('h1'), R);
+  s.setHome('h1', other);
+  assert.equal(s.homeReferrer('h1'), other);
+  s.setHome('h1', undefined);
+  assert.equal(s.homeReferrer('h1'), undefined);
+  assert.equal(s.bindHome('h1', R), true);
+});
+
+test('store: a new store on the same file reads everything back', () => {
+  const f = file();
+  const s = new ReferralStore(f);
+  s.accrue(R, 1234n, 5);
+  s.markPaid(R, 34n);
+  s.hold(R, 'why');
+  s.bindHome('h1', R);
+  const t = new ReferralStore(f);
+  assert.deepEqual(t.get(R), { earned: 1234n, paid: 34n, hours: 1, held: 'why', owedSince: 5 });
+  assert.equal(t.homeReferrer('h1'), R);
+  assert.equal(t.totalOwed(), 1200n);
+});
+
+test('store: a missing file is empty; unparseable JSON throws', () => {
+  const f = file();
+  const s = new ReferralStore(f);
+  assert.equal(s.totalOwed(), 0n);
+  assert.deepEqual(s.all(), []);
+  writeFileSync(f, '{');
+  assert.throws(() => new ReferralStore(f));
 });
