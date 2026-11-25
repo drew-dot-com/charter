@@ -811,3 +811,30 @@ Person-side cancel (`requestRevoke` from the Base Account, same permission):
 - After it the permission read `isRevoked: true`, `isActive: false`, and the contract refused a 0.007 spend
   (`eth_call`, revert `0x282b9f97`, the same revert a spender-side revoke gives).
 - So the approval page now shows its cancel button (`CANCEL_TESTED = true` in `web/allow.ts`).
+
+## 22. Monthly allowance, end to end on the live door (2026-11-25)
+
+The allowance was switched on at the door (`CHARTER_ALLOW_ADDRESS` = the biller, `0x17f27F11d7d491EaBbe99AdadBe8268F236268a4`)
+and run once from start to finish with a test home and Drew's test Base Account (`0xCAa32aC8bD59741Fd6Aab2432Cc4802fd0DCa334`).
+
+- The home: a `charter-home` on hel1 opened with throwaway keys, first hour paid by the test payer `0xb66E…c715`
+  through `charter rent` (it answered `ssh -p 22005 tenant@37.27.86.235`).
+- The link: `POST /v1/allowances` with the home's keys answered 201, state `waiting`, allowance
+  `d1d4571c167aa73a1e9441aa276f1c09`.
+- The approval: Drew connected the Base Account on `https://charterhome.dev/allow?id=…` and signed for 5.208 USDC per
+  30 days (744 hours). State `active`. Nothing moved at signing.
+- The pull, when the home's next hour came due: 0.168 USDC (24 hours) from the account to the biller,
+  `0x358d88dd7d0247056610f4d9aa922897615dc55bb3533a35baad6731f5aade75` (126,885 gas, approval and spend in one
+  transaction). The allowance then read 5.04 remaining.
+- The hour: the biller paid one tick, 0.007 USDC, through the door's normal paid route,
+  `0x2240bfa3161883d68acba63786229f78fc0517f61b69bcf5bdf59aff0c4bbeec`. `hoursPaid` 1, credit 0.161.
+- The stop, by the agent's owner token (`POST /v1/allowances/<id>/stop`, header `x-allowance-token`): state
+  `stopping`, then within two cycles:
+  - revoke `0xd9a7821c92a1b3e1b85d0244e62dd44b4f86203f5eeb12d4023ff73658464583`,
+  - refund of exactly the credit, 0.161 USDC back to the account,
+    `0xbfbc95976e00fbf3c0dbdb1c00ceb854f4c68b02593a06687c895f0bd4694e52`,
+  - state `ended`, reason `stopped`. The account went 1.061778, 0.893778, 1.054778 USDC.
+
+Only one biller-paid hour was watched (the plan asked for two); the second would have needed another hour's wait.
+One fault was found on the way and fixed: the web server's general Content-Security-Policy overwrote the approval
+page's wider one (`deploy/door/Caddy.snippet`, the `@notallow` matcher).
