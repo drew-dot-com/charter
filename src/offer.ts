@@ -81,6 +81,13 @@ export function offerFromJson(text: string): Offer | null {
     }
   }
 
+  // Optional: the operator's X handle, no '@'. A malformed one is not a well-formed offer.
+  let xHandle: string | undefined;
+  if (c.xHandle !== undefined) {
+    if (typeof c.xHandle !== 'string' || !/^[A-Za-z0-9_]{1,15}$/.test(c.xHandle)) return null;
+    xHandle = c.xHandle;
+  }
+
   return {
     id: c.id,
     hostId: c.hostId,
@@ -98,5 +105,6 @@ export function offerFromJson(text: string): Offer | null {
     hiddenEgress: c.hiddenEgress,
     expiresAt: c.expiresAt,
     ...(home ? { home } : {}),
+    ...(xHandle !== undefined ? { xHandle } : {}),
   };
 }

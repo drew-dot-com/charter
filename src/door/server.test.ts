@@ -11,6 +11,7 @@ import { listedRegistry, OFFER } from '../tenant/test-host.js';
 import { HOSTS_FILE, HostRegistry } from './hosts.js';
 import type { Lease, Micro, Offer } from '../types.js';
 import { DoorLedger, offerOfSnapshot, snapshotOffer } from './ledger.js';
+import { OPTIN_CODES_FILE, OptinCodes, optinCodeOf, optinHash, optinKey } from './optin-codes.js';
 import { DAILY_UNPAID_CAP, doorApp, readBudget, type DoorDeps } from './server.js';
 import type { RequestEntry } from './reqlog.js';
 import { SendTimeoutError } from '../errors.js';
@@ -2570,3 +2571,33 @@ test('R11: a home is pinned at its first paid host tick, not at an unpaid open',
   }
 });
 
+
+test('the read of a lease by its full id carries its opt-in code; the public list never does', async () => {
+  const key = optinKey('0x' + '11'.repeat(32));
+  const dir = mkdtempSync(join(tmpdir(), 'door-optin-'));
+  const d = await start(fakeHost(), { social: { handle: 'charterbox', codes: new OptinCodes(join(dir, OPTIN_CODES_FILE), key) } });
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    await d.post(`/v1/leases/${LEASE}/ticks`, { index: 1 });
+    const st = (await (await d.get(`/v1/leases/${LEASE}`)).json()) as { social: { optinCode: string; post: string } };
+    const code = optinCodeOf(key, 'lease', LEASE);
+    assert.equal(st.social.optinCode, code);
+    assert.equal(st.social.post, `@charterbox ${code}`);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, OPTIN_CODES_FILE), 'utf8').trim()), { kind: 'lease', id: LEASE, hash: optinHash(code) });
+    assert.ok(!(await (await d.get('/v1/recent')).text()).includes('charter-optin-'));
+    assert.equal((await d.get('/v1/leases/' + 'f'.repeat(LEASE.length))).status, 404);
+  } finally {
+    d.close();
+  }
+});
+
+test('without the social setting a lease read has no opt-in code', async () => {
+  const d = await start(fakeHost());
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    const st = (await (await d.get(`/v1/leases/${LEASE}`)).json()) as Record<string, unknown>;
+    assert.equal(st.social, undefined);
+  } finally {
+    d.close();
+  }
+});

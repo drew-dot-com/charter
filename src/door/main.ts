@@ -12,6 +12,7 @@ import type { HostApi } from '../tenant/host-api.js';
 import type { Offer } from '../types.js';
 import { CAPITAL_FILE, CapitalBook, capitalAtRisk } from './capital.js';
 import { baseChannelChain } from './channel-chain.js';
+import { OPTIN_CODES_FILE, OptinCodes, optinKey, parseXHandle } from './optin-codes.js';
 import { checkReferralFund, doorFunding, referralConfig, parseSweepKeep, parseCdpKey, parsePayerKey, parseTrustProxy } from './config.js';
 import { fetchHostOffer, listedOffers } from './host-offers.js';
 import { DEPOSIT_TICK_TIMEOUT_MS, doorPayer, httpHostApi, type DoorPayer, type ReadContract } from './host-http.js';
@@ -168,6 +169,8 @@ async function main(): Promise<void> {
     registry, locked, probeDeposit: funding.probeDeposit, hostDeposit: funding.hostDeposit, probeCap: funding.probeCap, hostCap: funding.hostCap,
   });
   const key = payerKey(env);
+  // Unset: no opt-in code is served (the X account is not up, or Drew turned naming off).
+  const socialHandle = parseXHandle(env.CHARTER_SOCIAL_X_HANDLE, 'CHARTER_SOCIAL_X_HANDLE');
   const payer = doorPayer({
     key,
     channelDir: env.CHARTER_HOST_CHANNEL_DIR?.trim() || join(dataDir, 'host-channels'),
@@ -234,6 +237,7 @@ async function main(): Promise<void> {
     ...(allowToken ? { allowToken } : {}),
     ...(allowAddressRaw ? { allowAddress: allowAddressRaw.toLowerCase() } : {}),
     ...(env.CHARTER_ALLOW_PAGE_URL?.trim() ? { allowPageUrl: env.CHARTER_ALLOW_PAGE_URL.trim() } : {}),
+    ...(socialHandle ? { social: { handle: socialHandle, codes: new OptinCodes(join(dataDir, OPTIN_CODES_FILE), optinKey(key)) } } : {}),
     x402,
     schemes,
     offerBatch,

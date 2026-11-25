@@ -214,3 +214,9 @@ test('deploy/host/env.example loads as it stands once its placeholders are fille
   for (const n of named) assert.ok(src.includes(`'${n}'`) || src.includes(`.${n}`), `${n} is read by loadConfig`);
   for (const gone of ['CHARTER_RELAY_URL', 'TOON_PASSPHRASE_FILE', 'CHARTER_ILP_BASE', 'CHARTER_SEAL_KEY', 'CHARTER_HOST_PUBKEY']) assert.ok(!named.has(gone), gone);
 });
+
+test('CHARTER_HOST_X_HANDLE puts the operator handle in the offer, and refuses anything that is not a handle', () => {
+  assert.equal(loadConfig(ENV).offer.xHandle, undefined);
+  assert.equal(loadConfig({ ...ENV, CHARTER_HOST_X_HANDLE: '@host_op1' }).offer.xHandle, 'host_op1');
+  assert.throws(() => loadConfig({ ...ENV, CHARTER_HOST_X_HANDLE: 'not a handle' }), /CHARTER_HOST_X_HANDLE must be an X handle/);
+});

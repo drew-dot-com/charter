@@ -9,6 +9,7 @@ import { ALLOWED_MOVES as ALLOWANCE_MOVES, KEEP_HOME_FROM_HOURS, BadMove as Allo
 import { ALLOWED_MOVES, BadMove, ownerView, publicView, readFundPublic, validatePitch, type Grant, type GrantState, type GrantStore } from './grants.js';
 import type { JobSpec, Lease, Micro, Offer } from '../types.js';
 import { DeadlinePassedError, SendTimeoutError } from '../errors.js';
+import { socialView, type SocialOptin } from './optin-codes.js';
 import { offerOfSnapshot, snapshotOffer, type DoorLedger, type LeaseOutcome, type LossKind } from './ledger.js';
 import { CapitalCapError, DepositPendingError, DepositTimeoutError } from './host-http.js';
 import { publicRecord, rankOffers, type HostRecord, type HostRegistry } from './hosts.js';
@@ -84,6 +85,8 @@ export interface DoorDeps {
   allowPageUrl?: string;
   /** Referral accrual. Left out: the field is still checked, recorded and echoed, and nothing accrues. */
   referrals?: { store: ReferralStore; bps: number; hosts: Set<string>; log?: PayoutLog };
+  /** Opt-in to be named by Charter's X account: the owner's read of a lease or a grant carries its code under `social`. Left out: no code is served. */
+  social?: SocialOptin;
 }
 
 const PITCHES_PER_HOUR = 5;
@@ -499,7 +502,7 @@ export function doorApp(deps: DoorDeps): express.Express {
       const token = req.get('x-grant-token');
       if (token === undefined) return void res.json(publicView(g));
       if (!grants.tokenOk(id, token)) return void res.status(403).json({ error: 'bad_token' });
-      const view = ownerView(g);
+      const view = { ...ownerView(g), ...(deps.social ? { social: socialView(deps.social, 'grant', g.grantId) } : {}) };
       // The last 48 hours of a paid grant: hand the grantee a link its person can use to keep the home paid.
       const tickMicro = g.leaseId ? priceOf(g.leaseId) : undefined;
       // Offered only when this read can make the allowance itself, so its token always goes with it: a live
@@ -1205,7 +1208,13 @@ export function doorApp(deps: DoorDeps): express.Express {
       const lease = await leaseStatus(id);
       const rec = ledger.get(id);
       const offer = rec && offerOfSnapshot(rec.offer);
-      res.json({ lease, stopped: rec?.stopped ?? false, ...(offer ? { offer: publicOffer(offer, registry.get(offer.hostId), leaseFee(id), false, shareFor(offer, leaseFee(id))) } : {}) });
+      res.json({
+        lease,
+        stopped: rec?.stopped ?? false,
+        ...(offer ? { offer: publicOffer(offer, registry.get(offer.hostId), leaseFee(id), false, shareFor(offer, leaseFee(id))) } : {}),
+        // The full lease id is what reads a lease, so whoever reads this may opt in for it.
+        ...(deps.social ? { social: socialView(deps.social, 'lease', id) } : {}),
+      });
     } catch (e) {
       failRead(res, e);
     }

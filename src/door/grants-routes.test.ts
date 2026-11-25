@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -9,13 +9,16 @@ import { DoorLedger } from './ledger.js';
 import { doorApp } from './server.js';
 import { normalizeSshKeys } from '../jobs.js';
 import { GrantStore, readFundPublic } from './grants.js';
+import { OPTIN_CODES_FILE, OptinCodes, optinCodeOf, optinHash, optinKey } from './optin-codes.js';
 
 const KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl me@host';
 const keyN = (i: number) => `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${String(i).padStart(6, '0')}`;
 const PITCH_TEXT = 'a-very-distinctive-pitch-sentence';
 const body = (over: Record<string, unknown> = {}) => ({ name: 'Ada', pitch: PITCH_TEXT, sshKeys: [KEY], image: 'charter-home', ...over });
 
-async function start(over: { fundOpen?: () => boolean; noGrants?: boolean; fundToken?: string; fundAddress?: string; noFundOpen?: boolean } = {}) {
+const OPTIN_KEY = optinKey('0x' + '11'.repeat(32));
+
+async function start(over: { fundOpen?: () => boolean; noGrants?: boolean; fundToken?: string; fundAddress?: string; noFundOpen?: boolean; social?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'grants-'));
   const clock = { t: 1_000_000 };
   const grants = new GrantStore(join(dir, 'grants.jsonl'), () => clock.t);
@@ -32,6 +35,7 @@ async function start(over: { fundOpen?: () => boolean; noGrants?: boolean; fundT
     ...(over.fundOpen ? { fundOpen: over.fundOpen } : {}),
     ...(over.fundToken ? { fundToken: over.fundToken } : {}),
     ...(over.fundAddress ? { fundAddress: over.fundAddress } : {}),
+    ...(over.social ? { social: { handle: 'charterbox', codes: new OptinCodes(join(dir, OPTIN_CODES_FILE), OPTIN_KEY) } } : {}),
   }).listen(0, '127.0.0.1');
   await new Promise((r) => server.once('listening', r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -314,4 +318,31 @@ test('PUT public validates its body', async () => {
   } finally {
     s.close();
   }
+});
+
+test('the owner read of a grant carries its opt-in code; the public views never do', async () => {
+  const s = await start({ social: true });
+  const { grantId, grantToken } = (await (await s.post(body())).json()) as { grantId: string; grantToken: string };
+  const code = optinCodeOf(OPTIN_KEY, 'grant', grantId);
+  const own = (await (await s.get(`/v1/grants/${grantId}`, { 'x-grant-token': grantToken })).json()) as { social: { optinCode: string; post: string } };
+  assert.equal(own.social.optinCode, code);
+  assert.equal(own.social.post, `@charterbox ${code}`);
+  assert.deepEqual(JSON.parse(readFileSync(join(s.dir, OPTIN_CODES_FILE), 'utf8').trim()), { kind: 'grant', id: grantId, hash: optinHash(code) });
+  const pub = await (await s.get(`/v1/grants/${grantId}`)).text();
+  const list = await (await s.get('/v1/grants')).text();
+  assert.ok(!pub.includes('social') && !pub.includes('charter-optin-'));
+  assert.ok(!list.includes('charter-optin-'));
+  const bad = await s.get(`/v1/grants/${grantId}`, { 'x-grant-token': 'wrong' });
+  assert.equal(bad.status, 403);
+  assert.ok(!(await bad.text()).includes('charter-optin-'));
+  s.close();
+});
+
+test('without the social setting the owner read of a grant has no opt-in code', async () => {
+  const s = await start();
+  const { grantId, grantToken } = (await (await s.post(body())).json()) as { grantId: string; grantToken: string };
+  const own = (await (await s.get(`/v1/grants/${grantId}`, { 'x-grant-token': grantToken })).json()) as Record<string, unknown>;
+  assert.equal(own.social, undefined);
+  assert.equal(existsSync(join(s.dir, OPTIN_CODES_FILE)), false);
+  s.close();
 });

@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { FIRST_TICK_GRACE_MS } from '../lease.js';
 import { HOME_IMAGES } from '../jobs.js';
 import { hostIdOf, normalizeHostUrl } from '../door/hosts.js';
+import { parseXHandle } from '../door/optin-codes.js';
 import type { Micro, Offer } from '../types.js';
 import { HOME_DISK_GIB, HOME_DISK_GIB_MAX, HOME_RETENTION_MS } from './homes.js';
 
@@ -165,6 +166,9 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
     };
   }
 
+  // Optional: the operator's X handle. Serving it in the offer is this host's half of agreeing to be named on X.
+  const xHandle = parseXHandle(env.CHARTER_HOST_X_HANDLE, 'CHARTER_HOST_X_HANDLE');
+
   return {
     hostUrl,
     payTo: payTo as `0x${string}`,
@@ -201,6 +205,7 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
       ...(maxHomes > 0
         ? { home: { diskGiB: home?.diskGib ?? HOME_DISK_GIB, retentionDays: HOME_RETENTION_MS / 86_400_000, slots: maxHomes, ...(home?.root ? { root: true as const } : {}) } }
         : {}),
+      ...(xHandle !== undefined ? { xHandle } : {}),
     },
   };
 }

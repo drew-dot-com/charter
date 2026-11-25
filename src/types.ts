@@ -25,6 +25,8 @@ export interface Offer {
   /** Present when the host offers a durable home (the `charter-home` image). */
   /** `root: true`: a new home is also reached as `root@` with the same keys, and `apt` works in it. */
   home?: { diskGiB: number; retentionDays: number; slots: number; free?: number; root?: true };
+  /** The operator's X handle, no '@' (CHARTER_HOST_X_HANDLE): the host agrees to be named by Charter's X account once that handle posts the host's id. */
+  xHandle?: string;
 }
 
 export interface JobSpec {

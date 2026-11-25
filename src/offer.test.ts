@@ -86,3 +86,10 @@ test('an offer carries its home terms; home.root only as true; home.free within 
     [],
   ]) assert.equal(offerFromJson(json({ home: bad })), null, JSON.stringify(bad));
 });
+
+test('xHandle is optional: a valid handle is kept, a malformed one is not an offer', () => {
+  assert.equal(offerFromJson(offerToJson(offer()))!.xHandle, undefined);
+  assert.equal(offerFromJson(offerToJson(offer({ xHandle: 'host_op1' })))!.xHandle, 'host_op1');
+  for (const bad of ['@host_op1', 'has space', '', 'a'.repeat(16)]) assert.equal(offerFromJson(offerToJson(offer({ xHandle: bad }))), null, bad);
+  assert.equal(offerFromJson(JSON.stringify({ ...JSON.parse(offerToJson(offer())), xHandle: 7 })), null);
+});
