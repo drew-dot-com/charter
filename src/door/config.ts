@@ -89,3 +89,35 @@ export function parseSweepKeep(v: string | undefined): bigint {
   if (!/^\d+$/.test(t)) throw new Error('CHARTER_SWEEP_KEEP must be a non-negative integer (micro-USDC)');
   return BigInt(t);
 }
+
+export interface ReferralConfig {
+  /** CHARTER_REFERRAL_BPS: the referrer's share of what a renter paid, in basis points (0 turns referrals off, max 5000). */
+  bps: number;
+  /** CHARTER_REFERRAL_MIN_PAYOUT: the least a payout may be, in micro-USDC. */
+  minPayout: bigint;
+  /** CHARTER_REFERRAL_DAILY_CAP: the most all payouts together may total in a UTC day, in micro-USDC. */
+  dailyCap: bigint;
+  /** CHARTER_REFERRAL_KEEP: what the door's wallet must hold after a payout, in micro-USDC. */
+  keep: bigint;
+  /** CHARTER_REFERRAL_HOSTS: host ids (64 hex, lower case) whose renters' referrals pay the full share. */
+  hosts: Set<string>;
+}
+
+export function referralConfig(env: Record<string, string | undefined>): ReferralConfig {
+  const bps = wholeEnv(env, 'CHARTER_REFERRAL_BPS', 0n, 0n);
+  if (bps > 5000n) throw new Error('CHARTER_REFERRAL_BPS must be at most 5000');
+  const hosts = new Set<string>();
+  for (const raw of (env.CHARTER_REFERRAL_HOSTS ?? '').split(',')) {
+    const h = raw.trim().toLowerCase();
+    if (h === '') continue;
+    if (!/^[0-9a-f]{64}$/.test(h)) throw new Error('CHARTER_REFERRAL_HOSTS must be a comma list of 64-hex host ids');
+    hosts.add(h);
+  }
+  return {
+    bps: Number(bps),
+    minPayout: wholeEnv(env, 'CHARTER_REFERRAL_MIN_PAYOUT', 100_000n, 0n),
+    dailyCap: wholeEnv(env, 'CHARTER_REFERRAL_DAILY_CAP', 5_000_000n, 0n),
+    keep: wholeEnv(env, 'CHARTER_REFERRAL_KEEP', 5_000_000n, 0n),
+    hosts,
+  };
+}

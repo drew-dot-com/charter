@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { doorFunding, parseSweepKeep, parseCdpKey, parsePayerKey, parseTrustProxy } from './config.js';
+import { doorFunding, referralConfig, parseSweepKeep, parseCdpKey, parsePayerKey, parseTrustProxy } from './config.js';
 import { claimSigner, parseClaimKey } from '../x402/seller.js';
 
 test('F-I5: CHARTER_DOOR_TRUST_PROXY accepts 1, true, or a hop count, and nothing else', () => {
@@ -93,4 +93,27 @@ test('CHARTER_SWEEP_KEEP is a non-negative integer, default 15 USDC', () => {
   assert.equal(parseSweepKeep(' 0 '), 0n);
   assert.equal(parseSweepKeep('20000000'), 20_000_000n);
   for (const bad of ['-1', '15.5', '1e7', 'abc']) assert.throws(() => parseSweepKeep(bad), /non-negative integer/);
+});
+
+test('referralConfig: defaults', () => {
+  const c = referralConfig({});
+  assert.equal(c.bps, 0);
+  assert.equal(c.minPayout, 100_000n);
+  assert.equal(c.dailyCap, 5_000_000n);
+  assert.equal(c.keep, 5_000_000n);
+  assert.equal(c.hosts.size, 0);
+});
+
+test('referralConfig: bps tops out at 5000 and must be a whole number', () => {
+  assert.equal(referralConfig({ CHARTER_REFERRAL_BPS: '5000' }).bps, 5000);
+  assert.throws(() => referralConfig({ CHARTER_REFERRAL_BPS: '5001' }), /CHARTER_REFERRAL_BPS/);
+  assert.throws(() => referralConfig({ CHARTER_REFERRAL_BPS: 'abc' }), /CHARTER_REFERRAL_BPS/);
+});
+
+test('referralConfig: hosts is a trimmed, lower-cased set of 64-hex ids', () => {
+  const a = 'AB'.repeat(32);
+  const b = 'cd'.repeat(32);
+  const c = referralConfig({ CHARTER_REFERRAL_HOSTS: ` ${a} , ${b},` });
+  assert.deepEqual([...c.hosts], [a.toLowerCase(), b]);
+  assert.throws(() => referralConfig({ CHARTER_REFERRAL_HOSTS: `${b},abc` }), /CHARTER_REFERRAL_HOSTS/);
 });
