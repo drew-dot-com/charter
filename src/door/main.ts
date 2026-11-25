@@ -30,7 +30,7 @@ import { baseUsdcWallet, startSweep } from './sweep.js';
 import { unblockCommand } from './unblock.js';
 import { hostsCommand } from './hosts-command.js';
 import { REFERRALS_FILE, ReferralStore } from './referrals.js';
-import { applyReferralOps, baseReferralSend, guardedPayouts, holdOpenIntents, PAYOUTS_FILE, PayoutLog, payoutOnce, REFERRAL_OPS_FILE } from './referral-payouts.js';
+import { applyReferralOps, baseReferralSend, guardedPayouts, holdOpenIntents, PAYOUTS_FILE, PayoutLog, payoutOnce, REFERRAL_OPS_FILE, waitWhile } from './referral-payouts.js';
 import { referralsCommand } from './referrals-command.js';
 
 const REQUEST_LOG_FILE = 'requests.jsonl';
@@ -304,17 +304,23 @@ async function main(): Promise<void> {
   const opsTimer = setInterval(() => void payouts.tick(), 60_000);
   opsTimer.unref();
   await new Promise<void>((resolve) => {
-    const stop = () => {
+    const stop = async () => {
       stopSweep();
       clearInterval(opsTimer);
+      // A deploy restart must not kill a payout send mid-flight: wait for the run (its receipt wait is 120 s).
+      if (payouts.busy()) {
+        console.log('charter-door: referral payout run in flight; waiting up to 130 s before stopping');
+        const settled = await waitWhile(payouts.busy, 130_000, (ms) => new Promise((r) => setTimeout(r, ms)));
+        if (!settled) console.error('charter-door referral payout run still in flight after 130 s; stopping anyway (an open intent is held at the next start)');
+      }
       stopProbes();
       stopReaper();
       void claims.stop();
       server.close();
       resolve();
     };
-    process.once('SIGINT', stop);
-    process.once('SIGTERM', stop);
+    process.once('SIGINT', () => void stop());
+    process.once('SIGTERM', () => void stop());
   });
 }
 

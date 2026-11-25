@@ -891,11 +891,13 @@ export function doorApp(deps: DoorDeps): express.Express {
     if (paid) {
       if (!failure && res.statusCode >= 200 && res.statusCode < 300) {
         const payer = res.locals.payer as string | undefined;
-        // Referral code only reads what was booked: whatever it throws, the hour is booked as before.
+        // Referral code only reads what was booked: whatever it throws, the hour is booked as before. The scan
+        // for the home's first paid hour matters only when this hour could bind it: a named referral, an unbound home.
         let first = false;
         try {
-          const homeId = deps.referrals ? ledger.get(paid.leaseId)?.homeId : undefined;
-          first = homeId !== undefined && !ledger.homeHasPaidHour(homeId);
+          const rec = deps.referrals ? ledger.get(paid.leaseId) : undefined;
+          const homeId = rec?.homeId;
+          first = homeId !== undefined && rec?.referral !== undefined && deps.referrals!.store.homeReferrer(homeId) === undefined && !ledger.homeHasPaidHour(homeId);
         } catch (e) {
           referralFailed(e);
         }

@@ -316,6 +316,23 @@ test('a home with a paid hour and no binding cannot be bound by a request; an op
   });
 });
 
+test('a paid hour scans the ledger for the home\'s first paid hour only when the lease names a referral and the home is unbound', async () => {
+  await withDoor({}, async (d) => {
+    const plain = (await (await d.rentHome()).json()) as { leaseId: string };
+    let scans = 0;
+    const scan = d.ledger.homeHasPaidHour.bind(d.ledger);
+    d.ledger.homeHasPaidHour = (h: string) => (scans++, scan(h));
+    assert.equal((await d.tick(plain.leaseId, 1)).status, 200);
+    assert.equal(scans, 0, 'no referral on the lease: no scan');
+    d.store.setHome(HOME, A);
+    const named = (await (await d.rentHome({ referral: B })).json()) as { leaseId: string };
+    scans = 0;
+    assert.equal((await d.tick(named.leaseId, 1)).status, 200);
+    assert.equal(scans, 0, 'a bound home: no scan');
+    assert.equal(d.store.get(A)!.earned, 1400n);
+  });
+});
+
 test('two leases of a new home opened before either is paid: one binding, both hours accrue to it', async () => {
   await withDoor({}, async (d) => {
     const a = (await (await d.post('/v1/leases', { offerId: OFFER_ID, home: { sshKeys: [KEY] }, referral: A })).json()) as { leaseId: string; referral?: string };

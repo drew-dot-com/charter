@@ -238,7 +238,9 @@ function applyOp(d: Pick<PayoutDeps, 'store' | 'log' | 'now'>, text: string): vo
 export function guardedPayouts(runOnce: () => Promise<void>, applyOps: () => void): { run: () => Promise<void>; tick: () => boolean; busy: () => boolean } {
   let inFlight = false;
   return {
+    /** Returns at once, starting nothing, when a run is already in flight. */
     run: async () => {
+      if (inFlight) return;
       inFlight = true;
       try {
         await runOnce();
@@ -256,7 +258,10 @@ export function guardedPayouts(runOnce: () => Promise<void>, applyOps: () => voi
   };
 }
 
-/** One payout run. Never throws. */
+/**
+ * One payout run. Never throws. The balance is re-read before each send and the smaller of it and the run's own
+ * running balance is used; the run ends at an unreadable balance or at the first unknown outcome.
+ */
 export async function payoutOnce(d: PayoutDeps): Promise<void> {
   try {
     applyReferralOps(d);
@@ -280,6 +285,15 @@ export async function payoutOnce(d: PayoutDeps): Promise<void> {
       const owed = r.earned - r.paid;
       const amount = owed < left ? owed : left;
       if (amount < d.cfg.minPayout || amount <= 0n) continue;
+      // Re-read before each send: host channel deposits leave the same wallet while a run is in flight.
+      let fresh: bigint;
+      try {
+        fresh = await d.balance();
+      } catch {
+        await quietly(d.alert, 'referral payout skipped: balance unreadable');
+        return;
+      }
+      if (fresh < balance) balance = fresh;
       if (balance - amount < d.cfg.keep) {
         await quietly(d.alert, `referral payout skipped: wallet short for ${to}`);
         continue;
@@ -311,10 +325,11 @@ export async function payoutOnce(d: PayoutDeps): Promise<void> {
         d.log.failed(id, res.reason, d.now());
         await quietly(d.alert, `referral payout not sent: ${amount} micro-USDC to ${to}: ${res.reason}; retried next run`);
       } else {
-        // The money may have moved: count it against the keep floor for the rest of this run.
-        balance -= amount;
+        // The money may have moved. End the run: a stuck or unbroadcast transaction makes every later send from
+        // the key fail the same way, each needing a manual resolve. Later addresses wait for the next run.
         d.store.hold(to, unresolved(id));
         await quietly(d.alert, `referral payout unresolved: ${id}, ${amount} micro-USDC to ${to}: ${res.reason}; address held`);
+        return;
       }
     }
   } catch (e) {
@@ -328,6 +343,24 @@ async function quietly(alert: (s: string) => Promise<void>, m: string): Promise<
   } catch {
     // an alert that cannot be raised must not stop the run
   }
+}
+
+/**
+ * What a receipt says of the send of `hash`. viem resolves the receipt wait with the REPLACEMENT's receipt when
+ * the transaction was replaced at the same nonce: that is unknown, never a payout of this intent.
+ */
+export function resultOfReceipt(hash: `0x${string}`, receipt: { transactionHash: `0x${string}`; status: 'success' | 'reverted' }): SendResult {
+  if (receipt.transactionHash !== hash) return { status: 'unknown', reason: `${hash} replaced by ${receipt.transactionHash}` };
+  return receipt.status === 'success' ? { status: 'sent', tx: hash } : { status: 'reverted' };
+}
+
+/** Waits, in `step` ms sleeps, while `busy()` is true, for at most `maxMs`. True when it cleared, false on timeout. */
+export async function waitWhile(busy: () => boolean, maxMs: number, sleep: (ms: number) => Promise<void>, step = 250): Promise<boolean> {
+  for (let waited = 0; busy(); waited += step) {
+    if (waited >= maxMs) return false;
+    await sleep(step);
+  }
+  return true;
 }
 
 const ERC20 = parseAbi(['function transfer(address to, uint256 amount) returns (bool)']);
@@ -353,8 +386,7 @@ export function baseReferralSend(rpcUrl: string, key: `0x${string}`): ReferralSe
       return { status: 'unknown', reason: errorReason(e) };
     }
     try {
-      const receipt = await pub.waitForTransactionReceipt({ hash, timeout: 120_000 });
-      return receipt.status === 'success' ? { status: 'sent', tx: hash } : { status: 'reverted' };
+      return resultOfReceipt(hash, await pub.waitForTransactionReceipt({ hash, timeout: 120_000 }));
     } catch (e) {
       return { status: 'unknown', reason: `${hash}: ${errorReason(e)}` };
     }

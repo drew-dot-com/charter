@@ -12,6 +12,8 @@ import {
   guardedPayouts,
   holdOpenIntents,
   payoutOnce,
+  resultOfReceipt,
+  waitWhile,
   type PayoutDeps,
   type SendResult,
 } from './referral-payouts.js';
@@ -143,16 +145,70 @@ test('daily cap: an address owed more than the cap is paid the cap and keeps its
   assert.equal(r.d.store.owed(A), 2_000_000n);
 });
 
-test('unknown lowers the run balance too: the next address is held to the keep floor', async () => {
-  const r = rig({ keep: 5_000_000n });
-  r.setBalance(5_300_000n);
+test('a run ends at the first unknown outcome: the next address gets no intent and no hold, and waits for the next run', async () => {
+  const r = rig();
   r.d.store.accrue(A, 200_000n, 1);
   r.d.store.accrue(B, 200_000n, 2);
   r.answer.set(A, { status: 'unknown', reason: 'timeout' });
   await payoutOnce(r.d);
   assert.deepEqual(r.sends, [{ to: A, amount: 200_000n }]);
-  assert.equal(r.alerts.length, 2);
-  assert.equal(r.alerts[1], `referral payout skipped: wallet short for ${B}`);
+  assert.deepEqual(
+    r.d.log.open().map((p) => p.to),
+    [A],
+  );
+  assert.equal(r.d.store.get(B)?.held, undefined);
+  assert.equal(r.alerts.length, 1);
+  await payoutOnce(r.d);
+  assert.deepEqual(r.sends.slice(1), [{ to: B, amount: 200_000n }]);
+});
+
+test('the balance is re-read before each send: a fresh balance below keep plus the amount skips the address', async () => {
+  const r = rig({ keep: 5_000_000n });
+  r.setBalance(100_000_000n);
+  r.d.store.accrue(A, 200_000n, 1);
+  r.d.store.accrue(B, 200_000n, 2);
+  r.d.store.accrue(C, 200_000n, 3);
+  const send = r.d.send;
+  r.d.send = async (to, amount) => {
+    const res = await send(to, amount);
+    if (to === A) r.setBalance(5_100_000n); // a host channel deposit left the wallet during the run
+    return res;
+  };
+  await payoutOnce(r.d);
+  assert.deepEqual(r.sends, [{ to: A, amount: 200_000n }]);
+  assert.deepEqual(r.alerts, [`referral payout skipped: wallet short for ${B}`, `referral payout skipped: wallet short for ${C}`]);
+  assert.equal(r.d.log.intendedOn('2026-11-25'), 200_000n);
+});
+
+test('a balance read that throws mid-run ends the run with no intent for that address', async () => {
+  const r = rig();
+  r.d.store.accrue(A, 200_000n, 1);
+  r.d.store.accrue(B, 200_000n, 2);
+  const send = r.d.send;
+  r.d.send = async (to, amount) => {
+    const res = await send(to, amount);
+    r.setBalance('throw');
+    return res;
+  };
+  await payoutOnce(r.d);
+  assert.deepEqual(r.sends, [{ to: A, amount: 200_000n }]);
+  assert.deepEqual(r.alerts, ['referral payout skipped: balance unreadable']);
+  assert.deepEqual(
+    lines(join(r.dir, PAYOUTS_FILE)).map((l) => [l.state, l.to ?? null]),
+    [
+      ['intent', A],
+      ['sent', null],
+    ],
+  );
+  assert.equal(r.d.store.owed(B), 200_000n);
+});
+
+test('resultOfReceipt: the same hash and success is sent, reverted is reverted, a replacement is unknown', () => {
+  const H = ('0x' + '34'.repeat(32)) as `0x${string}`;
+  assert.deepEqual(resultOfReceipt(TX, { transactionHash: TX, status: 'success' }), { status: 'sent', tx: TX });
+  assert.deepEqual(resultOfReceipt(TX, { transactionHash: TX, status: 'reverted' }), { status: 'reverted' });
+  assert.deepEqual(resultOfReceipt(TX, { transactionHash: H, status: 'success' }), { status: 'unknown', reason: `${TX} replaced by ${H}` });
+  assert.deepEqual(resultOfReceipt(TX, { transactionHash: H, status: 'reverted' }), { status: 'unknown', reason: `${TX} replaced by ${H}` });
 });
 
 test('a payout that would take the wallet below keep: no intent, alert, the next address still considered', async () => {
@@ -167,7 +223,7 @@ test('a payout that would take the wallet below keep: no intent, alert, the next
   assert.equal(r.d.log.intendedOn('2026-11-25'), 200_000n);
 });
 
-test('the balance is read once and lowered by each payout', async () => {
+test('the running balance is lowered by each payout', async () => {
   const r = rig({ keep: 5_000_000n });
   r.setBalance(5_300_000n);
   r.d.store.accrue(A, 200_000n, 1);
@@ -242,7 +298,11 @@ test('unknown: the intent stays open, the address is held, and a second run neve
   r.d.store.accrue(A, 200_000n, 3);
   await payoutOnce(r.d);
   assert.equal(r.sends.filter((s) => s.to === A).length, 1);
-  assert.equal(r.sends.filter((s) => s.to === B).length, 2);
+  assert.deepEqual(
+    r.sends.filter((s) => s.to === B),
+    [{ to: B, amount: 400_000n }],
+    'B waited for the second run',
+  );
   assert.equal(r.alerts.length, 1, 'the hold is not re-alerted');
 });
 
@@ -487,4 +547,37 @@ test('guardedPayouts clears busy when the run throws', async () => {
   await assert.rejects(g.run(), /boom/);
   assert.equal(g.busy(), false);
   assert.equal(g.tick(), true);
+});
+
+test('guardedPayouts: a run asked for while one is in flight returns without starting a second', async () => {
+  let runs = 0;
+  let release!: () => void;
+  const g = guardedPayouts(
+    () => (runs++, new Promise<void>((res) => (release = res))),
+    () => undefined,
+  );
+  const first = g.run();
+  await g.run();
+  assert.equal(runs, 1);
+  assert.equal(g.busy(), true, 'the second call did not clear busy');
+  release();
+  await first;
+  assert.equal(g.busy(), false);
+  const third = g.run();
+  assert.equal(runs, 2);
+  release();
+  await third;
+});
+
+test('waitWhile: returns true once busy clears, false after maxMs, sleeping in steps', async () => {
+  const slept: number[] = [];
+  const sleep = async (ms: number) => void slept.push(ms);
+  let n = 3;
+  assert.equal(await waitWhile(() => n-- > 0, 130_000, sleep), true);
+  assert.deepEqual(slept, [250, 250, 250]);
+  slept.length = 0;
+  assert.equal(await waitWhile(() => false, 130_000, sleep), true);
+  assert.deepEqual(slept, []);
+  assert.equal(await waitWhile(() => true, 1_000, sleep), false);
+  assert.deepEqual(slept, [250, 250, 250, 250]);
 });
