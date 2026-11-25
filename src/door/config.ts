@@ -121,3 +121,13 @@ export function referralConfig(env: Record<string, string | undefined>): Referra
     hosts,
   };
 }
+
+/**
+ * Throws when the rate is above 0, the grant fund is on (a fund token is set) and CHARTER_FUND_ADDRESS is not set:
+ * without that address the door cannot refuse the fund's own wallet as a referral.
+ */
+export function checkReferralFund(cfg: ReferralConfig, fundOn: boolean, fundAddress: string | undefined): void {
+  if (cfg.bps > 0 && fundOn && !fundAddress?.trim()) {
+    throw new Error('CHARTER_FUND_ADDRESS is required when CHARTER_REFERRAL_BPS is above 0 and the grant fund is on (CHARTER_FUND_TOKEN_FILE)');
+  }
+}

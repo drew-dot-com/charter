@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { doorFunding, referralConfig, parseSweepKeep, parseCdpKey, parsePayerKey, parseTrustProxy } from './config.js';
+import { checkReferralFund, doorFunding, referralConfig, parseSweepKeep, parseCdpKey, parsePayerKey, parseTrustProxy } from './config.js';
 import { claimSigner, parseClaimKey } from '../x402/seller.js';
 
 test('F-I5: CHARTER_DOOR_TRUST_PROXY accepts 1, true, or a hop count, and nothing else', () => {
@@ -116,4 +116,14 @@ test('referralConfig: hosts is a trimmed, lower-cased set of 64-hex ids', () => 
   const c = referralConfig({ CHARTER_REFERRAL_HOSTS: ` ${a} , ${b},` });
   assert.deepEqual([...c.hosts], [a.toLowerCase(), b]);
   assert.throws(() => referralConfig({ CHARTER_REFERRAL_HOSTS: `${b},abc` }), /CHARTER_REFERRAL_HOSTS/);
+});
+
+test('checkReferralFund refuses only a paying rate with the fund on and no CHARTER_FUND_ADDRESS', () => {
+  const on = referralConfig({ CHARTER_REFERRAL_BPS: '1000' });
+  const off = referralConfig({});
+  assert.throws(() => checkReferralFund(on, true, undefined), /CHARTER_FUND_ADDRESS/);
+  assert.throws(() => checkReferralFund(on, true, ''), /CHARTER_FUND_ADDRESS/);
+  assert.doesNotThrow(() => checkReferralFund(on, true, '0x' + 'ab'.repeat(20)));
+  assert.doesNotThrow(() => checkReferralFund(on, false, undefined));
+  assert.doesNotThrow(() => checkReferralFund(off, true, undefined));
 });

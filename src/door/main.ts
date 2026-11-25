@@ -12,7 +12,7 @@ import type { HostApi } from '../tenant/host-api.js';
 import type { Offer } from '../types.js';
 import { CAPITAL_FILE, CapitalBook, capitalAtRisk } from './capital.js';
 import { baseChannelChain } from './channel-chain.js';
-import { doorFunding, parseSweepKeep, parseCdpKey, parsePayerKey, parseTrustProxy } from './config.js';
+import { checkReferralFund, doorFunding, referralConfig, parseSweepKeep, parseCdpKey, parsePayerKey, parseTrustProxy } from './config.js';
 import { fetchHostOffer, listedOffers } from './host-offers.js';
 import { DEPOSIT_TICK_TIMEOUT_MS, doorPayer, httpHostApi, type DoorPayer, type ReadContract } from './host-http.js';
 import { HostQueue } from './host-queue.js';
@@ -29,6 +29,9 @@ import { BASE_USDC, buildSchemes, facilitatorOffersBatch, parseClaimKey, type Sc
 import { baseUsdcWallet, startSweep } from './sweep.js';
 import { unblockCommand } from './unblock.js';
 import { hostsCommand } from './hosts-command.js';
+import { REFERRALS_FILE, ReferralStore } from './referrals.js';
+import { applyReferralOps, baseReferralSend, holdOpenIntents, PAYOUTS_FILE, PayoutLog, payoutOnce, REFERRAL_OPS_FILE } from './referral-payouts.js';
+import { referralsCommand } from './referrals-command.js';
 
 const REQUEST_LOG_FILE = 'requests.jsonl';
 /** The body a host may answer the door with: an output part (48 KiB as base64) and its JSON wrapper fit. */
@@ -127,6 +130,20 @@ async function main(): Promise<void> {
   const fundAddressRaw = env.CHARTER_FUND_ADDRESS?.trim();
   if (fundAddressRaw && !/^0x[0-9a-fA-F]{40}$/.test(fundAddressRaw)) throw new Error('CHARTER_FUND_ADDRESS must be a 0x address (40 hex characters)');
 
+  // Referrals: the store and the payout log always exist, so a rate set back to 0 still answers and holds what is owed.
+  const referralCfg = referralConfig(env);
+  checkReferralFund(referralCfg, fundToken !== undefined, fundAddressRaw);
+  const referralStore = new ReferralStore(join(dataDir, REFERRALS_FILE));
+  const payoutLog = new PayoutLog(join(dataDir, PAYOUTS_FILE));
+  const referralOps = { store: referralStore, log: payoutLog, opsFile: join(dataDir, REFERRAL_OPS_FILE), now: Date.now };
+  const referralAlert = async (m: string) => console.error(`charter-door ${m}`);
+  // An operator's resolve written while the door was down closes its intent before open intents are held.
+  applyReferralOps(referralOps);
+  await holdOpenIntents({ store: referralStore, log: payoutLog, alert: referralAlert });
+  console.log(referralCfg.bps > 0
+    ? `charter-door: referrals pay ${referralCfg.bps} bps, ${referralCfg.hosts.size} listed hosts`
+    : `charter-door: referrals off (CHARTER_REFERRAL_BPS 0), ${referralCfg.hosts.size} listed hosts`);
+
   const allowTokenFile = env.CHARTER_ALLOW_TOKEN_FILE?.trim();
   const allowToken = allowTokenFile ? readFileSync(allowTokenFile, 'utf8').trim() : undefined;
   if (allowTokenFile && !allowToken) throw new Error(`CHARTER_ALLOW_TOKEN_FILE ${allowTokenFile} is empty`);
@@ -205,6 +222,7 @@ async function main(): Promise<void> {
     ...(fundToken ? { fundToken } : {}),
     ...(fundAddressRaw ? { fundAddress: fundAddressRaw.toLowerCase() } : {}),
     allowances,
+    referrals: { store: referralStore, bps: referralCfg.bps, hosts: referralCfg.hosts, log: payoutLog },
     ...(allowToken ? { allowToken } : {}),
     ...(allowAddressRaw ? { allowAddress: allowAddressRaw.toLowerCase() } : {}),
     ...(env.CHARTER_ALLOW_PAGE_URL?.trim() ? { allowPageUrl: env.CHARTER_ALLOW_PAGE_URL.trim() } : {}),
@@ -247,16 +265,44 @@ async function main(): Promise<void> {
   const sweepTo = need(env, 'CHARTER_SWEEP_TO');
   if (!isAddress(sweepTo)) throw new Error('CHARTER_SWEEP_TO must be a valid 0x address (a mixed-case one must match its checksum)');
   const sweepKeep = parseSweepKeep(env.CHARTER_SWEEP_KEEP);
+  const wallet = baseUsdcWallet(baseRpcUrl(env), key);
+  // Referral payouts run just before each sweep, and the sweep leaves what referrers are owed in the wallet.
   const stopSweep = startSweep({
-    ...baseUsdcWallet(baseRpcUrl(env), key),
+    ...wallet,
     keep: sweepKeep,
     to: sweepTo as `0x${string}`,
     log: (m) => console.log(`charter-door: ${m}`),
     alert: async (m) => console.error(`charter-door ${m}`),
+    reserve: () => referralStore.totalOwed(),
+    ...(referralCfg.bps > 0
+      ? {
+          before: () =>
+            payoutOnce({
+              ...referralOps,
+              cfg: referralCfg,
+              // The wallet's free USDC: host channel deposits are already out of it.
+              balance: wallet.balance,
+              send: baseReferralSend(baseRpcUrl(env), key),
+              info: (m) => console.log(`charter-door: ${m}`),
+              alert: referralAlert,
+            }),
+        }
+      : {}),
   });
+  // An operator's bind, release or resolve takes effect within a minute, not at the next daily run.
+  // applyReferralOps is synchronous, so it never interleaves with the one payoutOnce runs.
+  const opsTimer = setInterval(() => {
+    try {
+      applyReferralOps(referralOps);
+    } catch (e) {
+      console.error(`charter-door referral ops not applied: ${errorReason(e)}`);
+    }
+  }, 60_000);
+  opsTimer.unref();
   await new Promise<void>((resolve) => {
     const stop = () => {
       stopSweep();
+      clearInterval(opsTimer);
       stopProbes();
       stopReaper();
       void claims.stop();
@@ -274,6 +320,10 @@ if (process.argv[2] === 'unblock') {
 
 if (process.argv[2] === 'hosts') {
   process.exit(hostsCommand(process.argv.slice(3), process.env, Date.now, (m) => console.log(m)));
+}
+
+if (process.argv[2] === 'referrals') {
+  process.exit(referralsCommand(process.argv.slice(3), process.env, Date.now, (m) => console.log(m)));
 }
 
 /** `charter-door x402 …` reads only CHARTER_DOOR_PAYER_KEY_FILE, CHARTER_CLAIM_KEY_FILE, CHARTER_DATA_DIR and X402_FACILITATOR_URL. */
