@@ -20,6 +20,8 @@ services:
       dockerfile: deploy/door/Dockerfile
     image: charter-door:local
     container_name: charter-door
+    # The door waits up to 130 s for a referral payout send in flight before it stops; Docker's default is 10 s.
+    stop_grace_period: 140s
     env_file: ${CHARTER_DOOR_HOME:-/root/charter-door}/door.env
     environment:
       CHARTER_DOOR_HOST: 0.0.0.0
