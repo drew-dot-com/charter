@@ -65,3 +65,37 @@ test('an alert never carries a URL from the error', async () => {
   await sweepOnce(t2.d);
   assert.ok(!t2.alerts[0]!.includes('SECRETKEY'));
 });
+
+test('reserve is added to keep', async () => {
+  const t = deps(20_000_000n);
+  t.d.keep = 15_000_000n;
+  assert.equal(await sweepOnce({ ...t.d, reserve: () => 3_000_000n }), HASH);
+  assert.deepEqual(t.sent, [[TO, 2_000_000n]]);
+  const t2 = deps(20_000_000n);
+  assert.equal(await sweepOnce({ ...t2.d, reserve: () => 6_000_000n }), null);
+  assert.deepEqual(t2.sent, []);
+  assert.deepEqual(t2.alerts, []);
+});
+
+test('before runs before the balance is read', async () => {
+  const order: string[] = [];
+  const t = deps(40_000_000n);
+  const balance = t.d.balance;
+  const d = {
+    ...t.d,
+    balance: async () => { order.push('balance'); return balance(); },
+    before: async () => { order.push('before'); },
+  };
+  assert.equal(await sweepOnce(d), HASH);
+  assert.deepEqual(order, ['before', 'balance']);
+});
+
+test('a throwing before alerts and the sweep still sends', async () => {
+  const t = deps(40_000_000n);
+  const d = { ...t.d, before: async () => { throw new Error('payout rpc down'); } };
+  assert.equal(await sweepOnce(d), HASH);
+  assert.deepEqual(t.sent, [[TO, 25_000_000n]]);
+  assert.equal(t.alerts.length, 1);
+  assert.match(t.alerts[0]!, /^referral /);
+  assert.match(t.alerts[0]!, /payout rpc down/);
+});

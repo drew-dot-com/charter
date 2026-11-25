@@ -14,12 +14,23 @@ export interface SweepDeps {
   to: `0x${string}`;
   log: (s: string) => void;
   alert: (s: string) => Promise<void>;
+  /** Run before each sweep. A throw is alerted and the sweep still runs. */
+  before?: () => Promise<void>;
+  /** Added to `keep` each time: money owed that must stay in the wallet. */
+  reserve?: () => bigint;
 }
 
 /** Sends `balance - keep` when that is positive. Returns the transaction hash, or null when nothing was sent or the sweep failed (after an alert). */
 export async function sweepOnce(d: SweepDeps): Promise<`0x${string}` | null> {
+  if (d.before) {
+    try {
+      await d.before();
+    } catch (e) {
+      await d.alert(`referral payout run failed: ${errorReason(e)}`).catch(() => undefined);
+    }
+  }
   try {
-    const amount = (await d.balance()) - d.keep;
+    const amount = (await d.balance()) - d.keep - (d.reserve?.() ?? 0n);
     if (amount <= 0n) return null;
     const hash = await d.transfer(d.to, amount);
     d.log(`sweep: ${amount} micro-USDC to ${d.to}, tx ${hash}`);
