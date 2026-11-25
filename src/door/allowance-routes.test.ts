@@ -85,6 +85,33 @@ test('POST /v1/allowances: 201 for a home with a paid tick, with token and appro
   s.close();
 });
 
+test('POST /v1/allowances prices from the home host\'s lease, not a newer lease on another host', async () => {
+  const s = await start();
+  try {
+    // A newer, dearer open on another host: the biller never pays there, so the person never approves its price.
+    s.ledger.open({ leaseId: 'b'.repeat(32), offerId: 'otherhost:offer9', createdAt: 999, offer: snapshotOffer(OFFER), fee: '900', homeId: HOME });
+    const j = await made(s);
+    assert.equal(s.allowances.get(j.allowanceId)!.tickMicro, '5100', 'the home host\'s tick price plus fee');
+  } finally {
+    s.close();
+  }
+});
+
+test('no_home when the home\'s only leases are on another host', async () => {
+  const s = await start({ paid: false });
+  try {
+    const elsewhere = 'b'.repeat(32);
+    s.ledger.open({ leaseId: elsewhere, offerId: 'otherhost:offer9', createdAt: 5, offer: snapshotOffer(OFFER), homeId: HOME });
+    s.ledger.renterTick(elsewhere, '0xpayer');
+    s.registry.setHomeHost(HOME, OFFER.hostId);
+    const r = await s.create();
+    assert.equal(r.status, 404);
+    assert.deepEqual(await r.json(), { error: 'no_home' });
+  } finally {
+    s.close();
+  }
+});
+
 test('no_home for keys that never paid a tick', async () => {
   const s = await start({ paid: false });
   const r = await s.create();

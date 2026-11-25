@@ -537,22 +537,26 @@ export function doorApp(deps: DoorDeps): express.Express {
     const allowToken = deps.allowToken;
     const pageUrl = deps.allowPageUrl ?? 'https://charterhome.dev/allow';
     const ENDS: readonly string[] = ['cancelled', 'stopped', 'home_gone', 'operator'];
-    /** The home's newest lease in the ledger, by createdAt. */
-    const newestLease = (homeId: string) => ledger.all().filter((l) => l.homeId === homeId).sort((a, b) => b.createdAt - a.createdAt)[0];
+    /** The home's newest lease on the host that holds its disk. A newer lease may be an unpaid open
+     *  elsewhere, and the biller never pays or opens on another host, so no price comes from one. */
+    const ownLease = (homeId: string) => {
+      const holder = registry.homeHost(homeId);
+      return holder === undefined ? undefined : ledger.all().filter((l) => l.homeId === homeId && l.offerId.startsWith(`${holder}:`)).sort((a, b) => b.createdAt - a.createdAt)[0];
+    };
 
     app.post('/v1/allowances', (req, res) => {
       if (!allowPitch(req.ip ?? 'unknown')) return void res.status(429).json({ error: 'rate_limited' });
       const v = validateAllowanceRequest(req.body);
       if (!v.ok) return void res.status(400).json({ error: v.error });
       const homeId = homeIdOf(v.sshKeys);
-      const newest = newestLease(homeId);
+      const own = ownLease(homeId);
       const paid = ledger.all().some((l) => l.homeId === homeId && l.ticksPaidByRenter > 0);
-      if (!newest || !paid || !registry.homeHost(homeId)) return void res.status(404).json({ error: 'no_home' });
+      if (!own || !paid) return void res.status(404).json({ error: 'no_home' });
       const live = allowances.liveForHome(homeId);
       // Never the live one's id: anyone who knows a home's public keys can ask.
       if (live) return void res.status(409).json({ error: 'already_live' });
       const token = randomBytes(32).toString('hex');
-      const a = allowances.add({ sshKeys: v.sshKeys, image: v.image, tickMicro: priceOf(newest.leaseId)! }, token);
+      const a = allowances.add({ sshKeys: v.sshKeys, image: v.image, tickMicro: priceOf(own.leaseId)! }, token);
       res.status(201).json({ allowanceId: a.allowanceId, ownerToken: token, approveUrl: `${pageUrl}?id=${a.allowanceId}`, state: a.state, next: `/v1/allowances/${a.allowanceId}` });
     });
     app.get('/v1/allowances/:id', (req, res) => {
@@ -624,10 +628,9 @@ export function doorApp(deps: DoorDeps): express.Express {
       });
       app.get('/v1/biller/homes/:homeId', billerAuth, (req, res) => {
         const homeId = String(req.params.homeId);
-        // The lease to pay and the offer to re-open on are the home's own host's: a newer lease may be an
-        // unpaid open elsewhere, and the biller never pays or opens on another host.
+        // The lease to pay and the offer to re-open on are the home's own host's.
         const holder = registry.homeHost(homeId);
-        const own = holder === undefined ? undefined : ledger.all().filter((l) => l.homeId === homeId && l.offerId.startsWith(`${holder}:`)).sort((a, b) => b.createdAt - a.createdAt)[0];
+        const own = ownLease(homeId);
         const grantLive = deps.grants?.all().some((g) => g.homeId === homeId && (g.state === 'active' || g.state === 'approved_waiting')) ?? false;
         res.json({ leaseId: own?.leaseId ?? null, offerId: own?.offerId ?? null, hostKnown: holder !== undefined, grantLive });
       });

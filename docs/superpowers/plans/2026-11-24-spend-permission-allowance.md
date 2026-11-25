@@ -14,7 +14,7 @@
 
 - Base mainnet `eip155:8453`, USDC `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`, SpendPermissionManager `0xf85210B21cC50302F477BA56686d2019dC9b67Ad`.
 - Pin `@base-org/account` at exactly `2.6.0` (the version the spike proved).
-- A permission's `period` must be exactly `2592000` (30 days). Suggested allowance = 744 ticks (31 days x 24) at the home's tick price; the person may lower it to no less than 24 ticks.
+- A permission's `period` must be exactly `2592000` (30 days). Suggested allowance = 744 ticks (31 days x 24) at the home's tick price; the person may lower it to no less than 720 ticks (30 days, ruling R8).
 - A pull is at most 24 ticks minus the allowance's credit, capped by what the permission has left this period.
 - The biller pays only the door, `exact` USDC to the door's payTo, at most 10000 micro-USDC a tick (`MAX_TICK_MICRO`).
 - The biller never opens a fresh home and never names a different host's offer.
@@ -86,7 +86,7 @@
   }
   export const EXPIRE_MS = 7 * 86_400_000;
   export const PERIOD_SECONDS = 2_592_000;
-  export const SUGGESTED_TICKS = 744n; export const MIN_TICKS = 24n;
+  export const SUGGESTED_TICKS = 744n; export const MIN_TICKS = 720n;
   export function validateRequest(body: unknown): { ok: true; sshKeys: string[]; image: Allowance['image'] } | { ok: false; error: string };
   export function validatePermission(body: unknown, o: { spender: string; tickMicro: bigint; now: number }): { ok: true; signed: SignedPermission } | { ok: false; error: string };
   export class AllowanceStore {
@@ -101,7 +101,7 @@
   export function ownerView(a: Allowance, spender: string): Record<string, unknown>; // pageView + homeId + leaseId
   export function billerView(a: Allowance): Record<string, unknown>; // everything but tokenHash
   ```
-  Moves: `waiting -> approved | expired`; `approved -> active | refused | stopping`; `active -> short | spent_for_period | stopping | ended`; `short -> active | spent_for_period | stopping | ended`; `spent_for_period -> active | short | stopping | ended`; `stopping -> ended`; terminal: `refused`, `ended`, `expired`. `pageView` carries `allowanceId, state, image, tickMicro, suggestedMicro (744 x tick), minMicro (24 x tick), periodDays: 30, spender, account?, remainingMicro?, periodEndsAt?, creditMicro?, hoursPaid, lastPullTx?, reason?, endReason?, createdAt`.
+  Moves: `waiting -> approved | expired`; `approved -> active | refused | stopping`; `active -> short | spent_for_period | stopping | ended`; `short -> active | spent_for_period | stopping | ended`; `spent_for_period -> active | short | stopping | ended`; `stopping -> ended`; terminal: `refused`, `ended`, `expired`. `pageView` carries `allowanceId, state, image, tickMicro, suggestedMicro (744 x tick), minMicro (720 x tick), periodDays: 30, spender, account?, remainingMicro?, periodEndsAt?, creditMicro?, hoursPaid, lastPullTx?, reason?, endReason?, createdAt`.
 
 - [ ] **Step 1: Write the failing tests** in `src/door/allowances.test.ts`:
   - `add makes a waiting allowance with a 32-hex id and hashed token`: `a.state === 'waiting'`, `/^[0-9a-f]{32}$/.test(a.allowanceId)`, `a.tokenHash !== token`, `store.tokenOk(a.allowanceId, token) === true`, `store.tokenOk(a.allowanceId, 'x') === false`.
