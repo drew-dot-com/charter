@@ -70,6 +70,8 @@ export interface DoorLease {
   fee?: string;
   /** A home lease: the home's id (homeIdOf its keys). */
   homeId?: string;
+  /** The address named at open, lower case. */
+  referral?: string;
   /** Epoch ms of the newest tick the host accepted. */
   lastTickAt?: number;
   /** How the lease went for its host, once known: told to the host registry once. */
@@ -197,9 +199,25 @@ export class DoorLedger {
     return [...this.leases.values()].map((l) => ({ ...l }));
   }
 
-  open(o: { leaseId: string; offerId: string; createdAt: number; offer: OfferSnapshot; fee?: string; homeId?: string }): void {
-    this.leases.set(o.leaseId, { ...o, ticksPaidByRenter: 0, ticksPaidToHost: 0, losses: 0n, stopped: false, nextIndex: 0, hostReads: 0 });
+  open(o: { leaseId: string; offerId: string; createdAt: number; offer: OfferSnapshot; fee?: string; homeId?: string; referral?: string }): void {
+    const { referral, ...rest } = o;
+    this.leases.set(o.leaseId, {
+      ...rest,
+      ...(referral !== undefined ? { referral: referral.toLowerCase() } : {}),
+      ticksPaidByRenter: 0,
+      ticksPaidToHost: 0,
+      losses: 0n,
+      stopped: false,
+      nextIndex: 0,
+      hostReads: 0,
+    });
     this.save();
+  }
+
+  /** True when any lease of this home has ticksPaidByRenter > 0. */
+  homeHasPaidHour(homeId: string): boolean {
+    for (const l of this.leases.values()) if (l.homeId === homeId && l.ticksPaidByRenter > 0) return true;
+    return false;
   }
 
   /** The host answered a tick 2xx, at `at` (epoch ms). */

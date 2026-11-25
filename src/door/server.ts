@@ -19,6 +19,7 @@ import { logRequests, type RequestSink } from './reqlog.js';
 import { MAX_TIMEOUT_SECONDS, MIN_WINDOW_SECONDS, SETTLE_MARGIN_SECONDS, isPayerFault, microToUsdc, paymentIdOf, settleReasonOf, settleTxOf, type Gate, type PaymentId, type Schemes, type TestHooks, type X402Config } from '../x402/seller.js';
 import { realGate, stubGate } from './x402.js';
 import { openApiDoc } from './openapi.js';
+import { parseReferral, shareOf, type ReferralStore } from './referrals.js';
 
 export interface DoorDeps {
   /** Live offers. The door caches the answer for 60 s. */
@@ -80,6 +81,8 @@ export interface DoorDeps {
   allowAddress?: string;
   /** Where the approval page lives. Default: https://charterhome.dev/allow. */
   allowPageUrl?: string;
+  /** Referral accrual. Left out: the field is still checked, recorded and echoed, and nothing accrues. */
+  referrals?: { store: ReferralStore; bps: number; hosts: Set<string> };
 }
 
 const PITCHES_PER_HOUR = 5;
@@ -233,6 +236,43 @@ export function doorApp(deps: DoorDeps): express.Express {
   /** The id of the home a job is, or undefined for a job that is not a home. */
   const homeOf = (job: JobSpec | null): string | undefined =>
     job && isHomeImage(job.image) ? homeIdOf((job.args.SSH_KEYS ?? '').split('\n')) : undefined;
+
+  const referralFailed = (e: unknown): void => console.error(`charter-door referral accrual failed: ${e instanceof Error ? e.message : String(e)}`);
+  /** Addresses a renter may not name as its referral: the door's own payer and pay-to, and the fund's. */
+  const notReferrals = [deps.payer, deps.x402 === 'free-for-tests' ? undefined : deps.x402.payTo, deps.fundAddress].map((a) => a?.toLowerCase());
+  /** The body's `referral`: undefined when none is named, 'bad_referral' when it cannot be one. */
+  const referralOf = (body: unknown): string | undefined | 'bad_referral' =>
+    parseReferral(typeof body === 'object' && body !== null ? (body as { referral?: unknown }).referral : undefined, notReferrals);
+  /**
+   * Who a lease opened now will earn for. Not a home: the address named. A home: the address it is bound to,
+   * else the one named while the home has no paid hour (its first paid hour binds it), else nobody. Only an
+   * echo: a read that throws is logged and answers nobody, never failing the open.
+   */
+  const earnerAtOpen = (homeId: string | undefined, named: string | undefined): string | undefined => {
+    if (homeId === undefined || !deps.referrals) return named;
+    try {
+      return deps.referrals.store.homeReferrer(homeId) ?? (ledger.homeHasPaidHour(homeId) ? undefined : named);
+    } catch (e) {
+      referralFailed(e);
+      return undefined;
+    }
+  };
+  /**
+   * After the renter's hour of this lease is booked: binds a new home to its lease's referral on the home's
+   * first paid hour (`first`, read before the booking), then accrues the earner's share of what was paid.
+   */
+  const accrueReferral = (leaseId: string, payer: string | undefined, first: boolean): void => {
+    const r = deps.referrals;
+    const rec = ledger.get(leaseId);
+    if (!r || !rec) return;
+    if (first && rec.homeId !== undefined && rec.referral !== undefined) r.store.bindHome(rec.homeId, rec.referral);
+    const earner = rec.homeId !== undefined ? r.store.homeReferrer(rec.homeId) : rec.referral;
+    if (earner === undefined || r.bps === 0) return;
+    if (payer !== undefined && payer.toLowerCase() === deps.fundAddress?.toLowerCase()) return;
+    const fee = BigInt(rec.fee ?? '0');
+    const share = shareOf({ paid: BigInt(rec.offer.tickPrice) + fee, fee, bps: r.bps, hostListed: r.hosts.has(rec.offer.hostId) });
+    if (share > 0n) r.store.accrue(earner, share, now());
+  };
 
   /**
    * A home whose disk is on a listed host opens there, whatever the ranking or a named offer says: the named
@@ -714,6 +754,8 @@ export function doorApp(deps: DoorDeps): express.Express {
     const { offerId } = body;
     const job = jobFromBody(body);
     if (typeof offerId !== 'string' || !job) return void res.status(400).json({ error: 'bad_request' });
+    const named = referralOf(body);
+    if (named === 'bad_referral') return void res.status(400).json({ error: named });
     let list: Offer[];
     try {
       list = await offers();
@@ -735,13 +777,15 @@ export function doorApp(deps: DoorDeps): express.Express {
       const r = await unpaid(api, () => api.open(job));
       if (!LEASE_ID.test(r.leaseId) || ledger.get(r.leaseId)) return void res.status(502).json({ error: 'bad_host_answer' });
       const homeId = homeOf(job);
-      ledger.open({ leaseId: r.leaseId, offerId: offerIdOf(offer), createdAt: now(), offer: snapshotOffer(offer), fee: fee.toString(), ...(homeId ? { homeId } : {}) });
+      ledger.open({ leaseId: r.leaseId, offerId: offerIdOf(offer), createdAt: now(), offer: snapshotOffer(offer), fee: fee.toString(), ...(homeId ? { homeId } : {}), ...(named ? { referral: named } : {}) });
       opened(r, offer);
+      const earner = earnerAtOpen(homeId, named);
       res.json({
         leaseId: r.leaseId,
         state: r.state,
         ...(r.closedReason ? { closedReason: r.closedReason } : {}),
         ...(r.error ? { error: r.error } : {}),
+        ...(earner ? { referral: earner } : {}),
       });
     } catch (e) {
       res.status(502).json({ error: hostMessage(e) });
@@ -832,7 +876,21 @@ export function doorApp(deps: DoorDeps): express.Express {
     const paid = res.locals.hostPaid as { leaseId: string; price: Micro } | undefined;
     if (paid) {
       if (!failure && res.statusCode >= 200 && res.statusCode < 300) {
-        ledger.renterTick(paid.leaseId, res.locals.payer as string | undefined);
+        const payer = res.locals.payer as string | undefined;
+        // Referral code only reads what was booked: whatever it throws, the hour is booked as before.
+        let first = false;
+        try {
+          const homeId = deps.referrals ? ledger.get(paid.leaseId)?.homeId : undefined;
+          first = homeId !== undefined && !ledger.homeHasPaidHour(homeId);
+        } catch (e) {
+          referralFailed(e);
+        }
+        ledger.renterTick(paid.leaseId, payer);
+        try {
+          accrueReferral(paid.leaseId, payer, first);
+        } catch (e) {
+          referralFailed(e);
+        }
         // An exact hour is one transaction on Base: keep its hash. A batch voucher settles later, in a batch.
         const id = paymentIdOf(req);
         const tx = settleTxOf(res);
@@ -969,6 +1027,9 @@ export function doorApp(deps: DoorDeps): express.Express {
       if (!allowOpen(req.ip ?? 'unknown')) return void res.status(429).json({ error: 'rate_limited' });
       if (empty) return void res.status(400).json({ error: 'bad_request' });
     }
+    // Checked on the unpaid challenge too, so a renter learns of a bad referral before it pays.
+    const named = referralOf(body);
+    if (named === 'bad_referral') return void res.status(400).json({ error: named });
     let list: Offer[];
     try {
       list = await offers();
@@ -1017,6 +1078,7 @@ export function doorApp(deps: DoorDeps): express.Express {
     rentPicks.set(body as object, offer);
     res.locals.offer = offer;
     res.locals.job = job;
+    res.locals.referral = named;
     next();
   };
 
@@ -1039,7 +1101,9 @@ export function doorApp(deps: DoorDeps): express.Express {
     if (!LEASE_ID.test(r.leaseId) || ledger.get(r.leaseId)) return void res.status(502).json({ error: 'bad_host_answer' });
     const leaseId = r.leaseId;
     const homeId = homeOf(job);
-    ledger.open({ leaseId, offerId: offerIdOf(offer), createdAt: now(), offer: snapshotOffer(offer), fee: fee.toString(), ...(homeId ? { homeId } : {}) });
+    const named = res.locals.referral as string | undefined;
+    ledger.open({ leaseId, offerId: offerIdOf(offer), createdAt: now(), offer: snapshotOffer(offer), fee: fee.toString(), ...(homeId ? { homeId } : {}), ...(named ? { referral: named } : {}) });
+    const earner = earnerAtOpen(homeId, named);
     opened(r, offer);
     res.locals.leaseId = leaseId;
     // The tick route waits for this one: the lease is the rent's until it answers.
@@ -1059,7 +1123,7 @@ export function doorApp(deps: DoorDeps): express.Express {
       leaseId,
       0,
       offer,
-      (t) => ({ leaseId, state: 'running', ...t, next: { path: `/v1/leases/${leaseId}/ticks`, index: 1 }, offer: publicOffer(offer, registry.get(offer.hostId), fee) }),
+      (t) => ({ leaseId, state: 'running', ...t, next: { path: `/v1/leases/${leaseId}/ticks`, index: 1 }, offer: publicOffer(offer, registry.get(offer.hostId), fee), ...(earner ? { referral: earner } : {}) }),
       { leaseId },
     );
   };
