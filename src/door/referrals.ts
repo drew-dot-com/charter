@@ -32,6 +32,8 @@ export interface ReferrerRecord {
   held?: string;
   /** epoch ms owed last rose from 0 */
   owedSince?: number;
+  /** the payout markPaid last counted; a second call for it changes nothing */
+  lastPayoutId?: string;
 }
 
 interface StoredRecord {
@@ -40,6 +42,7 @@ interface StoredRecord {
   hours: number;
   held?: string;
   owedSince?: number;
+  lastPayoutId?: string;
 }
 
 /** Per-address earned and paid totals, and which referrer each home is bound to. bigints are decimal strings on disk. */
@@ -55,6 +58,7 @@ export class ReferralStore {
       const rec: ReferrerRecord = { earned: BigInt(r.earned), paid: BigInt(r.paid), hours: r.hours };
       if (r.held !== undefined) rec.held = r.held;
       if (r.owedSince !== undefined) rec.owedSince = r.owedSince;
+      if (r.lastPayoutId !== undefined) rec.lastPayoutId = r.lastPayoutId;
       this.referrers.set(a, rec);
     }
     for (const [h, a] of Object.entries(j.homes ?? {})) this.homes.set(h, a);
@@ -91,10 +95,15 @@ export class ReferralStore {
     return t;
   }
 
-  markPaid(address: string, micro: bigint): void {
+  /**
+   * Adds a payout to the paid total once: a call whose payoutId is the last one counted changes nothing.
+   * One id is enough because an address with an open payout is held, so its payouts never overlap.
+   */
+  markPaid(address: string, micro: bigint, payoutId: string): void {
     const r = this.referrers.get(address.toLowerCase());
-    if (!r) return;
+    if (!r || r.lastPayoutId === payoutId) return;
     r.paid += micro;
+    r.lastPayoutId = payoutId;
     if (r.earned - r.paid <= 0n) delete r.owedSince;
     this.save();
   }
@@ -140,6 +149,7 @@ export class ReferralStore {
       const s: StoredRecord = { earned: r.earned.toString(), paid: r.paid.toString(), hours: r.hours };
       if (r.held !== undefined) s.held = r.held;
       if (r.owedSince !== undefined) s.owedSince = r.owedSince;
+      if (r.lastPayoutId !== undefined) s.lastPayoutId = r.lastPayoutId;
       referrers[a] = s;
     }
     mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });

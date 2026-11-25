@@ -330,6 +330,24 @@ test('ops: resolve sent marks paid and closes the intent; the hold stays until r
   assert.equal(readFileSync(`${r.d.opsFile}.applied`, 'utf8').trim(), '2');
 });
 
+test('a crash between markPaid and log.sent: the address is held, and resolve sent closes the intent without paying twice', async () => {
+  const r = rig();
+  r.d.store.accrue(A, 200_000n, 1);
+  const id = r.d.log.intent(A, 200_000n, DAY1);
+  r.d.store.markPaid(A, 200_000n, id); // the door died here, before log.sent
+  const again = rig({}, r.dir);
+  again.d.store.accrue(A, 150_000n, 5);
+  await payoutOnce(again.d);
+  assert.deepEqual(again.sends, []);
+  assert.equal(again.d.store.get(A)?.held, `unresolved payout ${id}`);
+  op(again, { op: 'resolve', id, as: 'sent', tx: TX });
+  assert.equal(applyReferralOps(again.d), 1);
+  assert.equal(again.d.store.get(A)?.paid, 200_000n);
+  assert.equal(again.d.store.owed(A), 150_000n);
+  assert.equal(again.d.log.get(id)?.state, 'sent');
+  assert.equal(again.d.log.open().length, 0);
+});
+
 test('ops: resolve failed closes the intent and leaves it owed; a resolve for a closed id is skipped', async () => {
   const r = rig();
   r.d.store.accrue(A, 200_000n, 1);

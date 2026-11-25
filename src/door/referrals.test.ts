@@ -36,9 +36,9 @@ test('store: accrue keeps the first owedSince; markPaid to zero clears it; a lat
   assert.deepEqual(s.get(R), { earned: 1000n, paid: 0n, hours: 2, owedSince: 1_000 });
   assert.equal(s.owed(R), 1000n);
   assert.equal(s.totalOwed(), 1000n);
-  s.markPaid(R, 400n);
+  s.markPaid(R, 400n, 'p1');
   assert.equal(s.get(R)?.owedSince, 1_000);
-  s.markPaid(R, 600n);
+  s.markPaid(R, 600n, 'p2');
   assert.equal(s.owed(R), 0n);
   assert.equal(s.get(R)?.owedSince, undefined);
   s.accrue(R, 5n, 9_000);
@@ -46,6 +46,22 @@ test('store: accrue keeps the first owedSince; markPaid to zero clears it; a lat
   assert.equal(s.owed('0xunknown'), 0n);
   assert.equal(s.get('0xunknown'), undefined);
   assert.deepEqual(s.all().map((r) => r.address), [R]);
+});
+
+test('store: markPaid twice with the same payout id adds once, also after a reload', () => {
+  const f = file();
+  const s = new ReferralStore(f);
+  s.accrue(R, 1000n, 1);
+  s.markPaid(R, 300n, 'x');
+  s.markPaid(R, 300n, 'x');
+  assert.equal(s.get(R)?.paid, 300n);
+  const t = new ReferralStore(f);
+  t.markPaid(R, 300n, 'x');
+  assert.equal(t.get(R)?.paid, 300n);
+  assert.equal(t.get(R)?.lastPayoutId, 'x');
+  t.markPaid(R, 200n, 'y');
+  assert.equal(t.get(R)?.paid, 500n);
+  assert.equal(new ReferralStore(f).owed(R), 500n);
 });
 
 test('store: hold and release', () => {
@@ -84,11 +100,11 @@ test('store: a new store on the same file reads everything back', () => {
   const f = file();
   const s = new ReferralStore(f);
   s.accrue(R, 1234n, 5);
-  s.markPaid(R, 34n);
+  s.markPaid(R, 34n, 'p1');
   s.hold(R, 'why');
   s.bindHome('h1', R);
   const t = new ReferralStore(f);
-  assert.deepEqual(t.get(R), { earned: 1234n, paid: 34n, hours: 1, held: 'why', owedSince: 5 });
+  assert.deepEqual(t.get(R), { earned: 1234n, paid: 34n, hours: 1, held: 'why', owedSince: 5, lastPayoutId: 'p1' });
   assert.equal(t.homeReferrer('h1'), R);
   assert.equal(t.totalOwed(), 1200n);
 });

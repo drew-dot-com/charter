@@ -217,8 +217,8 @@ function applyOp(d: Pick<PayoutDeps, 'store' | 'log' | 'now'>, text: string): vo
     const p = d.log.get(o.id);
     if (p?.state !== 'intent') return;
     if (o.as === 'sent' && str(o.tx)) {
-      // Paid before the log closes the intent: a crash between the two leaves an open intent (held), never a lost paid total.
-      d.store.markPaid(p.to, p.amount);
+      // Paid before the log closes the intent: a crash between the two leaves an open intent (held); markPaid counts an id once.
+      d.store.markPaid(p.to, p.amount, p.id);
       d.log.sent(p.id, o.tx, d.now());
     } else if (o.as === 'failed') d.log.failed(p.id, 'operator', d.now());
   }
@@ -257,8 +257,9 @@ export async function payoutOnce(d: PayoutDeps): Promise<void> {
         res = { status: 'unknown', reason: errorReason(e) };
       }
       if (res.status === 'sent') {
-        // Paid before the log closes the intent: a crash between the two leaves an open intent (held), never a resend.
-        d.store.markPaid(to, amount);
+        // Paid before the log closes the intent: a crash between the two leaves an open intent (held), never a resend,
+        // and the operator's later `resolve sent` does not count it again (markPaid counts an id once).
+        d.store.markPaid(to, amount, id);
         d.log.sent(id, res.tx, d.now());
         balance -= amount;
         try {
