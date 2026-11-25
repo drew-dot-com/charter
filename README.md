@@ -185,7 +185,8 @@ costs the renter nothing: the price is the same with or without it.
   nothing, whatever you name.
 - **When it is paid.** The door adds up what each address earned and, once a day, sends the address one USDC
   transfer on Base when it is owed at least 0.10 USDC (100000 micro-USDC). Below that it waits. The door pays
-  at most 5 USDC a day in all by default; an address that does not fit gets part, and the rest the next day.
+  at most 5 USDC a day in all by default; an address that does not fit gets part, and the rest the next day,
+  if that part is at least 0.10 USDC; otherwise the address waits whole for the next day.
   You do nothing to claim.
 - **How to check.** `GET /v1/referrals/<address>` is free and public. It answers `bps`, `hours`, `earned`,
   `paid`, `owed` (micro-USDC strings), `held`, and `payouts` (`amount`, `tx`, `at`, newest first, at most 50).

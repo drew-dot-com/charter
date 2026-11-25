@@ -79,6 +79,7 @@ Jonathan on 2026-10-23, because a renter may name its own address and so get a d
 - The referral is fixed when the lease opens and is kept on the lease record. It cannot be changed later.
 - The renter's own address is allowed. This is the discount, and it is on purpose.
 - The rent and open answers echo the referral that will earn, so the caller can see it took effect.
+- `referral: null` is the same as leaving it out (amended during the build, 2026-11-25).
 
 ### Homes
 
@@ -153,6 +154,12 @@ Jonathan on 2026-10-23, because a renter may name its own address and so get a d
   the intent stays open, the address is held at once and an alert is raised. The existing
   `baseUsdcWallet().transfer` throws the same way for "reverted" and "could not find out", so the payout
   needs its own send that tells them apart.
+- A run ends at the first unknown outcome: a stuck or unbroadcast transaction makes every later send from the
+  key fail the same way, so later addresses wait for the next run (amended during the build, 2026-11-25).
+- The wallet balance is read again before each send, and the smaller of it and the run's running balance is
+  used, since host channel deposits leave the same wallet during a run (amended during the build, 2026-11-25).
+- A transaction replaced by another at the same nonce (the receipt's hash is not the one sent) is treated as
+  unknown, never as sent (amended during the build, 2026-11-25).
 - On start, an `intent` with no `sent` or `failed` after it is treated the same way: the address is held
   and an alert is raised. The door never resends on its own.
 - An open intent's amount counts against the daily cap of the day it was written, whatever it is later

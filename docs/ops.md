@@ -203,9 +203,14 @@ free balance below `CHARTER_REFERRAL_KEEP`.
 (they share the timer; with the rate at 0 no run happens). For each address owed at least the minimum, oldest
 first, it writes an `intent` line to `referral-payouts.jsonl` in the data dir, sends one USDC transfer, waits for
 the receipt, and writes a `sent` line with the transaction hash. When the day's cap has less left than an address
-is owed, the door pays what is left, if that is at least the minimum; the rest stays owed. A payout that is not
+is owed, the door pays what is left, if that is at least the minimum; the rest stays owed. Every payout started
+that day counts against the day's cap, including ones that failed or are unresolved. Before each send the door
+reads the wallet balance again (host channel deposits leave the same wallet during a run). A payout that is not
 sent, or whose outcome is unknown, never lowers anything in the books by itself. The door never resends on its
-own. The files: `referrals.json` (per address earned, paid, hours; per home the bound address),
+own. A run stops at the first unresolved payout: a stuck transaction would make every later send from the key
+fail the same way, so the addresses after it wait for the next run. On shutdown (a deploy restart, SIGTERM or
+SIGINT) the door waits up to 130 seconds for an in-flight payout run before it stops, so a send is not cut off
+mid-flight; if the run is still going after that, it stops anyway and the open intent is held at the next start. The files: `referrals.json` (per address earned, paid, hours; per home the bound address),
 `referral-payouts.jsonl` (the payout log), `referral-ops.jsonl` (the operator's commands).
 
 **Alerts** (the door prints `charter-door <text>` at error level, so the ops check can grep for
@@ -213,17 +218,22 @@ own. The files: `referrals.json` (per address earned, paid, hours; per home the 
 
 - `referral payout skipped: wallet short for <address>`: paying it would leave the free balance under
   `CHARTER_REFERRAL_KEEP`. Nothing was written for it. Top up the wallet; the next run pays it.
-- `referral payout skipped: balance unreadable`: the wallet balance could not be read (RPC). The run did nothing.
-  It retries at the next run.
-- `referral payout reverted: <amount> micro-USDC to <address>; address held`: the transfer was mined and failed.
+- `referral payout skipped: balance unreadable`: the wallet balance could not be read (RPC), at the start of the
+  run or before a send. The run stopped there; nothing was written for the address it was about to pay. It
+  retries at the next run.
+- `referral payout reverted: <amount> micro-USDC to <address>; address held`: either the transfer was mined and
+  failed, or the pre-send simulation reverted and nothing was broadcast.
   The amount stays owed and the address is held: it keeps earning but is not paid. Find out why (a USDC-blocked
   recipient is the usual cause), then `release` it.
 - `referral payout not sent: <amount> micro-USDC to <address>: <reason>; retried next run`: the door could not
   even send it, so it closed the intent as failed. Nothing to do unless it repeats.
 - `referral payout unresolved: <payoutId>, <amount> micro-USDC to <address>: <reason>; address held`: the send
-  went out and the door could not learn the result (an RPC error, no receipt in time). The money may have moved.
-  The door holds the address and does not resend. The same alert is raised at start for an intent left open by
-  a crash. Resolve it by hand (below). Until then the amount counts against the day's cap.
+  went out and the door could not learn the result (an RPC error, no receipt in time, or the transaction was
+  replaced by another at the same nonce: `<hash> replaced by <hash>`). The money may have moved. The door holds
+  the address, does not resend, and ends the run. The same alert is raised at start for an intent left open by
+  a crash, without the reason: `referral payout unresolved: <payoutId>, <amount> micro-USDC to <address>;
+  address held`. Grep for the common prefix `referral payout unresolved: <payoutId>`. Resolve it by hand
+  (below). Until then the amount counts against the day's cap.
 - `referral payout run failed: <reason>`: an unexpected error stopped the run. Read the log.
 - `charter-door referral accrual failed: <reason>`: a store write failed on a renter's request. The request
   went through; the hour was not counted. Check the data dir (disk, permissions).
@@ -268,6 +278,11 @@ transfers to that address, around the intent's written time), then choose:
 
 Resolving does not release the hold; run `release <address>` after it.
 
+**Restoring referral files from a backup.** Restoring an older `referrals.json` or `referral-payouts.jsonl`
+makes money that was paid look owed, and the next run would pay it again. Before restoring either, set
+`CHARTER_REFERRAL_BPS=0` (no run happens at 0), restore, reconcile every address's paid total against the
+door wallet's USDC transfers on Base, and only then turn payouts back on.
+
 ## Backup
 
 Nightly at 03:40 Air local, `charter-backup-pull.sh` on the Air pulls `/root/charter-door/data` from the box as
@@ -279,7 +294,8 @@ The same tarball carries the grant fund's `data/state.json` and `data/stops.json
 `charter-fund/data/`, only when they exist; never the fund's `secrets/`), and `pull.log` says `fund state.json
 included` or `no fund state` on each run. `charter-backup-stream.sh` on the box is what adds them, so after
 this change re-run `deploy/ops/install-box.sh` (it copies the script to `/usr/local/bin/`), and copy the new
-`charter-backup-pull.sh` to `~/bin/` on the Air. Restore one with
+`charter-backup-pull.sh` to `~/bin/` on the Air. Before restoring `referrals.json` or `referral-payouts.jsonl`,
+read "Restoring referral files from a backup" under Referrals: an older copy makes paid money look owed. Restore one with
 `charter-backup-pull.sh --restore <tgz> charter-fund/data/state.json`; stop the fund first, copy it to
 `/root/charter-fund/data/state.json` owned by uid 1000, mode 600, then start it.
 

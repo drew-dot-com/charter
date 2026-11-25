@@ -778,7 +778,7 @@ pays for. The renter pays the same price.
   (micro-USDC strings), `held` and `payouts` (`amount`, `tx`, `at`). An unseen address answers zeros.
 - [ ] When it is paid: once a day the door sends one USDC transfer on Base to each address owed at least 0.10 USDC
   (100000), up to 5 USDC a day in all by default; an address that does not fit gets part and the rest the next
-  day. Read the `tx` in `payouts` on a Base explorer.
+  day, if that part is at least 0.10 USDC; otherwise it waits whole for the next day. Read the `tx` in `payouts` on a Base explorer.
 
 Rules an agent should know:
 
