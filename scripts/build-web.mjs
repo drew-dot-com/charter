@@ -1,4 +1,4 @@
-// Bundles the storefront into web/dist: app.js, grants.js and allow.js (esbuild); index.html, home.html, home.css, agents.html, grants.html, allow.html, privacy.html, llms.txt, style.css, fonts/, openhuman/SKILL.md and well-known/x402list.txt (copied).
+// Bundles the storefront into web/dist: app.js, grants.js and allow.js (esbuild); index.html, home.html, home.css, agents.html, grants.html, allow.html, privacy.html, llms.txt, style.css, fonts/, openhuman/SKILL.md, well-known/x402list.txt and well-known/agent-registration.json (copied).
 import { copyFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,5 +27,7 @@ copyFileSync(join(root, 'web', 'openhuman', 'SKILL.md'), join(out, 'openhuman', 
 // Ownership proofs for directories that list Charter: served at /.well-known/x402list.txt.
 mkdirSync(join(out, 'well-known'), { recursive: true });
 copyFileSync(join(root, 'web', 'well-known', 'x402list.txt'), join(out, 'well-known', 'x402list.txt'));
+// The ERC-8004 registration file: served at /.well-known/agent-registration.json.
+copyFileSync(join(root, 'web', 'well-known', 'agent-registration.json'), join(out, 'well-known', 'agent-registration.json'));
 mkdirSync(join(out, 'fonts'), { recursive: true });
 for (const f of readdirSync(join(root, 'web', 'fonts'))) copyFileSync(join(root, 'web', 'fonts', f), join(out, 'fonts', f));

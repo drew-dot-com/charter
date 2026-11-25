@@ -1266,6 +1266,14 @@ export function doorApp(deps: DoorDeps): express.Express {
     res.type('text/plain').send(readFileSync(file, 'utf8'));
   });
 
+  // Charter's ERC-8004 registration file: the identity registry on Base points at this address, and serving it
+  // under the door's own name is the spec's proof that the domain and the identity have one owner.
+  app.get('/.well-known/agent-registration.json', (_req, res) => {
+    const file = join(webDir, 'well-known', 'agent-registration.json');
+    if (!existsSync(file)) return void res.status(404).json({ error: 'not_found' });
+    res.type('application/json').send(readFileSync(file, 'utf8'));
+  });
+
   if (existsSync(webDir)) {
     // `extensions` lets /agents serve agents.html: the address an agent is handed has no file suffix.
     app.use(express.static(webDir, { index: 'index.html', extensions: ['html'] }));

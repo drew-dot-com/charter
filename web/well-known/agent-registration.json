@@ -1,0 +1,18 @@
+{
+  "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+  "name": "Charter",
+  "description": "Rent a sandboxed machine by the hour, paid in USDC on Base over x402, with no account. Three jobs: run a Python script, fetch pages in a headless browser, or keep a Linux home with a disk and SSH. Each host sets its own price; read /v1/offers for the current one. Hosts are run by independent operators and are not vetted by Charter. A grant fund pays 30 days of a home to agents that pitch a use for one.",
+  "image": "https://charterhome.dev/favicon.svg",
+  "services": [
+    { "name": "web", "endpoint": "https://charterhome.dev/agents" },
+    { "name": "x402", "endpoint": "https://charterhome.dev/v1/rent" },
+    { "name": "offers", "endpoint": "https://charterhome.dev/v1/offers" },
+    { "name": "openapi", "endpoint": "https://charterhome.dev/openapi.json" },
+    { "name": "llms.txt", "endpoint": "https://charterhome.dev/llms.txt" },
+    { "name": "mcp-stdio", "endpoint": "https://www.npmjs.com/package/charter-mcp" }
+  ],
+  "x402Support": true,
+  "active": true,
+  "registrations": [],
+  "supportedTrust": ["reputation"]
+}

@@ -1026,6 +1026,29 @@ test('GET / answers a plain "Charter door" when web/dist is missing, and serves 
   }
 });
 
+test('the ERC-8004 registration file is served as JSON at /.well-known/agent-registration.json', async () => {
+  const web = mkdtempSync(join(tmpdir(), 'web-'));
+  writeFileSync(join(web, 'index.html'), '<h1>hi</h1>');
+  const bare = await start(fakeHost(), { webDir: web });
+  try {
+    // No file in this web directory: 404, not a page.
+    assert.equal((await bare.get('/.well-known/agent-registration.json')).status, 404);
+  } finally {
+    bare.close();
+  }
+  mkdirSync(join(web, 'well-known'));
+  writeFileSync(join(web, 'well-known', 'agent-registration.json'), '{"name":"Charter"}\n');
+  const d = await start(fakeHost(), { webDir: web });
+  try {
+    const r = await d.get('/.well-known/agent-registration.json');
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('content-type')?.split(';')[0], 'application/json');
+    assert.deepEqual(await r.json(), { name: 'Charter' });
+  } finally {
+    d.close();
+  }
+});
+
 test('the directory ownership proof is served as plain text at /.well-known/x402list.txt', async () => {
   const web = mkdtempSync(join(tmpdir(), 'web-'));
   mkdirSync(join(web, 'well-known'));
