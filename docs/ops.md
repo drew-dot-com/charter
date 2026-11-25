@@ -864,6 +864,7 @@ the report but no public summary). The loops start a minute after boot.
   named), `blocklist.json` (handles never replied to). Start from `deploy/social/*.example`. A file that does
   not parse stops all posting, with one Telegram alert an hour, until it is fixed; an absent file takes its
   default.
+- `state/self-optins.json`: who opted in by posting at the account (see "Self opt-in" below).
 - `state/state.json`: what was posted and seen, the mention cursor, today's counters and spend, the pause
   flag, the heartbeat. A state file that does not parse is kept as `state.json.corrupt-<ms>` and the service
   starts paused.
@@ -912,8 +913,19 @@ is what re-reads the env file). Telegram says `DRY_RUN off`.
 (those older than 6 hours when resumed are marked seen, never posted) and mentions wait (older than 24 hours
 are skipped). `docker stop charter-social` also stops it, without losing state.
 
-**Adding an opt-in.** Only an id in `config/optins.json` is ever named, @-mentioned or given a wallet's
-transaction link. Keys are lowercased on load:
+**Self opt-in.** A renter, grantee or host can opt in without Drew
+(`docs/superpowers/specs/2026-11-25-social-self-optin-design.md`). It is on once the door has
+`CHARTER_SOCIAL_X_HANDLE=charterhomedev` in `door.env`: the door then shows each lease and grant owner an opt-in
+code, and the owner posts it at the account. A host instead sets `CHARTER_HOST_X_HANDLE` and posts
+`charter-host-<hostId>`. The mention loop binds the posting handle to the payer wallet, grant id or host id in
+`state/self-optins.json` (the service's own file; never edit it while the service runs), tells Drew on Telegram
+(`opt-in: @handle is now named as a renter (0x1234abcd)`) and answers once with fixed text. The same post with the
+word `stop` undoes it. To override one: add the handle to `config/blocklist.json` (it is then never named and
+never bound), or put the wallet, grant id or host id in `config/optins.json`, which wins. A `self-optins.json` that
+does not parse stops all posting with the hourly "config files do not load" alert; fix or delete the file.
+
+**Adding an opt-in by hand.** Besides the self opt-ins above, an id in `config/optins.json` is named,
+@-mentioned or given a wallet's transaction link. Keys are lowercased on load:
 
 ```
 {

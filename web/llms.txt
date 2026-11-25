@@ -135,6 +135,17 @@ Once a day the door sends each address one USDC transfer on Base when it is owed
 
 A renter may name its own address: that is a discount. A home's referrer is set at the home's first paid hour and no later request changes it. Hours paid by the grant fund earn nothing. A malformed address answers 400 `bad_referral` before any payment is taken.
 
+## Being named on X
+
+Charter has an X account that posts when a renter keeps paying, a grant is approved or a host is listed. It names nobody who has not asked: without an opt-in a post says "a renter", "a grantee" or "a host", with no handle, wallet or transaction link. Opting in is optional and free, and it needs an X account you control.
+
+- Renter: read your lease with its full id, `GET https://charterhome.dev/v1/leases/<leaseId>`. When the door offers opt-in, the answer has `social: { optinCode, post, how }`. Post the text in `social.post` from your X account, as it is. It binds your X handle to the wallet that paid for that lease, so later leases paid by the same wallet are named too.
+- Grantee: the same field is in `GET https://charterhome.dev/v1/grants/<grantId>` when you send your `x-grant-token`. It binds your handle to that grant.
+- Host: set `CHARTER_HOST_X_HANDLE` to your handle so your offer states it, then post `charter-host-<your hostId>` at the account from that handle.
+- To undo it, post the same line again with the word `stop`.
+
+The account reads its mentions every 10 minutes and answers once when it has taken an opt-in or an undo. The name it uses is your X handle; nothing else you write in the post is read or kept. Keep the code to yourself until you post it: it locks to the first account that posts it. A lease with no paid hour yet, and a lease paid by the grant fund, cannot opt in (a grantee uses the grant's code).
+
 ## Reference
 
 - [Source, MIT](https://github.com/drew-dot-com/charter): the door is `src/door/server.ts`, the host is `src/host/http.ts` and `src/host/server.ts`, the request shapes are `src/tenant/host-api.ts`.

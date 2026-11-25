@@ -60,7 +60,7 @@ test('the owner view carries the code and the exact text to post', () => {
   const v = socialView({ handle: 'charterbox', codes }, 'lease', 'L1');
   assert.equal(v.post, `@charterbox ${v.optinCode}`);
   assert.match(v.how, /stop/);
-  assert.ok(!/[–—]/.test(v.how));
+  assert.ok(!/[\u2013\u2014]/.test(v.how));
 });
 
 test('a handle setting drops a leading @, and refuses anything that is not a handle', () => {
