@@ -6,6 +6,7 @@ import express from 'express';
 import { HostError, type HostApi, type OpenResult } from '../tenant/host-api.js';
 import { JOB_IMAGES, homeIdOf, isHomeImage, jobFromBody } from '../jobs.js';
 import { ALLOWED_MOVES as ALLOWANCE_MOVES, KEEP_HOME_FROM_HOURS, BadMove as AllowanceBadMove, LIVE_STATES as ALLOWANCE_LIVE, billerView, personMessage, ownerView as allowanceOwnerView, pageView as allowancePageView, validatePermission, validateRequest as validateAllowanceRequest, type AllowanceState, type AllowanceStore, type EndReason } from './allowances.js';
+import { mountMcp } from './mcp.js';
 import { ALLOWED_MOVES, BadMove, ownerView, publicView, readFundPublic, validatePitch, type Grant, type GrantState, type GrantStore } from './grants.js';
 import type { JobSpec, Lease, Micro, Offer } from '../types.js';
 import { DeadlinePassedError, SendTimeoutError } from '../errors.js';
@@ -469,6 +470,9 @@ export function doorApp(deps: DoorDeps): express.Express {
   });
   // A python job carries a script of up to 8 KiB, which JSON escaping can grow.
   app.use(express.json({ limit: '32kb', type: () => true }));
+
+  // The remote MCP endpoint: the free tools only (src/door/mcp.ts).
+  mountMcp(app, now);
 
   // Only a door with no payment gate (local development) answers this, so the page knows to skip x402.
   if (deps.x402 === 'free-for-tests') app.get('/v1/dev', (_req, res) => void res.json({ dev: true }));

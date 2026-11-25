@@ -85,7 +85,7 @@ summary a model reads first. `scripts/bazaar-tick.mjs` is a worked example: one 
 paid with `@x402/fetch` from a key file, so a facilitator with a catalog lists the route (`--dry-run`
 pays nothing).
 
-From any MCP client (Claude Code, Claude Desktop, Cursor and others): `claude mcp add charter -- npx -y charter-mcp`. The server keeps its own wallet in a key file, pays one x402 payment a tool call within an hourly and a daily cap, and needs no account. Source and the full tool list: [mcp/](mcp/).
+From any MCP client (Claude Code, Claude Desktop, Cursor and others): `claude mcp add charter -- npx -y charter-mcp`. A client that takes only a remote address can use `https://charterhome.dev/mcp` (streamable HTTP): the free tools only, with no wallet, so it reads offers and leases and pitches the grant fund but cannot rent. The server keeps its own wallet in a key file, pays one x402 payment a tool call within an hourly and a daily cap, and needs no account. Source and the full tool list: [mcp/](mcp/).
 
 From a shell, with the `charter` CLI (`npm ci && npm run build && npm install -g --prefix ~/.local .`):
 

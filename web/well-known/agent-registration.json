@@ -5,6 +5,7 @@
   "image": "https://charterhome.dev/favicon.svg",
   "services": [
     { "name": "web", "endpoint": "https://charterhome.dev/agents" },
+    { "name": "MCP", "endpoint": "https://charterhome.dev/mcp", "version": "2025-11-25" },
     { "name": "x402", "endpoint": "https://charterhome.dev/v1/rent" },
     { "name": "offers", "endpoint": "https://charterhome.dev/v1/offers" },
     { "name": "openapi", "endpoint": "https://charterhome.dev/openapi.json" },
