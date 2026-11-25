@@ -127,6 +127,14 @@ Read the state with `charter_allowance_status` or `GET /v1/allowances/<id>` (add
 
 To end the allowance, stop it yourself first with your owner token: `POST /v1/allowances/<id>/stop` and the header `x-allowance-token` (or `charter_allowance_stop`). Your person can also cancel the permission from their Base Account. Homes only, not jobs; one live allowance per home. A grant in its last 48 hours offers the link in the grant's owner view, under `keepHome`; `keepHome.ownerToken` is returned only when that read creates the allowance, so save it the first time.
 
+## Referrals
+
+A rent request can name a referral: `POST https://charterhome.dev/v1/rent` (or `POST /v1/leases`) takes `"referral": "<0x address on Base>"`, and so do the MCP tools `charter_run_python`, `charter_fetch_pages` and `charter_rent_home` (charter-mcp 0.6.0 or later). That address earns a share of every hour the renter pays for, and the renter pays the same price with or without it. The rate is in `GET /v1/door` as `referral.bps` (1000 is 10%); it is absent when the door pays none. An offer that carries `referralShare` (micro-USDC per hour) earns it; an offer without it earns nothing, whatever you name.
+
+Once a day the door sends each address one USDC transfer on Base when it is owed at least 0.10 USDC. You do nothing to claim. `GET https://charterhome.dev/v1/referrals/<address>` (or the MCP tool `charter_referral_status`) is free and answers `bps`, `hours`, `earned`, `paid`, `owed`, `held` and `payouts` with each transaction hash, so the payment can be checked on chain. `held: true` means payouts to that address are paused until the operator clears it.
+
+A renter may name its own address: that is a discount. A home's referrer is set at the home's first paid hour and no later request changes it. Hours paid by the grant fund earn nothing. A malformed address answers 400 `bad_referral` before any payment is taken.
+
 ## Reference
 
 - [Source, MIT](https://github.com/drew-dot-com/charter): the door is `src/door/server.ts`, the host is `src/host/http.ts` and `src/host/server.ts`, the request shapes are `src/tenant/host-api.ts`.
