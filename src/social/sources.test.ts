@@ -52,3 +52,11 @@ test('readSources skips malformed jsonl lines', () => {
   assert.deepEqual(s.grants.map((g) => g.grantId), ['G1']);
   assert.equal(s.tickTxs.length, 1);
 });
+
+test('readSources reads the opt-in code hashes and skips anything else on those lines', () => {
+  const d = dir();
+  writeFileSync(join(d, 'door-ledger.json'), '[]');
+  assert.deepEqual((readSources(d) as { optinCodes: unknown[] }).optinCodes, []);
+  writeFileSync(join(d, 'optin-codes.jsonl'), [JSON.stringify({ kind: 'lease', id: 'L1', hash: 'h1' }), '{torn', JSON.stringify({ kind: 'host', id: 'x', hash: 'h' }), JSON.stringify({ kind: 'grant', id: 'G1', hash: 'h2' })].join('\n'));
+  assert.deepEqual((readSources(d) as { optinCodes: unknown[] }).optinCodes, [{ kind: 'lease', id: 'L1', hash: 'h1' }, { kind: 'grant', id: 'G1', hash: 'h2' }]);
+});

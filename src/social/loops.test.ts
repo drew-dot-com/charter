@@ -9,6 +9,7 @@ import { handleCommand, type Telegram } from './telegram.js';
 import { GeminiCapError, type Model } from './model.js';
 import type { SocialConfig } from './config.js';
 import { DEFAULT_BANNED, type ConfigFiles } from './files.js';
+import { SelfOptinStore } from './optin.js';
 import { readSources } from './sources.js';
 import type { LoopDeps } from './replies.js';
 import { eventTick, isoWeekKey, mentionTick, outsideHoursPaid, weeklyTick } from './loops.js';
@@ -135,6 +136,7 @@ function setup(o: { model?: Model; leases?: unknown[]; grants?: unknown[]; hosts
     model,
     sources: () => readSources(dataDir),
     offers: async () => [],
+    selfOptins: new SelfOptinStore(join(mkdtempSync(join(tmpdir(), 'social-loops-optin-')), 'self-optins.json')),
   };
   const beat = () => state.update((s) => void (s.heartbeatAt = clock.now));
   beat();

@@ -5,6 +5,7 @@ import { buildFactSheet, type FactSheet, type OfferLite } from './facts.js';
 import type { ConfigFiles, Optins, Rules } from './files.js';
 import { bannedWordRe } from './lint.js';
 import type { Model } from './model.js';
+import { handleOptin, parseOptin, type SelfOptinStore } from './optin.js';
 import { countAttempt, hourlyAlertDue, MAX_ATTEMPTS, MAX_REPLIES_AUTHOR_DAY, MAX_REPLIES_DAY, publish, tell, type PublishDeps } from './publish.js';
 import type { Sources } from './sources.js';
 import type { LogRow, SocialState } from './state.js';
@@ -22,6 +23,8 @@ export interface LoopDeps extends PublishDeps {
   sources: () => Sources | { error: string };
   /** fetchOffers(cfg.doorUrl) */
   offers: () => Promise<OfferLite[]>;
+  /** The service's own opt-in file (state/self-optins.json). `files()` already carries it merged into `optins`. */
+  selfOptins: SelfOptinStore;
 }
 
 const bare = (h: string): string => String(h ?? '').trim().replace(/^@+/, '').toLowerCase();
@@ -163,6 +166,10 @@ export async function handleMention(deps: LoopDeps, m: Mention): Promise<'replie
     await alertHourly(deps, 'reply_config', `replies wait: config files do not load: ${(e as Error)?.message ?? e}`, now);
     return 'retry';
   }
+
+  // An opt-in mention is settled in code, here, whether or not it is valid: no pre-filter, no classifier, no writer.
+  const optin = parseOptin(m.text);
+  if (optin) return handleOptin(deps, m, optin, files);
 
   const gate = replyGate(m, deps.state.get(), { selfId: deps.cfg.x.userId, blocklist: files.blocklist, banned: files.rules.banned, now });
   if (!gate.ok) return skip('skipped', gate.reason);

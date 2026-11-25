@@ -7,6 +7,7 @@ import { fetchOffers } from './facts.js';
 import { loadConfigFiles } from './files.js';
 import { EVENT_TICK_MS, eventTick, MENTION_TICK_MS, mentionTick, WEEKLY_TICK_MS, weeklyTick } from './loops.js';
 import { geminiModel } from './model.js';
+import { SELF_OPTINS_FILE, SelfOptinStore, withSelfOptins } from './optin.js';
 import { hourlyAlertDue, postUrl, tell } from './publish.js';
 import type { LoopDeps } from './replies.js';
 import { readSources } from './sources.js';
@@ -141,13 +142,16 @@ async function main(): Promise<number> {
 
   if (config && x) {
     const offersFetch = timedFetch(FETCH_TIMEOUT_MS);
+    const selfOptins = new SelfOptinStore(join(config.stateDir, SELF_OPTINS_FILE));
     const deps: LoopDeps = {
       state,
       x,
       tg,
       cfg: config,
       now,
-      files: () => loadConfigFiles(config.configDir),
+      // Drew's files, with the self opt-ins merged under his optins.json. A self opt-in file that does not read throws here.
+      files: () => withSelfOptins(loadConfigFiles(config.configDir), selfOptins.read()),
+      selfOptins,
       model: geminiModel(config.gemini.apiKey, geminiAllowance(state, config.geminiCallsCapDay)),
       sources: () => readSources(config.dataDir),
       offers: () => fetchOffers(config.doorUrl, offersFetch),

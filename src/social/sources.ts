@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { LEDGER_FILE, TICK_TXS_FILE } from '../door/ledger.js';
+import { OPTIN_CODES_FILE, type OptinKind } from '../door/optin-codes.js';
 import type { DoorLease } from '../door/ledger.js';
 import type { Grant } from '../door/grants.js';
 import { HOSTS_FILE } from '../door/hosts.js';
@@ -11,7 +12,10 @@ const GRANTS_FILE = 'grants.jsonl';
 
 export interface TickTx { leaseId: string; tick: number; tx: string; at: number }
 
-export interface Sources { leases: DoorLease[]; grants: Grant[]; hosts: HostRecord[]; tickTxs: TickTx[] }
+/** The hash of an opt-in code the door served, and the lease or grant it belongs to. Never the code. */
+export interface OptinCodeRow { kind: OptinKind; id: string; hash: string }
+
+export interface Sources { leases: DoorLease[]; grants: Grant[]; hosts: HostRecord[]; tickTxs: TickTx[]; optinCodes: OptinCodeRow[] }
 
 /** The file's text, or undefined when it does not exist. Any other read error propagates. */
 function read(dir: string, name: string): string | undefined {
@@ -66,7 +70,10 @@ export function readSources(dataDir: string): Sources | { error: string } {
       const parsed = JSON.parse(hostsText) as { hosts?: unknown };
       if (Array.isArray(parsed.hosts)) hosts = parsed.hosts.filter((h) => isObj(h) && typeof h.hostId === 'string') as unknown as HostRecord[];
     }
-    return { leases, grants: [...grantMap.values()], hosts, tickTxs };
+    const optinCodes = jsonl(read(dataDir, OPTIN_CODES_FILE)).filter(
+      (c): c is OptinCodeRow => isObj(c) && (c.kind === 'lease' || c.kind === 'grant') && typeof c.id === 'string' && typeof c.hash === 'string',
+    );
+    return { leases, grants: [...grantMap.values()], hosts, tickTxs, optinCodes };
   } catch (e) {
     return { error: (e as Error).message };
   }

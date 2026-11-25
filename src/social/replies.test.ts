@@ -11,6 +11,7 @@ import type { SocialConfig } from './config.js';
 import { DEFAULT_BANNED, type ConfigFiles, type Optins } from './files.js';
 import type { Sources } from './sources.js';
 import type { OfferLite } from './facts.js';
+import { SelfOptinStore } from './optin.js';
 import { handleMention, preFilter, replyGate, MENTION_MAX_AGE_MS, type LoopDeps } from './replies.js';
 
 const NOW = Date.UTC(2026, 10, 24, 12);
@@ -182,7 +183,7 @@ const cfg: SocialConfig = {
 
 const noOptins: Optins = { renters: {}, grants: {}, hosts: {} };
 const files = (optins: Optins = noOptins, blocklist: string[] = []): ConfigFiles => ({ factsMd: 'A home is 0.007 USDC an hour.', rules: { banned: [...DEFAULT_BANNED] }, optins, blocklist: new Set(blocklist) });
-const emptySources: Sources = { leases: [], grants: [], hosts: [], tickTxs: [] };
+const emptySources: Sources = { leases: [], grants: [], hosts: [], tickTxs: [], optinCodes: [] };
 const offers: OfferLite[] = [];
 
 const ANSWER = 'A home is 0.007 USDC an hour.';
@@ -203,6 +204,7 @@ function loop(o: { model: Model; optins?: Optins; fail?: Error; sources?: () => 
     model: o.model,
     sources: o.sources ?? (() => emptySources),
     offers: o.offers ?? (async () => offers),
+    selfOptins: new SelfOptinStore(join(mkdtempSync(join(tmpdir(), 'social-reply-optin-')), 'self-optins.json')),
   };
   return { deps, x, tg, state };
 }
