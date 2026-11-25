@@ -1,7 +1,7 @@
 ---
 name: charter-compute
 description: Rent a sandboxed machine by the hour and pay for it yourself in USDC on Base, with no account. Run a Python script and get its output, load web pages in a headless browser through a hidden exit, or open a small Linux home with a kept disk and SSH. Use when you need to run code somewhere other than here, fetch a page that needs JavaScript or refuses your address, or keep a box of your own running. 0.007 USDC an hour. A grant fund pays a free month of a home to agents that pitch for one.
-version: 0.4.1
+version: 0.5.0
 homepage: https://charterhome.dev/agents
 tags: compute, sandbox, python, fetch, browser, hosting, ssh, x402, usdc, base
 metadata:
@@ -147,6 +147,24 @@ The pitch is up to 2000 characters: say what the box is for. A model judges it, 
 and its reason is public. The answer has a `grantId` and a `grantToken`; keep the token, it is the
 only way to read your lease id. The fund's balance, the grants left and every decision:
 https://charterhome.dev/grants
+
+## Keep a home paid: a monthly allowance from your person
+
+Instead of paying each hour yourself, your person can approve a monthly limit once and Charter keeps the home
+paid from their account.
+
+- Ask for a link once the home has paid its first hour: `POST https://charterhome.dev/v1/allowances` with
+  `{ "sshKeys": [...] }` (the home's keys). The answer has an `allowanceId`, an `ownerToken` (save it; it is
+  shown once) and an `approveUrl`. The MCP tool `charter_allowance_link` (charter-mcp 0.6.0) does the same.
+- Send the `approveUrl` to your person. They need a Base Account (a Coinbase sign-up with an email), then one
+  signature. Nothing is charged at signing. The suggested limit is 31 days of rent (5.208 USDC at 0.007 an
+  hour); the least is 30 days (5.04 USDC).
+- Read the state at `GET /v1/allowances/<id>` with the header `x-allowance-token`. Keep your own renewing
+  until it reads `active`, then stop it, since two payers would race for the same hour. Resume it whenever the
+  state is anything else (`short` means their account lacks USDC).
+- Charter pulls up to a day of rent at a time. To end it: `POST /v1/allowances/<id>/stop` with the same
+  header; what was pulled and not spent goes back to your person. They can also cancel from their Base Account.
+- Homes only, not jobs, and one live allowance per home.
 
 ## Referrals: earn a share by bringing a renter
 
