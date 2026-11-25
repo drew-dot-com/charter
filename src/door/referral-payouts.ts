@@ -54,6 +54,8 @@ export class PayoutLog {
       }
       this.apply(l);
     }
+    // A line cut short by a crash must not swallow the next one: end it before anything is appended.
+    if (raw !== '' && !raw.endsWith('\n')) this.append('\n');
   }
 
   /** Appends an intent line and fsyncs it before returning. id: 16 random bytes, hex. */
@@ -106,15 +108,19 @@ export class PayoutLog {
 
   /** Appends and fsyncs the line, then applies it in memory. */
   private write(l: Line): void {
+    this.append(JSON.stringify(l) + '\n');
+    this.apply(l);
+  }
+
+  private append(text: string): void {
     mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
     const fd = openSync(this.file, 'a', 0o600);
     try {
-      writeSync(fd, JSON.stringify(l) + '\n');
+      writeSync(fd, text);
       fsyncSync(fd);
     } finally {
       closeSync(fd);
     }
-    this.apply(l);
   }
 
   /** Applies a line read back or just written. A line that does not make sense is skipped. */
@@ -216,7 +222,7 @@ function applyOp(d: Pick<PayoutDeps, 'store' | 'log' | 'now'>, text: string): vo
   else if (o.op === 'resolve' && str(o.id)) {
     const p = d.log.get(o.id);
     if (p?.state !== 'intent') return;
-    if (o.as === 'sent' && str(o.tx)) {
+    if (o.as === 'sent' && typeof o.tx === 'string' && /^0x[0-9a-fA-F]{64}$/.test(o.tx)) {
       // Paid before the log closes the intent: a crash between the two leaves an open intent (held); markPaid counts an id once.
       d.store.markPaid(p.to, p.amount, p.id);
       d.log.sent(p.id, o.tx, d.now());
@@ -242,9 +248,12 @@ export async function payoutOnce(d: PayoutDeps): Promise<void> {
       .sort((x, y) => (x.owedSince ?? Infinity) - (y.owedSince ?? Infinity));
     for (const r of due) {
       const to = r.address as `0x${string}`;
-      const amount = r.earned - r.paid;
       const at = d.now();
-      if (d.log.intendedOn(utcDay(at)) + amount > d.cfg.dailyCap) continue;
+      // Part of what is owed when the day's cap has less room: the rest stays owed and keeps its owedSince.
+      const left = d.cfg.dailyCap - d.log.intendedOn(utcDay(at));
+      const owed = r.earned - r.paid;
+      const amount = owed < left ? owed : left;
+      if (amount < d.cfg.minPayout || amount <= 0n) continue;
       if (balance - amount < d.cfg.keep) {
         await quietly(d.alert, `referral payout skipped: wallet short for ${to}`);
         continue;
@@ -268,13 +277,16 @@ export async function payoutOnce(d: PayoutDeps): Promise<void> {
           // a log line must not stop the run
         }
       } else if (res.status === 'reverted') {
-        d.log.failed(id, 'reverted', d.now());
+        // Held before the log closes the intent: if the hold cannot be written, the open intent holds it next run.
         d.store.hold(to, 'transfer reverted');
+        d.log.failed(id, 'reverted', d.now());
         await quietly(d.alert, `referral payout reverted: ${amount} micro-USDC to ${to}; address held`);
       } else if (res.status === 'not_sent') {
         d.log.failed(id, res.reason, d.now());
         await quietly(d.alert, `referral payout not sent: ${amount} micro-USDC to ${to}: ${res.reason}; retried next run`);
       } else {
+        // The money may have moved: count it against the keep floor for the rest of this run.
+        balance -= amount;
         d.store.hold(to, unresolved(id));
         await quietly(d.alert, `referral payout unresolved: ${id}, ${amount} micro-USDC to ${to}: ${res.reason}; address held`);
       }

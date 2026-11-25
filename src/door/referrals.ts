@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isAddress } from 'viem';
 
@@ -154,7 +154,14 @@ export class ReferralStore {
     }
     mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
     const tmp = `${this.file}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ referrers, homes: Object.fromEntries(this.homes) }), { mode: 0o600 });
+    // fsync before the rename: a payout counts on markPaid being on disk before its log line closes the intent.
+    const fd = openSync(tmp, 'w', 0o600);
+    try {
+      writeSync(fd, JSON.stringify({ referrers, homes: Object.fromEntries(this.homes) }));
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
     renameSync(tmp, this.file);
   }
 }

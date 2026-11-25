@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync, mkdtempSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { REFERRALS_FILE, ReferralStore } from './referrals.js';
@@ -106,25 +106,52 @@ test('addresses are paid by owedSince ascending', async () => {
   );
 });
 
-test('daily cap: an address that does not fit waits, a later one that fits is paid, next day the first is paid', async () => {
+test('daily cap: the address that does not fit is paid in part, the next one waits, a remainder under the minimum waits', async () => {
   const r = rig({ dailyCap: 250_000n });
   r.d.store.accrue(A, 100_000n, 1);
   r.d.store.accrue(B, 200_000n, 2);
   r.d.store.accrue(C, 100_000n, 3);
   await payoutOnce(r.d);
-  assert.deepEqual(
-    r.sends.map((s) => s.to),
-    [A, C],
-  );
-  assert.equal(r.d.store.owed(B), 200_000n);
-  assert.equal(r.d.log.intendedOn('2026-11-25'), 200_000n);
+  assert.deepEqual(r.sends, [
+    { to: A, amount: 100_000n },
+    { to: B, amount: 150_000n },
+  ]);
+  assert.equal(r.d.store.owed(B), 50_000n);
+  assert.equal(r.d.store.get(B)?.owedSince, 2);
+  assert.equal(r.d.store.owed(C), 100_000n);
+  assert.equal(r.d.log.intendedOn('2026-11-25'), 250_000n);
   r.setNow(DAY2);
   await payoutOnce(r.d);
-  assert.deepEqual(
-    r.sends.map((s) => s.to),
-    [A, C, B],
-  );
-  assert.equal(r.d.store.owed(B), 0n);
+  assert.deepEqual(r.sends.slice(2), [{ to: C, amount: 100_000n }]);
+  assert.equal(r.d.store.owed(B), 50_000n);
+  assert.equal(r.d.store.owed(C), 0n);
+});
+
+test('daily cap: an address owed more than the cap is paid the cap and keeps its owedSince', async () => {
+  const r = rig({ dailyCap: 5_000_000n, keep: 0n });
+  r.d.store.accrue(A, 12_000_000n, 7);
+  await payoutOnce(r.d);
+  assert.deepEqual(r.sends, [{ to: A, amount: 5_000_000n }]);
+  assert.equal(r.d.store.owed(A), 7_000_000n);
+  assert.equal(r.d.store.get(A)?.owedSince, 7);
+  await payoutOnce(r.d);
+  assert.equal(r.sends.length, 1, 'nothing left of the cap today');
+  r.setNow(DAY2);
+  await payoutOnce(r.d);
+  assert.deepEqual(r.sends[1], { to: A, amount: 5_000_000n });
+  assert.equal(r.d.store.owed(A), 2_000_000n);
+});
+
+test('unknown lowers the run balance too: the next address is held to the keep floor', async () => {
+  const r = rig({ keep: 5_000_000n });
+  r.setBalance(5_300_000n);
+  r.d.store.accrue(A, 200_000n, 1);
+  r.d.store.accrue(B, 200_000n, 2);
+  r.answer.set(A, { status: 'unknown', reason: 'timeout' });
+  await payoutOnce(r.d);
+  assert.deepEqual(r.sends, [{ to: A, amount: 200_000n }]);
+  assert.equal(r.alerts.length, 2);
+  assert.equal(r.alerts[1], `referral payout skipped: wallet short for ${B}`);
 });
 
 test('a payout that would take the wallet below keep: no intent, alert, the next address still considered', async () => {
@@ -263,6 +290,19 @@ test('a restarted door holds an address whose intent is open and never sends to 
   assert.deepEqual(again.sends, [{ to: B, amount: 200_000n }]);
 });
 
+test('PayoutLog: a torn last line does not swallow the next line', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'payouts-'));
+  const f = join(dir, PAYOUTS_FILE);
+  writeFileSync(f, '{"state":"intent","id":"torn","to":"0x');
+  const log = new PayoutLog(f);
+  const id = log.intent(A, 5n, DAY1);
+  const back = new PayoutLog(f);
+  assert.deepEqual(
+    back.open().map((p) => p.id),
+    [id],
+  );
+});
+
 test('holdOpenIntents holds an address the store has never seen', async () => {
   const r = rig();
   const id = r.d.log.intent(A, 200_000n, DAY1);
@@ -346,6 +386,29 @@ test('a crash between markPaid and log.sent: the address is held, and resolve se
   assert.equal(again.d.store.owed(A), 150_000n);
   assert.equal(again.d.log.get(id)?.state, 'sent');
   assert.equal(again.d.log.open().length, 0);
+});
+
+test('ops: resolve sent with a tx that is not 0x and 64 hex is skipped', async () => {
+  const r = rig();
+  r.d.store.accrue(A, 200_000n, 1);
+  r.answer.set(A, { status: 'unknown', reason: 'timeout' });
+  await payoutOnce(r.d);
+  const [p] = r.d.log.open();
+  for (const tx of ['0x12', 'nope', '0x' + 'g'.repeat(64), TX + '00']) op(r, { op: 'resolve', id: p.id, as: 'sent', tx });
+  assert.equal(applyReferralOps(r.d), 4);
+  assert.equal(r.d.log.get(p.id)?.state, 'intent');
+  assert.equal(r.d.store.owed(A), 200_000n);
+});
+
+test('reverted: a store hold that throws leaves the intent open', async () => {
+  const r = rig();
+  r.d.store.accrue(A, 200_000n, 1);
+  r.answer.set(A, { status: 'reverted' });
+  r.d.store.hold = () => {
+    throw new Error('disk full');
+  };
+  await payoutOnce(r.d);
+  assert.equal(r.d.log.open().length, 1);
 });
 
 test('ops: resolve failed closes the intent and leaves it owed; a resolve for a closed id is skipped', async () => {
