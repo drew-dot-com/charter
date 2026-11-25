@@ -230,6 +230,32 @@ function applyOp(d: Pick<PayoutDeps, 'store' | 'log' | 'now'>, text: string): vo
   }
 }
 
+/**
+ * Keeps the operator's ops out of a payout run: `tick` applies them only while no run is in flight. A run awaits
+ * its sends (minutes, with the receipt wait), and an op applied mid-send could close an intent the send then
+ * leaves unknown. `run` is what the sweep's `before` calls; it clears `busy` however the run ends.
+ */
+export function guardedPayouts(runOnce: () => Promise<void>, applyOps: () => void): { run: () => Promise<void>; tick: () => boolean; busy: () => boolean } {
+  let inFlight = false;
+  return {
+    run: async () => {
+      inFlight = true;
+      try {
+        await runOnce();
+      } finally {
+        inFlight = false;
+      }
+    },
+    /** True when the ops were applied, false when skipped because a run is in flight. */
+    tick: () => {
+      if (inFlight) return false;
+      applyOps();
+      return true;
+    },
+    busy: () => inFlight,
+  };
+}
+
 /** One payout run. Never throws. */
 export async function payoutOnce(d: PayoutDeps): Promise<void> {
   try {

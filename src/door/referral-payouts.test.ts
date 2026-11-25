@@ -9,6 +9,7 @@ import {
   REFERRAL_OPS_FILE,
   PayoutLog,
   applyReferralOps,
+  guardedPayouts,
   holdOpenIntents,
   payoutOnce,
   type PayoutDeps,
@@ -454,4 +455,36 @@ test('ops: payoutOnce applies ops first, a missing ops file is nothing to apply'
   op(r, { op: 'release', address: A });
   await payoutOnce(r.d);
   assert.deepEqual(r.sends, [{ to: A, amount: 200_000n }]);
+});
+
+test('guardedPayouts: a tick while a run awaits its send applies no ops; the next tick after it settles applies them', async () => {
+  const r = rig();
+  r.d.store.accrue(A, 1_000_000n, DAY1);
+  let release!: (v: SendResult) => void;
+  r.d.send = (to, amount) => {
+    r.sends.push({ to, amount });
+    return new Promise<SendResult>((res) => (release = res));
+  };
+  const g = guardedPayouts(() => payoutOnce(r.d), () => void applyReferralOps(r.d));
+  const running = g.run();
+  while (r.sends.length === 0) await new Promise((res) => setImmediate(res));
+  assert.equal(g.busy(), true);
+  const [open] = r.d.log.open();
+  appendFileSync(r.d.opsFile, JSON.stringify({ op: 'resolve', id: open.id, as: 'failed' }) + '\n');
+  assert.equal(g.tick(), false);
+  assert.equal(r.d.log.get(open.id)!.state, 'intent', 'the op waits for the run');
+  release({ status: 'unknown', reason: 'rpc lost' });
+  await running;
+  assert.equal(g.busy(), false);
+  assert.equal(g.tick(), true);
+  assert.equal(r.d.log.get(open.id)!.state, 'failed', 'applied once the run settled');
+});
+
+test('guardedPayouts clears busy when the run throws', async () => {
+  const g = guardedPayouts(async () => {
+    throw new Error('boom');
+  }, () => undefined);
+  await assert.rejects(g.run(), /boom/);
+  assert.equal(g.busy(), false);
+  assert.equal(g.tick(), true);
 });

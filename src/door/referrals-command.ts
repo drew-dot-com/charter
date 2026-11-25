@@ -42,12 +42,16 @@ function parseOp(args: string[]): Op | undefined {
 
 /**
  * The payout log, read without writing to it: PayoutLog ends a torn last line on open, and the running door may
- * be writing that line now. Only whole lines are read, from a private copy when the last one is not whole.
+ * append at any moment. So the log is built from one read of its bytes, whole lines only, in a private copy.
  */
 function readPayoutLog(file: string): PayoutLog {
-  if (!existsSync(file)) return new PayoutLog(file);
-  const raw = readFileSync(file, 'utf8');
-  if (raw === '' || raw.endsWith('\n')) return new PayoutLog(file);
+  let raw: string;
+  try {
+    raw = readFileSync(file, 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') raw = '';
+    else throw e;
+  }
   const dir = mkdtempSync(join(tmpdir(), 'charter-referrals-'));
   try {
     const copy = join(dir, PAYOUTS_FILE);

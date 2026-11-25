@@ -30,7 +30,7 @@ import { baseUsdcWallet, startSweep } from './sweep.js';
 import { unblockCommand } from './unblock.js';
 import { hostsCommand } from './hosts-command.js';
 import { REFERRALS_FILE, ReferralStore } from './referrals.js';
-import { applyReferralOps, baseReferralSend, holdOpenIntents, PAYOUTS_FILE, PayoutLog, payoutOnce, REFERRAL_OPS_FILE } from './referral-payouts.js';
+import { applyReferralOps, baseReferralSend, guardedPayouts, holdOpenIntents, PAYOUTS_FILE, PayoutLog, payoutOnce, REFERRAL_OPS_FILE } from './referral-payouts.js';
 import { referralsCommand } from './referrals-command.js';
 
 const REQUEST_LOG_FILE = 'requests.jsonl';
@@ -138,7 +138,15 @@ async function main(): Promise<void> {
   const referralOps = { store: referralStore, log: payoutLog, opsFile: join(dataDir, REFERRAL_OPS_FILE), now: Date.now };
   const referralAlert = async (m: string) => console.error(`charter-door ${m}`);
   // An operator's resolve written while the door was down closes its intent before open intents are held.
-  applyReferralOps(referralOps);
+  // A referral file problem must not keep the door from serving renters: it is logged, and holding still runs.
+  const applyOpsLogged = (): void => {
+    try {
+      applyReferralOps(referralOps);
+    } catch (e) {
+      console.error(`charter-door referral ops not applied: ${errorReason(e)}`);
+    }
+  };
+  applyOpsLogged();
   await holdOpenIntents({ store: referralStore, log: payoutLog, alert: referralAlert });
   console.log(referralCfg.bps > 0
     ? `charter-door: referrals pay ${referralCfg.bps} bps, ${referralCfg.hosts.size} listed hosts`
@@ -266,6 +274,21 @@ async function main(): Promise<void> {
   if (!isAddress(sweepTo)) throw new Error('CHARTER_SWEEP_TO must be a valid 0x address (a mixed-case one must match its checksum)');
   const sweepKeep = parseSweepKeep(env.CHARTER_SWEEP_KEEP);
   const wallet = baseUsdcWallet(baseRpcUrl(env), key);
+  // The payout run awaits its sends (minutes, with the receipt wait): the ops timer skips while it is in flight,
+  // so an operator's resolve never closes an intent a send is still deciding.
+  const payouts = guardedPayouts(
+    () =>
+      payoutOnce({
+        ...referralOps,
+        cfg: referralCfg,
+        // The wallet's free USDC: host channel deposits are already out of it.
+        balance: wallet.balance,
+        send: baseReferralSend(baseRpcUrl(env), key),
+        info: (m) => console.log(`charter-door: ${m}`),
+        alert: referralAlert,
+      }),
+    applyOpsLogged,
+  );
   // Referral payouts run just before each sweep, and the sweep leaves what referrers are owed in the wallet.
   const stopSweep = startSweep({
     ...wallet,
@@ -274,30 +297,11 @@ async function main(): Promise<void> {
     log: (m) => console.log(`charter-door: ${m}`),
     alert: async (m) => console.error(`charter-door ${m}`),
     reserve: () => referralStore.totalOwed(),
-    ...(referralCfg.bps > 0
-      ? {
-          before: () =>
-            payoutOnce({
-              ...referralOps,
-              cfg: referralCfg,
-              // The wallet's free USDC: host channel deposits are already out of it.
-              balance: wallet.balance,
-              send: baseReferralSend(baseRpcUrl(env), key),
-              info: (m) => console.log(`charter-door: ${m}`),
-              alert: referralAlert,
-            }),
-        }
-      : {}),
+    ...(referralCfg.bps > 0 ? { before: payouts.run } : {}),
   });
-  // An operator's bind, release or resolve takes effect within a minute, not at the next daily run.
-  // applyReferralOps is synchronous, so it never interleaves with the one payoutOnce runs.
-  const opsTimer = setInterval(() => {
-    try {
-      applyReferralOps(referralOps);
-    } catch (e) {
-      console.error(`charter-door referral ops not applied: ${errorReason(e)}`);
-    }
-  }, 60_000);
+  // An operator's bind, release or resolve takes effect within a minute, not at the next daily run, and never
+  // while a payout run is in flight (the run applies them itself at its start; the first tick after it, the rest).
+  const opsTimer = setInterval(() => void payouts.tick(), 60_000);
   opsTimer.unref();
   await new Promise<void>((resolve) => {
     const stop = () => {
