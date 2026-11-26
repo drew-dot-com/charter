@@ -3,54 +3,66 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TOON privacy policy</title>
-  <meta name="description" content="Privacy policy for the tool that publishes posts to the official TOON accounts on LinkedIn and X.">
+  <title>Charter privacy policy</title>
+  <meta name="description" content="What Charter keeps when you rent a machine through it, what it does not keep, and what the independent hosts can see.">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="top wrap">
     <a class="brand" href="/">Charter</a>
+    <span class="chip live">Base mainnet</span>
     <nav>
-      <a href="/">Rent</a>
-      <a href="https://toon.ar.io/">TOON</a>
-      <a href="https://github.com/toon-protocol">Code</a>
+      <a href="https://rent.charterhome.dev/">Rent</a>
+      <a href="/agents">Agents</a>
+      <a href="/grants">Grants</a>
+      <a href="https://charterhome.dev/">About</a>
+      <a href="https://github.com/drew-dot-com/charter">Code</a>
     </nav>
   </header>
   <main class="wrap doc">
     <h1>Privacy policy</h1>
-    <p class="lede">Last updated 8 November 2026</p>
+    <p class="lede">Last updated 26 November 2026</p>
 
-    <p>This policy covers the publishing tool that TOON ("we") uses to post to its own official accounts: the TOON Protocol Page on LinkedIn and @toonprotocol on X. The tool is used only by us, for our own accounts. It is not offered to anyone else.</p>
+    <p>Charter rents machines by the hour and is run by Drew Pierson. This page says what Charter keeps when you use it.</p>
 
-    <h2>What the tool does</h2>
+    <h2>What Charter keeps</h2>
     <ul>
-      <li>Publishes posts written for the official TOON accounts.</li>
-      <li>Reads statistics about those posts, such as impressions, clicks, reactions, comments and shares, so we can see which posts are useful to readers and write better ones.</li>
+      <li><b>Payments.</b> The wallet address that paid for a lease, what it paid and when. These payments are public on Base in any case.</li>
+      <li><b>Leases.</b> The lease id, the job you sent (a script or a list of pages), and a copy of a finished job's output.</li>
+      <li><b>SSH public keys.</b> The keys you give for a home. The host keeps them; Charter's storefront keeps them too if you ask for a grant or a monthly allowance.</li>
+      <li><b>Grant pitches.</b> Your name, pitch and optional link, with the decision and its reason, are public at <a href="/grants">/grants</a>. The pitch is sent to a model run by Google to be judged.</li>
+      <li><b>Monthly allowances.</b> The account address that approved the allowance and the permission it signed.</li>
+      <li><b>Receipts.</b> A hash of an output, never the output itself.</li>
+      <li><b>A request log.</b> The time, the path, the answer code, the user agent and the referring site's name. It does not hold your IP address, the query or the body, and it is overwritten as it fills.</li>
     </ul>
 
-    <h2>What we collect</h2>
-    <ul>
-      <li>The posts we publish and their identifiers.</li>
-      <li>Statistics for our own posts and Page, as totals. We do not request or store lists of the individual members who viewed, reacted to or followed our accounts.</li>
-      <li>The access tokens LinkedIn and X issue to us so the tool can act for our accounts.</li>
-    </ul>
-    <p>We do not collect personal data about LinkedIn or X members, build profiles of anyone, use the data for advertising, or sell or share it with anyone.</p>
+    <h2>IP addresses</h2>
+    <p>The storefront uses your IP address in memory to limit request rates and does not write it to disk.</p>
 
-    <h2>Where it is kept</h2>
-    <p>Post records and statistics are stored on a server we control. Access tokens are kept as secrets on that server, never in source code or public files. Statistics are kept for up to 24 months and then deleted. Tokens are deleted when they expire or when access is revoked.</p>
+    <h2>X</h2>
+    <p>Charter's X account names nobody who has not asked. If you opt in by posting your code, Charter keeps your X handle next to the wallet that paid. Post the same line with the word <code>stop</code> to undo it. The account also reads public posts about renting compute so its operator can reply, and keeps the text of posts it considered.</p>
 
-    <h2>Revoking access</h2>
-    <p>Any administrator of a TOON account can revoke the tool's access at any time from that platform's settings for connected apps. The tool stops working for that account immediately.</p>
+    <h2>What Charter does not control</h2>
+    <p>Hosts are run by independent operators. A host's operator can read a home's disk and the scripts you send, and sees the address you connect from over SSH. If you pin a file, the pinning service holds it and it is public.</p>
+
+    <h2>What Charter does not do</h2>
+    <p>No cookies, no trackers, no advertising, and no selling or sharing of data.</p>
+
+    <h2>Copies</h2>
+    <p>The storefront's records are backed up nightly to a machine the operator controls.</p>
+
+    <h2>Removing your data</h2>
+    <p>Write to the address below. Payments on Base cannot be removed by anyone.</p>
 
     <h2>Changes</h2>
-    <p>If the tool starts collecting anything beyond what is listed here, we will update this page first and change the date at the top.</p>
+    <p>If Charter starts keeping anything not listed here, this page changes first and the date at the top changes with it.</p>
 
     <h2>Contact</h2>
-    <p>Questions about this policy: <a href="mailto:drew.piers@gmail.com">drew.piers@gmail.com</a>.</p>
+    <p>Questions about this policy: <a href="mailto:drew.piers@gmail.com">drew.piers@gmail.com</a>, or <a href="https://github.com/drew-dot-com/charter/issues">an issue on the repository</a>.</p>
   </main>
   <footer>
-    <a href="https://toon.ar.io/">toon.ar.io</a> · <a href="/">Charter</a>
+    <p>Hosts are run by independent operators, and anyone can <a href="https://github.com/drew-dot-com/charter#run-a-host">run one</a>. Payments are x402 in USDC on Base. The code is MIT; the receipts are on <a href="https://charterhome.dev/#proof">charterhome.dev</a>.</p>
   </footer>
 </body>
 </html>

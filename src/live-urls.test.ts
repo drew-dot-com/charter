@@ -12,7 +12,6 @@ const HISTORICAL = [
   /^docs\/spike-notes\.md$/,
   /^docs\/superpowers\//,
   /^site\//,
-  /^web\/privacy\.html$/,
   /^src\/social\//, // tests the toon ban on purpose
   /^deploy\/door\/Caddy\.snippet$/, // the alias itself
   /^src\/live-urls\.test\.ts$/,
