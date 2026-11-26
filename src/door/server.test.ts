@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -24,6 +24,7 @@ import { HostQueue } from './host-queue.js';
 import { stubGate } from './x402.js';
 import { facilitatorOffersBatch, isPayerFault, MIN_WINDOW_SECONDS, paymentIdOf } from '../x402/seller.js';
 import { privateKeyToAccount } from 'viem/accounts';
+import { leaseRefOf, verifyReceipt, type SignedReceipt } from './receipts.js';
 
 
 const b64 = (o: unknown, pretty = false) => Buffer.from(JSON.stringify(o, null, pretty ? 2 : undefined)).toString('base64');
@@ -2620,6 +2621,284 @@ test('without the social setting a lease read has no opt-in code', async () => {
     await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
     const st = (await (await d.get(`/v1/leases/${LEASE}`)).json()) as Record<string, unknown>;
     assert.equal(st.social, undefined);
+  } finally {
+    d.close();
+  }
+});
+
+// ---- Receipts ----
+
+const RECEIPT_SIGNER = privateKeyToAccount(`0x${'33'.repeat(32)}`);
+const sha256Hex = (b: Buffer) => createHash('sha256').update(b).digest('hex');
+const OUTPUT = Buffer.concat([Buffer.from('p0'), Buffer.from('p1')]);
+const HOME_KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl you@host';
+const HOME_OFFER: Offer = { ...OFFER, images: ['charter-job-fetch', 'charter-home'], home: { diskGiB: 10, retentionDays: 30, slots: 2 } };
+const CID_V1 = 'bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy';
+
+/** A host whose lease is running until `state.now` is set to something else. */
+function receiptHost(state: { now: Lease }, over: Partial<HostApi> = {}) {
+  return fakeHost({ status: async () => state.now, ...over });
+}
+/** Opens a fetch job, pays tick 0 as `payer`, then lets the host report it done with two parts. */
+async function finishedJob(d: Awaited<ReturnType<typeof start>>, state: { now: Lease }, payer = '0xabc') {
+  assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS })).status, 200);
+  assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'x-test-payer': payer })).status, 200);
+  state.now = DONE();
+  d.clock.t += 60_000;
+}
+const runningHome = (over: Partial<Lease> = {}) => lease({ job: { image: 'charter-home', args: { SSH_KEYS: HOME_KEY } }, homeId: '0123456789abcdef', paidThrough: 5_000_000, ...over });
+async function paidHome(d: Awaited<ReturnType<typeof start>>) {
+  assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, home: { sshKeys: [HOME_KEY] } })).status, 200);
+  assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' })).status, 200);
+}
+
+test('receipt: the ledger keeps the image a lease was opened with', async () => {
+  const d = await start(fakeHost());
+  try {
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    assert.equal(d.ledger.get(LEASE)!.image, 'charter-job-fetch');
+  } finally {
+    d.close();
+  }
+});
+
+test('receipt: a finished job gets a signed receipt over its whole output, with no lease id in it', async () => {
+  const state = { now: lease() };
+  const host = receiptHost(state);
+  const d = await start(host, { receiptSigner: RECEIPT_SIGNER });
+  try {
+    await finishedJob(d, state);
+    const r = await d.get(`/v1/leases/${LEASE}/receipt`);
+    assert.equal(r.status, 200);
+    const text = await r.text();
+    assert.ok(!text.includes(LEASE), 'the lease id reads the lease: it is never in a receipt');
+    const s = JSON.parse(text) as SignedReceipt;
+    assert.equal(await verifyReceipt(s), true);
+    assert.equal(s.signer, RECEIPT_SIGNER.address);
+    assert.deepEqual(s.receipt, {
+      v: 1, kind: 'job', door: 'https://charterhome.dev', leaseRef: leaseRefOf(LEASE), hostId: OFFER.hostId, image: 'charter-job-fetch',
+      ticksPaid: 1, intervalSeconds: OFFER.intervalSeconds, payer: '0xabc', sha256: sha256Hex(OUTPUT), bytes: OUTPUT.length, at: d.clock.t,
+    });
+  } finally {
+    d.close();
+  }
+});
+
+test('receipt: a job receipt is signed once, kept on disk mode 0600, and served again with no host call', async () => {
+  const state = { now: lease() };
+  const host = receiptHost(state);
+  const d = await start(host, { receiptSigner: RECEIPT_SIGNER });
+  try {
+    await finishedJob(d, state);
+    const first = await (await d.get(`/v1/leases/${LEASE}/receipt`)).text();
+    const calls = host.calls.length;
+    d.clock.t += 3_600_000;
+    assert.equal(await (await d.get(`/v1/leases/${LEASE}/receipt`)).text(), first);
+    assert.equal(host.calls.length, calls);
+    assert.equal(host.calls.filter((c) => c.startsWith('part:')).length, 2);
+    const file = join(d.dir, 'receipts', `${LEASE}.json`);
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+    assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), JSON.parse(first));
+  } finally {
+    d.close();
+  }
+});
+
+test('receipt: with every part already on disk the door signs after a restart with the host gone', async () => {
+  const state = { now: lease() };
+  const d = await start(receiptHost(state), { receiptSigner: RECEIPT_SIGNER });
+  try {
+    await finishedJob(d, state);
+    assert.equal((await d.get(`/v1/leases/${LEASE}/output/0`)).status, 200);
+    assert.equal((await d.get(`/v1/leases/${LEASE}/output/1`)).status, 200);
+  } finally {
+    d.close();
+  }
+  const gone = fakeHost({ status: async () => { throw new Error('gone'); }, outputPart: async () => { throw new Error('gone'); } });
+  const d2 = await start(gone, { dataDir: d.dir, ledger: new DoorLedger(join(d.dir, 'ledger.json')), receiptSigner: RECEIPT_SIGNER });
+  try {
+    const r = await d2.get(`/v1/leases/${LEASE}/receipt`);
+    assert.equal(r.status, 200);
+    const s = (await r.json()) as SignedReceipt;
+    assert.equal(s.receipt.sha256, sha256Hex(OUTPUT));
+    assert.equal(await verifyReceipt(s), true);
+    assert.equal(gone.calls.length, 0);
+  } finally {
+    d2.close();
+  }
+});
+
+test('receipt: with a part missing and the host gone the door answers the failure and signs nothing', async () => {
+  const state = { now: lease() };
+  const d = await start(receiptHost(state), { receiptSigner: RECEIPT_SIGNER });
+  try {
+    await finishedJob(d, state);
+    assert.equal((await d.get(`/v1/leases/${LEASE}/output/0`)).status, 200);
+  } finally {
+    d.close();
+  }
+  const gone = fakeHost({ status: async () => { throw new Error('gone'); }, outputPart: async () => { throw new Error('gone'); } });
+  const d2 = await start(gone, { dataDir: d.dir, ledger: new DoorLedger(join(d.dir, 'ledger.json')), receiptSigner: RECEIPT_SIGNER });
+  try {
+    assert.equal((await d2.get(`/v1/leases/${LEASE}/receipt`)).status, 502);
+    assert.equal(existsSync(join(d.dir, 'receipts', `${LEASE}.json`)), false);
+  } finally {
+    d2.close();
+  }
+  // The host answers the status but not the missing part: still nothing signed.
+  const half = fakeHost({ status: async () => DONE(), outputPart: async () => { throw new HostError(500, 'output_unreadable'); } });
+  const d3 = await start(half, { dataDir: d.dir, ledger: new DoorLedger(join(d.dir, 'ledger.json')), receiptSigner: RECEIPT_SIGNER });
+  try {
+    assert.equal((await d3.get(`/v1/leases/${LEASE}/receipt`)).status, 502);
+    assert.equal(existsSync(join(d.dir, 'receipts', `${LEASE}.json`)), false);
+  } finally {
+    d3.close();
+  }
+});
+
+test('receipt: a job receipt is refused for an unknown lease, a home, an unpaid lease, and a lease with no output', async () => {
+  const state = { now: lease() };
+  const d = await start(receiptHost(state), { receiptSigner: RECEIPT_SIGNER });
+  try {
+    assert.equal((await d.get(`/v1/leases/${'c'.repeat(32)}/receipt`)).status, 404);
+    await d.post('/v1/leases', { offerId: OFFER_ID, urls: URLS });
+    state.now = DONE();
+    const unpaid = await d.get(`/v1/leases/${LEASE}/receipt`);
+    assert.equal(unpaid.status, 409);
+    assert.deepEqual(await unpaid.json(), { error: 'unpaid' });
+  } finally {
+    d.close();
+  }
+  for (const now of [lease(), lease({ state: 'done' }), lease({ state: 'done', outputParts: 0 }), lease({ state: 'closed', closedReason: 'missed_tick' })]) {
+    const s = { now: lease() };
+    const d2 = await start(receiptHost(s), { receiptSigner: RECEIPT_SIGNER });
+    try {
+      await finishedJob(d2, s);
+      s.now = now;
+      const r = await d2.get(`/v1/leases/${LEASE}/receipt`);
+      assert.equal(r.status, 409, JSON.stringify(now));
+      assert.deepEqual(await r.json(), { error: 'no_output' });
+      assert.equal(existsSync(join(d2.dir, 'receipts')), false);
+    } finally {
+      d2.close();
+    }
+  }
+  const h = { now: runningHome() };
+  const d3 = await start(receiptHost(h), { receiptSigner: RECEIPT_SIGNER, offers: async () => [HOME_OFFER] });
+  try {
+    await paidHome(d3);
+    const r = await d3.get(`/v1/leases/${LEASE}/receipt`);
+    assert.equal(r.status, 409);
+    assert.equal(((await r.json()) as { error: string }).error, 'home_lease');
+  } finally {
+    d3.close();
+  }
+});
+
+test('receipt: the payer is left out when it is the grant fund or the biller', async () => {
+  for (const over of [{ fundAddress: '0xabc' }, { allowAddress: '0xabc' }] as Array<Partial<DoorDeps>>) {
+    const state = { now: lease() };
+    const d = await start(receiptHost(state), { receiptSigner: RECEIPT_SIGNER, ...over });
+    try {
+      await finishedJob(d, state, '0xABC');
+      const s = (await (await d.get(`/v1/leases/${LEASE}/receipt`)).json()) as SignedReceipt;
+      assert.equal('payer' in s.receipt, false);
+      assert.equal(await verifyReceipt(s), true);
+    } finally {
+      d.close();
+    }
+  }
+});
+
+test('receipt: a running paid home gets a declared receipt for the hash it gives, and nothing is stored', async () => {
+  const h = { now: runningHome() };
+  const d = await start(receiptHost(h), { receiptSigner: RECEIPT_SIGNER, offers: async () => [HOME_OFFER], doorUrl: 'https://door.example/' });
+  try {
+    await paidHome(d);
+    const hash = 'cd'.repeat(32);
+    const r = await d.post(`/v1/leases/${LEASE}/receipt`, { sha256: hash, cid: CID_V1, bytes: 12 });
+    assert.equal(r.status, 200);
+    const text = await r.text();
+    assert.ok(!text.includes(LEASE));
+    const s = JSON.parse(text) as SignedReceipt;
+    assert.equal(await verifyReceipt(s), true);
+    assert.deepEqual(s.receipt, {
+      v: 1, kind: 'declared', door: 'https://door.example', leaseRef: leaseRefOf(LEASE), hostId: OFFER.hostId, image: 'charter-home',
+      ticksPaid: 1, intervalSeconds: OFFER.intervalSeconds, payer: '0xabc', sha256: hash, bytes: 12, cid: CID_V1, at: d.clock.t,
+    });
+    const bare = (await (await d.post(`/v1/leases/${LEASE}/receipt`, { sha256: hash })).json()) as SignedReceipt;
+    assert.equal('cid' in bare.receipt || 'bytes' in bare.receipt, false);
+    assert.equal(existsSync(join(d.dir, 'receipts')), false);
+  } finally {
+    d.close();
+  }
+});
+
+test('receipt: a declared receipt is refused for a job, an unpaid or stopped home, and any body that is not exactly a hash', async () => {
+  const hash = 'cd'.repeat(32);
+  const j = { now: lease() };
+  const d = await start(receiptHost(j), { receiptSigner: RECEIPT_SIGNER });
+  try {
+    assert.equal((await d.post(`/v1/leases/${'c'.repeat(32)}/receipt`, { sha256: hash })).status, 404);
+    await finishedJob(d, j);
+    const r = await d.post(`/v1/leases/${LEASE}/receipt`, { sha256: hash });
+    assert.equal(r.status, 409);
+    assert.deepEqual(await r.json(), { error: 'not_a_home' });
+  } finally {
+    d.close();
+  }
+  const h = { now: runningHome() };
+  const d2 = await start(receiptHost(h), { receiptSigner: RECEIPT_SIGNER, offers: async () => [HOME_OFFER] });
+  try {
+    await d2.post('/v1/leases', { offerId: OFFER_ID, home: { sshKeys: [HOME_KEY] } });
+    const unpaid = await d2.post(`/v1/leases/${LEASE}/receipt`, { sha256: hash });
+    assert.equal(unpaid.status, 409);
+    assert.deepEqual(await unpaid.json(), { error: 'unpaid' });
+    assert.equal((await d2.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' })).status, 200);
+    for (const bad of [{ sha256: hash, name: 'Charter endorses this' }, { sha256: hash.toUpperCase() }, { sha256: hash, cid: 'free text' }, { sha256: hash, bytes: -1 }, {}, [hash]]) {
+      const b = await d2.post(`/v1/leases/${LEASE}/receipt`, bad);
+      assert.equal(b.status, 400, JSON.stringify(bad));
+      assert.deepEqual(await b.json(), { error: 'bad_request' });
+    }
+    for (const now of [runningHome({ paidThrough: d2.clock.t - 1 }), runningHome({ state: 'closed', closedReason: 'missed_tick' }), runningHome({ state: 'booting' }), runningHome({ paidThrough: undefined })]) {
+      h.now = now;
+      d2.clock.t += 60_000;
+      const r = await d2.post(`/v1/leases/${LEASE}/receipt`, { sha256: hash });
+      assert.equal(r.status, 409, JSON.stringify(now));
+      assert.deepEqual(await r.json(), { error: 'not_running' });
+    }
+  } finally {
+    d2.close();
+  }
+});
+
+test('receipt: a lease may declare 60 times an hour, then 429 until the hour turns', async () => {
+  const h = { now: runningHome({ paidThrough: 50_000_000 }) };
+  const d = await start(receiptHost(h), { receiptSigner: RECEIPT_SIGNER, offers: async () => [HOME_OFFER] });
+  try {
+    await paidHome(d);
+    const hash = 'cd'.repeat(32);
+    for (let i = 0; i < 60; i++) assert.equal((await d.post(`/v1/leases/${LEASE}/receipt`, { sha256: hash })).status, 200, `declare ${i}`);
+    const over = await d.post(`/v1/leases/${LEASE}/receipt`, { sha256: hash });
+    assert.equal(over.status, 429);
+    assert.deepEqual(await over.json(), { error: 'rate_limited' });
+    d.clock.t += 3_600_001;
+    assert.equal((await d.post(`/v1/leases/${LEASE}/receipt`, { sha256: hash })).status, 200);
+  } finally {
+    d.close();
+  }
+});
+
+test('receipt: /v1/door names the receipt signer; without one the routes do not exist', async () => {
+  await withRealDoor(async (d) => {
+    assert.deepEqual(await (await d.get('/v1/door')).json(), { payTo: PAY_TO, network: 'eip155:8453', receiptSigner: RECEIPT_SIGNER.address });
+  }, { receiptSigner: RECEIPT_SIGNER });
+  const state = { now: lease() };
+  const d = await start(receiptHost(state));
+  try {
+    await finishedJob(d, state);
+    assert.equal((await d.get(`/v1/leases/${LEASE}/receipt`)).status, 404);
+    assert.equal((await d.post(`/v1/leases/${LEASE}/receipt`, { sha256: 'cd'.repeat(32) })).status, 404);
   } finally {
     d.close();
   }

@@ -16,6 +16,7 @@ import { CapitalCapError, DepositPendingError, DepositTimeoutError } from './hos
 import { publicRecord, rankOffers, type HostRecord, type HostRegistry } from './hosts.js';
 import { hostRoutes } from './hosts-routes.js';
 import { slidingLimit } from './limit.js';
+import { buildReceipt, declaredBody, leaseRefOf, signReceipt, type ReceiptSigner, type SignedReceipt } from './receipts.js';
 import { safeFetch } from './safe-fetch.js';
 import { logRequests, type RequestSink } from './reqlog.js';
 import { MAX_TIMEOUT_SECONDS, MIN_WINDOW_SECONDS, SETTLE_MARGIN_SECONDS, isPayerFault, microToUsdc, paymentIdOf, settleReasonOf, settleTxOf, type Gate, type PaymentId, type Schemes, type TestHooks, type X402Config } from '../x402/seller.js';
@@ -86,6 +87,10 @@ export interface DoorDeps {
   allowPageUrl?: string;
   /** Referral accrual. Left out: the field is still checked, recorded and echoed, and nothing accrues. */
   referrals?: { store: ReferralStore; bps: number; hosts: Set<string>; log?: PayoutLog };
+  /** Signs receipts (receipts.ts): the door's payer key. Left out: the receipt routes are not mounted and /v1/door names no signer. */
+  receiptSigner?: ReceiptSigner;
+  /** The door's public URL, as a receipt names it. Default: https://charterhome.dev. */
+  doorUrl?: string;
   /** Opt-in to be named by Charter's X account: the owner's read of a lease or a grant carries its code under `social`. Left out: no code is served. */
   social?: SocialOptin;
 }
@@ -176,6 +181,15 @@ const REFERRAL_HOW =
   'Add "referral": "<0x address on Base>" to POST /v1/rent. That address earns a share of every hour the renter pays for, paid in USDC on Base. Read GET /v1/referrals/<address>.';
 
 /** The lease's free-read budget is spent. */
+/** Declared receipts one lease may ask for in an hour. */
+const DECLARES_PER_HOUR = 60;
+/** A lease with no finished output to sign. */
+class NoOutputError extends Error {}
+/** An output part as the host answers it, or undefined when `v` is not one. */
+function asPart(v: unknown): { parts: number; data: string } | undefined {
+  const p = v as { parts?: unknown; data?: unknown } | null;
+  return p && typeof p === 'object' && typeof p.data === 'string' && typeof p.parts === 'number' && Number.isSafeInteger(p.parts) && p.parts >= 1 ? { parts: p.parts, data: p.data } : undefined;
+}
 class BudgetError extends Error {}
 
 /** The door's daily cap on spend no renter paid for is reached. */
@@ -482,7 +496,8 @@ export function doorApp(deps: DoorDeps): express.Express {
     const { payTo, network } = deps.x402;
     const payer = deps.payer;
     const referralBps = deps.referrals?.bps ?? 0;
-    app.get('/v1/door', (_req, res) => void res.json({ payTo, network, ...(payer ? { payer } : {}), ...(referralBps > 0 ? { referral: { bps: referralBps, how: REFERRAL_HOW } } : {}) }));
+    const receiptSigner = deps.receiptSigner?.address;
+    app.get('/v1/door', (_req, res) => void res.json({ payTo, network, ...(payer ? { payer } : {}), ...(receiptSigner ? { receiptSigner } : {}), ...(referralBps > 0 ? { referral: { bps: referralBps, how: REFERRAL_HOW } } : {}) }));
   }
 
   if (deps.grants) {
@@ -798,7 +813,7 @@ export function doorApp(deps: DoorDeps): express.Express {
       const r = await unpaid(api, () => api.open(job));
       if (!LEASE_ID.test(r.leaseId) || ledger.get(r.leaseId)) return void res.status(502).json({ error: 'bad_host_answer' });
       const homeId = homeOf(job);
-      ledger.open({ leaseId: r.leaseId, offerId: offerIdOf(offer), createdAt: now(), offer: snapshotOffer(offer), fee: fee.toString(), ...(homeId ? { homeId } : {}), ...(named ? { referral: named } : {}) });
+      ledger.open({ leaseId: r.leaseId, offerId: offerIdOf(offer), createdAt: now(), offer: snapshotOffer(offer), fee: fee.toString(), ...(homeId ? { homeId } : {}), image: job.image, ...(named ? { referral: named } : {}) });
       opened(r, offer);
       const earner = earnerAtOpen(homeId, named);
       res.json({
@@ -1125,7 +1140,7 @@ export function doorApp(deps: DoorDeps): express.Express {
     const leaseId = r.leaseId;
     const homeId = homeOf(job);
     const named = res.locals.referral as string | undefined;
-    ledger.open({ leaseId, offerId: offerIdOf(offer), createdAt: now(), offer: snapshotOffer(offer), fee: fee.toString(), ...(homeId ? { homeId } : {}), ...(named ? { referral: named } : {}) });
+    ledger.open({ leaseId, offerId: offerIdOf(offer), createdAt: now(), offer: snapshotOffer(offer), fee: fee.toString(), ...(homeId ? { homeId } : {}), image: job.image, ...(named ? { referral: named } : {}) });
     const earner = earnerAtOpen(homeId, named);
     opened(r, offer);
     res.locals.leaseId = leaseId;
@@ -1224,6 +1239,153 @@ export function doorApp(deps: DoorDeps): express.Express {
     }
   });
 
+  /**
+   * Output part `part` of `id` from its host, kept on disk: one of the lease's paid reads, shared by every caller
+   * that asks while it is in flight. Rejects with BudgetError or CapacityError when the lease has no read left.
+   */
+  const fetchPart = async (id: string, part: number): Promise<unknown> => {
+    const key = `${id}:${part}`;
+    let fetching = partInflight.get(key);
+    if (!fetching) {
+      spendRead(id);
+      fetching = (async () => {
+        const api = deps.api(leaseOffer(id));
+        const answer = await unpaid(api, () => api.outputPart(id, part));
+        mkdirSync(join(deps.dataDir, 'output', id), { recursive: true, mode: 0o700 });
+        const file = partFile(id, part);
+        writeFileSync(`${file}.tmp`, JSON.stringify(answer), { mode: 0o600 });
+        renameSync(`${file}.tmp`, file);
+        return answer;
+      })();
+      partInflight.set(key, fetching);
+      const clear = () => void partInflight.delete(key);
+      fetching.then(clear, clear);
+    }
+    return fetching;
+  };
+
+  if (deps.receiptSigner) {
+    const signer = deps.receiptSigner;
+    const doorUrl = (deps.doorUrl ?? 'https://charterhome.dev').replace(/\/+$/, '');
+    const receiptFile = (id: string): string => join(deps.dataDir, 'receipts', `${id}.json`);
+    const receiptInflight = new Map<string, Promise<SignedReceipt>>();
+    const allowDeclare = slidingLimit(now, DECLARES_PER_HOUR, HOUR_MS);
+    const notRenters = [deps.fundAddress, deps.allowAddress].map((a) => a?.toLowerCase());
+    /** What every receipt of a lease says of it, from the ledger alone. */
+    const leaseFields = (id: string) => {
+      const rec = ledger.get(id)!;
+      const payer = rec.payer?.toLowerCase();
+      return {
+        door: doorUrl,
+        leaseRef: leaseRefOf(id),
+        hostId: rec.offer.hostId,
+        image: rec.image,
+        ticksPaid: rec.ticksPaidByRenter,
+        intervalSeconds: rec.offer.intervalSeconds,
+        // The fund's and the biller's wallets are Charter's, not the renter's.
+        payer: payer !== undefined && !notRenters.includes(payer) ? payer : undefined,
+      };
+    };
+    /** A part kept on disk, or undefined when it is not there (or is not a part). */
+    const storedPart = (id: string, part: number): { parts: number; data: string } | undefined => {
+      let text: string;
+      try {
+        text = readFileSync(partFile(id, part), 'utf8');
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+        throw e;
+      }
+      return asPart(JSON.parse(text));
+    };
+    /**
+     * The whole output of a job. From disk alone when every part is there (a host lists parts only for a finished
+     * job, so a full set on disk is a finished output); otherwise the status must say `done`, and each missing part
+     * is one paid read. Null: there is no output to sign.
+     */
+    const wholeOutput = async (id: string): Promise<Buffer | null> => {
+      const first = storedPart(id, 0);
+      let parts = first?.parts;
+      let stored = first ? [first] : [];
+      if (parts !== undefined) {
+        for (let n = 1; n < parts; n++) {
+          const p = storedPart(id, n);
+          if (!p || p.parts !== parts) break;
+          stored.push(p);
+        }
+      }
+      if (parts === undefined || stored.length !== parts) {
+        const lease = await leaseStatus(id);
+        if (lease.state !== 'done' || lease.outputParts === undefined || lease.outputParts < 1) return null;
+        parts = lease.outputParts;
+        stored = [];
+        for (let n = 0; n < parts; n++) {
+          const p = storedPart(id, n) ?? asPart(await fetchPart(id, n));
+          if (!p || p.parts !== parts) throw new HostError(502, 'bad_host_answer');
+          stored.push(p);
+        }
+      }
+      return Buffer.concat(stored.map((p) => Buffer.from(p.data, 'base64')));
+    };
+
+    // A finished job's receipt: signed once, then served from disk.
+    app.get('/v1/leases/:id/receipt', async (req, res) => {
+      const id = known(req, res);
+      if (!id) return;
+      try {
+        try {
+          return void res.type('json').send(readFileSync(receiptFile(id), 'utf8'));
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+        }
+        const rec = ledger.get(id)!;
+        if (rec.homeId) return void res.status(409).json({ error: 'home_lease', hint: 'a home has no output: POST { sha256 } here for a declared receipt' });
+        if (rec.ticksPaidByRenter < 1) return void res.status(409).json({ error: 'unpaid' });
+        let signing = receiptInflight.get(id);
+        if (!signing) {
+          signing = (async () => {
+            const bytes = await wholeOutput(id);
+            if (!bytes || bytes.length === 0) throw new NoOutputError();
+            const signed = await signReceipt(
+              buildReceipt({ kind: 'job', ...leaseFields(id), sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length, at: now() }),
+              signer,
+            );
+            mkdirSync(join(deps.dataDir, 'receipts'), { recursive: true, mode: 0o700 });
+            const file = receiptFile(id);
+            writeFileSync(`${file}.tmp`, JSON.stringify(signed), { mode: 0o600 });
+            renameSync(`${file}.tmp`, file);
+            return signed;
+          })();
+          receiptInflight.set(id, signing);
+          const clear = () => void receiptInflight.delete(id);
+          signing.then(clear, clear);
+        }
+        res.json(await signing);
+      } catch (e) {
+        if (e instanceof NoOutputError) return void res.status(409).json({ error: 'no_output' });
+        failRead(res, e);
+      }
+    });
+
+    // A home's declared receipt: the holder's own hash, signed with the door's time. Nothing is kept.
+    app.post('/v1/leases/:id/receipt', async (req, res) => {
+      const id = known(req, res);
+      if (!id) return;
+      const body = declaredBody(req.body);
+      if (!body) return void res.status(400).json({ error: 'bad_request' });
+      const rec = ledger.get(id)!;
+      if (!rec.homeId) return void res.status(409).json({ error: 'not_a_home' });
+      if (rec.ticksPaidByRenter < 1) return void res.status(409).json({ error: 'unpaid' });
+      try {
+        const lease = await leaseStatus(id);
+        if (lease.state !== 'running' || lease.paidThrough === undefined || lease.paidThrough <= now()) return void res.status(409).json({ error: 'not_running' });
+        if (!allowDeclare(id)) return void res.status(429).json({ error: 'rate_limited' });
+        res.json(await signReceipt(buildReceipt({ kind: 'declared', ...leaseFields(id), ...body, at: now() }), signer));
+      } catch (e) {
+        failRead(res, e);
+      }
+    });
+  }
+
   app.get('/v1/leases/:id/output/:part', async (req, res) => {
     const raw = req.params.part as string;
     if (!NON_NEG_INT.test(raw) || !Number.isSafeInteger(Number(raw))) return void res.status(404).json({ error: 'not_found' });
@@ -1239,24 +1401,7 @@ export function doorApp(deps: DoorDeps): express.Express {
       }
       const parts = (await leaseStatus(id)).outputParts;
       if (parts === undefined || part >= parts) return void res.status(404).json({ error: 'not_found' });
-      const key = `${id}:${part}`;
-      let fetching = partInflight.get(key);
-      if (!fetching) {
-        spendRead(id);
-        fetching = (async () => {
-          const api = deps.api(leaseOffer(id));
-          const answer = await unpaid(api, () => api.outputPart(id, part));
-          mkdirSync(join(deps.dataDir, 'output', id), { recursive: true, mode: 0o700 });
-          const file = partFile(id, part);
-          writeFileSync(`${file}.tmp`, JSON.stringify(answer), { mode: 0o600 });
-          renameSync(`${file}.tmp`, file);
-          return answer;
-        })();
-        partInflight.set(key, fetching);
-        const clear = () => void partInflight.delete(key);
-        fetching.then(clear, clear);
-      }
-      res.json(await fetching);
+      res.json(await fetchPart(id, part));
     } catch (e) {
       failRead(res, e);
     }

@@ -70,6 +70,8 @@ export interface DoorLease {
   fee?: string;
   /** A home lease: the home's id (homeIdOf its keys). */
   homeId?: string;
+  /** The image of the job the lease was opened with: what a receipt names. Absent on a lease opened before the ledger kept it. */
+  image?: string;
   /** The address named at open, lower case. */
   referral?: string;
   /** Epoch ms of the newest tick the host accepted. */
@@ -199,7 +201,7 @@ export class DoorLedger {
     return [...this.leases.values()].map((l) => ({ ...l }));
   }
 
-  open(o: { leaseId: string; offerId: string; createdAt: number; offer: OfferSnapshot; fee?: string; homeId?: string; referral?: string }): void {
+  open(o: { leaseId: string; offerId: string; createdAt: number; offer: OfferSnapshot; fee?: string; homeId?: string; image?: string; referral?: string }): void {
     const { referral, ...rest } = o;
     this.leases.set(o.leaseId, {
       ...rest,

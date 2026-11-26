@@ -7,6 +7,7 @@ import { base } from 'viem/chains';
 import { idleMsFor, startClaims, x402Command } from '../x402/claims.js';
 import { createFacilitatorConfig } from '@coinbase/x402';
 import { HTTPFacilitatorClient } from '@x402/core/server';
+import type { ReceiptSigner } from './receipts.js';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { HostApi } from '../tenant/host-api.js';
 import type { Offer } from '../types.js';
@@ -45,6 +46,12 @@ function need(env: NodeJS.ProcessEnv, name: string): string {
 }
 
 /** The door's Base key (CHARTER_DOOR_PAYER_KEY_FILE), which pays hosts and is the renters' payTo. Readable by its owner only. */
+/** Receipts are signed by the door's payer key: its address is already public as `payer` in /v1/door. */
+function receiptSigner(key: `0x${string}`): ReceiptSigner {
+  const account = privateKeyToAccount(key);
+  return { address: account.address, signMessage: ({ message }) => account.signMessage({ message }) };
+}
+
 function payerKey(env: NodeJS.ProcessEnv): `0x${string}` {
   const file = need(env, 'CHARTER_DOOR_PAYER_KEY_FILE');
   if ((statSync(file).mode & 0o077) !== 0) throw new Error(`CHARTER_DOOR_PAYER_KEY_FILE ${file} must be readable by its owner only (chmod 0400)`);
@@ -221,6 +228,7 @@ async function main(): Promise<void> {
     offers: listedOffers({ registry, fetchOffer, now: Date.now }),
     api: apiOf,
     payer: payer.address,
+    receiptSigner: receiptSigner(key),
     registry,
     fee: funding.doorFee,
     hostDailyLoss: funding.hostDailyLoss,
