@@ -127,7 +127,8 @@ export async function leadsTick(deps: LeadsDeps): Promise<void> {
         continue;
       }
       if (!isLead) {
-        skip(p, 'not a lead');
+        // The text is kept so Drew can see what the judge turns down and tune leads.json.
+        skip(p, `not a lead: @${bare(p.authorHandle)}: ${p.text.replace(/\s+/g, ' ').slice(0, 160)}`);
         continue;
       }
 

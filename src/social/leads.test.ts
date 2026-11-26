@@ -175,6 +175,7 @@ test('a post the pre-filter refuses, or the judge says no to, reaches no writer'
   assert.equal(t.model.prompts.filter((p) => p.startsWith('Judge the post')).length, 1);
   assert.equal(t.model.prompts.filter((p) => p.startsWith('Draft three')).length, 0);
   assert.equal(t.state.get().leads.cursors['host my agent'], '2');
+  assert.ok(t.state.get().log.some((r) => r.text === 'lead 2: not a lead: @ada: I shipped an agent'));
 });
 
 test('anything but an exact true from the judge is not a lead', async () => {
