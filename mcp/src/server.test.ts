@@ -330,8 +330,8 @@ test('a lock left by a dead server is cleared; a live one is waited for and then
 test('options come from the environment with safe defaults and refuse a cap that is not a number', () => {
   const d = optionsFromEnv({});
   assert.equal(d.door, 'https://charterhome.dev');
-  assert.equal(d.maxHour, 10_000n);
-  assert.equal(d.maxDay, 250_000n);
+  assert.equal(d.maxHour, 20_000n, 'default hour cap 0.02 USDC');
+  assert.equal(d.maxDay, 500_000n, 'default day cap 0.50 USDC');
   assert.equal(d.makeKey, true);
   const o = optionsFromEnv({ CHARTER_DOOR_URL: 'http://127.0.0.1:8787/', CHARTER_MAX_USDC_PER_DAY: '1', CHARTER_MCP_NO_NEW_KEY: '1' });
   assert.equal(o.door, 'http://127.0.0.1:8787');
@@ -563,4 +563,16 @@ test('charter_receipt names the door\'s reason when there is no receipt', async 
     assert.equal(r.isError, true);
     assert.match(r.text, new RegExp(error));
   }
+});
+
+test('an hour cap the operator set is kept over the default', () => {
+  assert.equal(optionsFromEnv({ CHARTER_MAX_USDC_PER_HOUR: '0.01' }).maxHour, 10_000n);
+});
+
+test('a day of a home at 0.012 an hour fits the default day cap', () => {
+  const o = options({ maxDay: optionsFromEnv({}).maxDay });
+  const book = fileSpendBook(o.spendFile, o.maxDay);
+  for (let h = 0; h < 24; h++) assert.equal(book.reserve('2026-11-27', 12_000n), true, `hour ${h}`);
+  assert.equal(book.spent('2026-11-27'), 288_000n);
+  assert.equal(book.reserve('2026-11-27', 250_000n), false, 'past 0.50 a day is refused');
 });

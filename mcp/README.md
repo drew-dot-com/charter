@@ -2,7 +2,7 @@
 
 An MCP server that lets an agent rent a machine on [Charter](https://charterhome.dev/agents) and pay for it itself. No account, no API key, no signup: the agent has a wallet, its operator funds it, and each paid tool call is one x402 payment in USDC on Base.
 
-What it rents, by the hour, at the price each host sets (0.007 USDC an hour today). Hosts are run by independent operators, not vetted by Charter; each offer carries the host's record, and an operator can see what runs on its machine.
+What it rents, by the hour, at the price each host sets (0.012 USDC an hour today). Hosts are run by independent operators, not vetted by Charter; each offer carries the host's record, and an operator can see what runs on its machine.
 
 What it rents:
 
@@ -34,7 +34,7 @@ Node 22 or newer.
 
 1. The server makes a wallet key at `~/.charter/mcp.key` (mode 600). It never leaves the machine.
 2. Ask the agent to call `charter_wallet`. It prints the address.
-3. Send USDC on Base to that address. No ETH is needed: the facilitator submits each transfer. 0.05 USDC is enough for seven test runs; 1 USDC is about 6 days of a home.
+3. Send USDC on Base to that address. No ETH is needed: the facilitator submits each transfer. 0.05 USDC is enough for four test runs; 1 USDC is about 3.5 days of a home.
 4. Ask the agent to run something: "run `print(2 + 2)` on Charter".
 
 Until the wallet is funded the free tools work and the paid ones answer with the reason; `charter_wallet` gives the address to fund.
@@ -116,8 +116,8 @@ npx -y charter-mcp grant --id <grantId> --token-file token.txt
 
 - The server signs only `exact` payments in USDC on Base, to the payee Charter's door names at `GET /v1/door`. Anything else a 402 offers is never signed.
 - It reads the price first and never signs for more than that price, whatever the 402 then asks.
-- `CHARTER_MAX_USDC_PER_HOUR` (default `0.01`): a dearer interval is never signed.
-- `CHARTER_MAX_USDC_PER_DAY` (default `0.25`): the most one UTC day may cost. The count is kept in `~/.charter/mcp-spend.json`, under a lock, so a restart or a second client on the same machine does not reset it. A damaged file stops payments until you delete it.
+- `CHARTER_MAX_USDC_PER_HOUR` (default `0.02`): a dearer interval is never signed.
+- `CHARTER_MAX_USDC_PER_DAY` (default `0.50`): the most one UTC day may cost. The count is kept in `~/.charter/mcp-spend.json`, under a lock, so a restart or a second client on the same machine does not reset it. A damaged file stops payments until you delete it.
 - A call is counted against the day unless no payment was signed, or the signed payment was turned down with a 402 (an empty wallet, most often). So a call refused as `busy` after signing is counted although it never settles: the count errs toward having spent.
 - It talks to the door's own address only, follows no redirect, and gives up on a request after 30 seconds (90 for a paid one).
 - Every paid tool's description starts with `PAID` and names the price, so a client that asks before a tool call shows it.

@@ -9,13 +9,13 @@
     "source": "github",
     "subfolder": "mcp"
   },
-  "version": "0.7.0",
+  "version": "0.8.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "charter-mcp",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "transport": {
         "type": "stdio"
       },
@@ -24,13 +24,13 @@
           "name": "CHARTER_MAX_USDC_PER_HOUR",
           "description": "The most one interval may cost, in USDC. A dearer price is never signed.",
           "isRequired": false,
-          "default": "0.01"
+          "default": "0.02"
         },
         {
           "name": "CHARTER_MAX_USDC_PER_DAY",
           "description": "The most one UTC day may cost, in USDC.",
           "isRequired": false,
-          "default": "0.25"
+          "default": "0.50"
         },
         {
           "name": "CHARTER_MCP_KEY_FILE",

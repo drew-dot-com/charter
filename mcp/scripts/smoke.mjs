@@ -3,7 +3,7 @@
 //   node scripts/smoke.mjs --free     free tools only
 // With an empty wallet the paid call is expected to be refused for balance: that proves the policy
 // accepted the door's offer and a payment was signed, and nothing is spent. With a funded wallet it
-// spends one interval (0.007 USDC on the live host) and prints the script's output.
+// spends one interval (0.012 USDC on the live host) and prints the script's output.
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { dirname, join } from 'node:path';

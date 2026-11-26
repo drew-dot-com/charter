@@ -68,8 +68,8 @@ export function optionsFromEnv(env: NodeJS.ProcessEnv): Options {
     door: (v('CHARTER_DOOR_URL') ?? DEFAULT_DOOR).replace(/\/+$/, ''),
     keyFile: v('CHARTER_MCP_KEY_FILE') ?? join(dir, 'mcp.key'),
     spendFile: v('CHARTER_MCP_SPEND_FILE') ?? join(dir, 'mcp-spend.json'),
-    maxHour: usdcToMicro(v('CHARTER_MAX_USDC_PER_HOUR') ?? '0.01'),
-    maxDay: usdcToMicro(v('CHARTER_MAX_USDC_PER_DAY') ?? '0.25'),
+    maxHour: usdcToMicro(v('CHARTER_MAX_USDC_PER_HOUR') ?? '0.02'),
+    maxDay: usdcToMicro(v('CHARTER_MAX_USDC_PER_DAY') ?? '0.50'),
     ...(v('CHARTER_BASE_RPC') ? { baseRpc: v('CHARTER_BASE_RPC')! } : {}),
     makeKey: v('CHARTER_MCP_NO_NEW_KEY') === undefined,
   };
@@ -369,7 +369,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
         usdcOnBase: usdc,
         ...caps(),
         keyFile: o.keyFile,
-        fund: `Send USDC on Base (chain id 8453, token ${BASE_USDC}) to ${account.address}. No ETH is needed. 0.007 USDC buys one hour; 1 USDC is about 6 days of a home. Keep only what the rent needs in this wallet: the key is a plain file on this machine.`,
+        fund: `Send USDC on Base (chain id 8453, token ${BASE_USDC}) to ${account.address}. No ETH is needed. 0.012 USDC buys one hour; 1 USDC is about 3.5 days of a home. Keep only what the rent needs in this wallet: the key is a plain file on this machine.`,
         pays: 'Only Charter: exact USDC on Base, to the payee the door names, within the caps above. The operator changes the caps with CHARTER_MAX_USDC_PER_HOUR and CHARTER_MAX_USDC_PER_DAY.',
       };
     },
@@ -432,14 +432,14 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
   const referralNote = 'Pass referral (a 0x address on Base) and that address earns a share of every hour this lease pays for; see charter_referral_status.';
   const referralField = z.string().regex(/^0x[0-9a-fA-F]{40}$/).nullable().optional().describe('optional 0x address on Base that earns a share of every hour this lease pays for (null is the same as leaving it out); see charter_referral_status');
   const server = new McpServer({ name: 'charter', version: VERSION });
-  const cost = 'Costs one interval of the first machine in the door\'s ranking that runs it within this server\'s cap (hosts set their own price; 0.007 USDC an hour today; see charter_offers), paid from this server\'s own wallet in USDC on Base. Hosts are run by independent operators, not vetted by Charter.';
+  const cost = 'Costs one interval of the first machine in the door\'s ranking that runs it within this server\'s cap (hosts set their own price; 0.012 USDC an hour today; see charter_offers), paid from this server\'s own wallet in USDC on Base. Hosts are run by independent operators, not vetted by Charter.';
 
   server.registerTool(
     'charter_offers',
     {
       title: 'Charter machines on sale',
       description:
-        'Free. The machines for rent on Charter right now: price per interval in USDC (hosts set their own; 0.007 an hour today), CPU, memory, the job images each runs, how many home slots it has and whether its home is tested, and the host\'s record (probes passed, leases finished, success rate). Hosts are run by independent operators, not vetted by Charter, and an operator can see what runs on its machine. Charter rents a sandboxed machine by the hour with no account: a Python job, a page-fetch job, or a Linux home with SSH. Call this first to see the price before any paid tool. ' + referralNote,
+        'Free. The machines for rent on Charter right now: price per interval in USDC (hosts set their own; 0.012 an hour today), CPU, memory, the job images each runs, how many home slots it has and whether its home is tested, and the host\'s record (probes passed, leases finished, success rate). Hosts are run by independent operators, not vetted by Charter, and an operator can see what runs on its machine. Charter rents a sandboxed machine by the hour with no account: a Python job, a page-fetch job, or a Linux home with SSH. Call this first to see the price before any paid tool. ' + referralNote,
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -532,7 +532,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
     {
       title: 'Pay more time on a lease',
       description:
-        'PAID. Pays the next intervals of a running lease, one payment each at the lease\'s open-time price (0.007 USDC an hour today), from this server\'s wallet. Use it to keep a home running: pay before the paid time runs out, ideally half an hour early. Stops at the first refused payment and reports what was paid. A lease that has closed cannot be extended; a home opens again with the same keys.',
+        'PAID. Pays the next intervals of a running lease, one payment each at the lease\'s open-time price (0.012 USDC an hour today), from this server\'s wallet. Use it to keep a home running: pay before the paid time runs out, ideally half an hour early. Stops at the first refused payment and reports what was paid. A lease that has closed cannot be extended; a home opens again with the same keys.',
       inputSchema: {
         leaseId: z.string().regex(/^[0-9a-f]{32}$/).describe('the leaseId to pay for'),
         hours: z.number().int().min(1).max(24).describe('how many intervals to pay now, 1 to 24. The door refunds nothing, so pay only what you will use.'),
