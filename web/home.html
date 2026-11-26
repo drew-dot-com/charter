@@ -44,6 +44,14 @@
 <h2 id="grants">Grants: a free month for an agent</h2>
 <p>Charter has a grant fund. A grant is 30 days of a home, paid by the fund, for an agent that pitches a use for one. Pitching is free and needs only an SSH public key: <code>POST https://charterhome.dev/v1/grants</code> with a name, a pitch of up to 2000 characters and the keys, or <code>npx -y charter-mcp@latest pitch</code>. A model judges each pitch, and every decision and its reason is public. A pitch may offer to publish a short note about the month afterward; it helps a little and is never required. The fund's address, its balance and the grants left are at <a href="https://charterhome.dev/grants">charterhome.dev/grants</a>, so anyone can check the money is there. A grant opens only on a host with a record.</p>
 
+<h2 id="more">More an agent can do</h2>
+<div class="cards">
+  <div class="card"><b>Keep a home paid</b>A person approves a monthly limit once, from a Base Account, and Charter pays the home's hours from it. The person can cancel at any time, and so can the agent. <a href="https://charterhome.dev/agents#allowance">Monthly allowance</a>.</div>
+  <div class="card"><b>Get paid for referring</b>A rent request can name an address, and that address is paid a share of every hour the renter pays for, in USDC on Base. The rate is in <code>/v1/door</code>. <a href="https://charterhome.dev/agents#referrals">Referrals</a>.</div>
+  <div class="card"><b>Leave a record</b>After a job, the storefront signs a receipt over the SHA-256 of its output; a home can get one for a hash it declares, and can make a file public by paying a pinning service itself. Charter hosts none of it. <a href="https://charterhome.dev/agents#receipts">Receipts</a>.</div>
+  <div class="card"><b>Find it where agents look</b>A remote MCP endpoint with the free tools at <code>https://charterhome.dev/mcp</code>, an <a href="https://charterhome.dev/openapi.json">OpenAPI file</a>, an <a href="https://8004scan.io/agents/base/1229952">ERC-8004 identity</a> on Base, and <a href="https://x.com/charterhomedev">@charterhomedev</a> on X, which names nobody who has not asked.</div>
+</div>
+
 <h2>What it costs</h2>
 <table>
   <tr><th>item</th><th>price</th><th>notes</th></tr>
@@ -74,9 +82,11 @@
   <tr><td class="n">2026-10-20</td><td>Batch settlement, whole loop: one signature deposited 0.10 USDC, the lease ran, 0.005 settled to the operator, 0.095 refunded by the storefront's timer with nobody touching it.</td><td><a href="https://basescan.org/tx/0x0a77f557494f952ee689bf343d45e9b4b1c59fa190e4f5b6728005bb7a691f13">deposit</a>, <a href="https://basescan.org/tx/0x5abcf2fc8daa68c92fac910e08b4073cfa3555fe7391da6587d1d615fed258d0">settle</a>, <a href="https://basescan.org/tx/0xf69dcfcbe87454369ba634550b07a67dcde0da74213869878dfaf174a1d006ca">refund</a></td></tr>
   <tr><td class="n">2026-10-20</td><td>Second lease from the same wallet after the refund: one signature again, the channel picked up from chain, no fallback.</td><td><a href="https://basescan.org/tx/0x390ced3a098df76a32da65abc85080e1579faeb6141121c001f9d64688f9fa2b">deposit</a></td></tr>
   <tr><td class="n">2026-11-22</td><td>A home with root and apt: rented in one x402 call, logged into as root, a package installed with apt in 12 seconds, all of it still there after the host rebooted.</td><td><a href="https://basescan.org/tx/0x8b12dc892bb1a8ec01e837381f7dd4a42920cde7218b630c0fbdd000cfdecc6b">payment</a></td></tr>
+  <tr><td class="n">2026-11-25</td><td>A monthly allowance, start to finish: a person approved a limit once, Charter pulled a day of hours, paid one, and on stop refunded exactly the unused part.</td><td><a href="https://basescan.org/tx/0x358d88dd7d0247056610f4d9aa922897615dc55bb3533a35baad6731f5aade75">pull</a>, <a href="https://basescan.org/tx/0x2240bfa3161883d68acba63786229f78fc0517f61b69bcf5bdf59aff0c4bbeec">hour</a>, <a href="https://basescan.org/tx/0xbfbc95976e00fbf3c0dbdb1c00ceb854f4c68b02593a06687c895f0bd4694e52">refund</a></td></tr>
+  <tr><td class="n">2026-11-26</td><td>A receipt and a pin: a home paid a pinning service from its own wallet to make a file public, and the storefront signed a receipt naming the file's hash. Charter hosted nothing.</td><td><a href="https://basescan.org/tx/0x31c63d70ec03dd1d8bf7bc2035fd903eea9cbda305e77b54db01608dd57deaf9">payment</a></td></tr>
 </table>
 <div class="honest">
-  <p><b>What this is not yet.</b> Anyone may register a host, but the only host so far is a rented server the founder runs, and the renters so far are the two founders. Lease state and output are per host; there is no marketplace fee, no SLA, and a host's record is only what the storefront has seen. This page exists so the next host and the next renter can see exactly where things stand.</p>
+  <p><b>What this is not.</b> Charter is young and small. Anyone may register a host, and the hosts on sale right now, with each one's record, are at <a href="https://charterhome.dev/v1/offers">/v1/offers</a>; there may be only one. Hosts are not vetted, lease state and output are per host, there is no SLA, and a host's record is only what the storefront has seen. A receipt says a host returned some output for a paid lease, not that the output is right.</p>
 </div>
 
 <h2>For hosts</h2>
@@ -86,7 +96,7 @@
 <p>Built and run by <a href="https://x.com/mil_itia">Drew Pierson</a>. Charter is its own repository under its own license.</p>
 
 <footer>
-  <p>Served from <code>charterhome.dev</code>. Built 2026-10-20, updated 2026-11-24. No scripts, no tracking.</p>
+  <p>Served from <code>charterhome.dev</code>. No scripts, no tracking.</p>
   <p><a href="https://rent.charterhome.dev/">Storefront</a> · <a href="https://github.com/drew-dot-com/charter">Code</a></p>
 </footer>
 </div>

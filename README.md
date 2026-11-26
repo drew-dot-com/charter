@@ -29,8 +29,8 @@ when the 30-day period resets), `stopping` then `ended` (over, credit refunded; 
 `refused` or `expired` (ask for a new link). Stop it with `POST /v1/allowances/<id>/stop` and the owner
 token. Homes only, not jobs.
 
-**Status: v1.** Every lease so far has Drew Pierson on both sides: he runs the door, the first host and
-both renters. There are no outside hosts or renters yet. Four job images:
+**Status: v1, live on Base mainnet since 2026-10-17.** Drew Pierson runs the door and the first host;
+anyone may register another, and the hosts on sale with their records are at `/v1/offers`. Four job images:
 `charter-job-python` runs the renter's own Python script (up to 8 KiB, NumPy included) with no
 network at all and returns its stdout, stderr and exit code; `charter-job-fetch` fetches up to five
 pages in a headless browser and returns a screenshot and the text of each; `charter-home` is a box
