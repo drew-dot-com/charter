@@ -26,7 +26,7 @@ test('loadConfig applies the v1 defaults', () => {
   assert.equal(c.offer.url, 'https://host.example');
   assert.equal(c.offer.payTo, PAY_TO);
   assert.equal(c.offer.intervalSeconds, 3600);
-  assert.equal(c.offer.tickPrice, 7000n);
+  assert.equal(c.offer.tickPrice, 11000n, '0.011 host + 0.001 door fee = 0.012 an hour');
   assert.equal(c.offer.openPrice, 0n, 'the door pays ticks only');
   assert.equal(c.offer.statusPrice, 0n);
   assert.equal(c.offer.hiddenHost, false);
@@ -208,7 +208,7 @@ test('deploy/host/env.example loads as it stands once its placeholders are fille
   const c = loadConfig(env);
   assert.equal(c.hostUrl, 'https://host.example.org');
   assert.ok(c.allowImages.includes('charter-job-python'), 'the probe is a python job');
-  assert.ok(c.offer.tickPrice <= 10_000n, 'priced within the probe cap');
+  assert.ok(c.offer.tickPrice <= 20_000n, 'priced within the probe cap');
   const named = new Set([...text.matchAll(/^#? ?([A-Z][A-Z0-9_]+)=/gm)].map((m) => m[1]!));
   const src = readFileSync(new URL('./config.ts', import.meta.url), 'utf8');
   for (const n of named) assert.ok(src.includes(`'${n}'`) || src.includes(`.${n}`), `${n} is read by loadConfig`);

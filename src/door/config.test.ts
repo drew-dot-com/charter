@@ -46,7 +46,7 @@ test('parsePayerKey: one 0x-prefixed 64-hex key; refusals name CHARTER_DOOR_PAYE
 
 test('doorFunding applies the defaults and reads overrides', () => {
   assert.deepEqual(doorFunding({}), {
-    probesPerDay: 10, probeMaxTick: 10_000n, probeDeposit: 100_000n, probeCap: 1_000_000n,
+    probesPerDay: 10, probeMaxTick: 20_000n, probeDeposit: 100_000n, probeCap: 1_000_000n,
     hostDeposit: 500_000n, hostCap: 10_000_000n, selfAddrs: [], doorFee: 0n, hostDailyLoss: 50_000n,
     depositTimeoutDailyCap: 100_000n,
   });

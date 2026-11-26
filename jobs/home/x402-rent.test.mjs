@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BASE, BASE_USDC, onlyDoorExact, renewLoop } from './x402-rent.mjs';
+import { BASE, BASE_USDC, DEFAULT_MAX_TICK, onlyDoorExact, renewLoop } from './x402-rent.mjs';
 
 const LEASE = 'a'.repeat(32);
 const HOUR = 3_600_000;
@@ -261,4 +261,12 @@ test('pin and receipt check the lease before any money moves', async () => {
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test('the default hour cap is 0.02 USDC: 20000 is signed, 20001 is not', () => {
+  assert.equal(DEFAULT_MAX_TICK, 20000n);
+  const policy = onlyDoorExact(PAYEE.toLowerCase(), DEFAULT_MAX_TICK);
+  const req = (amount) => ({ scheme: 'exact', network: BASE, asset: BASE_USDC, payTo: PAYEE, amount });
+  assert.equal(policy(2, [req('20000')]).length, 1);
+  assert.equal(policy(2, [req('20001')]).length, 0);
 });

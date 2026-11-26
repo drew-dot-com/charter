@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { ALLOWED_MOVES, LIVE_STATES, type AllowanceState, type SignedPermission } from '../door/allowances.js';
 import type { Answer, DoorClient } from '../fund/door-client.js';
-import { cycle, LAPSE_END_MS, pullNeed, SHORT_RETRY_MS, type BillerDeps } from './biller.js';
+import { billablePrice, cycle, LAPSE_END_MS, pullNeed, SHORT_RETRY_MS, type BillerDeps } from './biller.js';
 import { checkEncodable, inForce, judgeRevert, NotSent, Unencodable, type Chain } from './chain.js';
 import { loadState, saveState, type AllowState } from './state.js';
 
@@ -92,6 +92,7 @@ class FakeDoor implements DoorClient {
     this.gets.push(path);
     const o = this.onGet?.(path);
     if (o) return o;
+    if (path === '/v1/offers') return { status: 200, body: [this.offer] };
     const m = /^\/v1\/leases\/([0-9a-f]{32})$/.exec(path);
     if (m && this.leases.has(m[1]!)) return { status: 200, body: { lease: { id: m[1], ...this.leases.get(m[1]!) }, stopped: false, offer: this.offer } };
     return { status: 404, body: { error: 'not_found' } };
@@ -1136,4 +1137,23 @@ test('I7: an abandoned refund ends the allowance as operator with no refund sent
   assert.deepEqual(r.chain.sends(), []);
   assert.equal(r.door.stateOf(id), 'ended');
   assert.equal(r.door.a(id).endReason, 'operator');
+});
+
+test('billablePrice takes up to 0.02 USDC an hour and no more', () => {
+  assert.equal(billablePrice('20000'), 20_000n);
+  assert.equal(billablePrice('12000'), 12_000n);
+  assert.equal(billablePrice('20001'), undefined);
+  assert.equal(billablePrice('0'), undefined);
+});
+
+test('a closed home is not re-opened when its offer now asks more than was approved', async () => {
+  const r = rig();
+  const { id } = r.door.home({}, { state: 'closed' });
+  r.state.entries[id] = { allowanceId: id, creditMicro: '21000' };
+  // The closed lease still shows its open-time price (7000); the offer it would re-open on now asks 12000.
+  r.door.onGet = (path) => (path === '/v1/offers' ? { status: 200, body: [{ ...r.door.offer, tickPrice: '12000' }] } : undefined);
+  await r.run();
+  assert.equal(r.door.pays.length, 0);
+  assert.equal(r.door.a(id).reason, 'price rose above what was approved');
+  assert.ok(r.problems.some((p) => p.key === 'price' && /12000/.test(p.msg)));
 });

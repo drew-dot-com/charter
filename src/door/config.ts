@@ -52,7 +52,7 @@ function wholeEnv(env: Record<string, string | undefined>, name: string, dflt: b
 export function doorFunding(env: Record<string, string | undefined>): DoorFunding {
   return {
     probesPerDay: Number(wholeEnv(env, 'CHARTER_PROBES_PER_DAY', 10n, 0n)),
-    probeMaxTick: wholeEnv(env, 'CHARTER_PROBE_MAX_TICK', 10_000n, 1n),
+    probeMaxTick: wholeEnv(env, 'CHARTER_PROBE_MAX_TICK', 20_000n, 1n),
     probeDeposit: wholeEnv(env, 'CHARTER_PROBE_DEPOSIT', 100_000n, 1n),
     probeCap: wholeEnv(env, 'CHARTER_PROBE_CAPITAL_CAP', 1_000_000n, 0n),
     hostDeposit: wholeEnv(env, 'CHARTER_HOST_DEPOSIT', 500_000n, 1n),

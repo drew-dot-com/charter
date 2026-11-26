@@ -191,10 +191,10 @@ export function loadConfig(env: Record<string, string | undefined>): HostConfig 
       payTo: payTo as `0x${string}`,
       cpu: num(env, 'CHARTER_CPU', 1),
       memoryMiB: num(env, 'CHARTER_MEMORY_MIB', 1024),
-      // One hour at 0.007 USDC: about 5 USDC for 30 days, the price a model weighs against a 5 EUR VPS.
+      // One hour at 0.011 USDC; with the door's 0.001 fee a renter pays 0.012, about 8.64 USDC for 30 days.
       intervalSeconds: num(env, 'CHARTER_INTERVAL_SECONDS', 3600),
       firstTickGraceSeconds: FIRST_TICK_GRACE_MS / 1000,
-      tickPrice: price(env, 'CHARTER_TICK_PRICE', 7000n),
+      tickPrice: price(env, 'CHARTER_TICK_PRICE', 11000n),
       // The door pays ticks only: opens and status reads are free.
       openPrice: 0n,
       statusPrice: 0n,

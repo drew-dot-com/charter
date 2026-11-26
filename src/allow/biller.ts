@@ -51,7 +51,7 @@ const errOf = (a: Answer): string => (isObj(a.body) && typeof a.body.error === '
 const short = (id: string): string => id.slice(0, 8);
 
 /** A tick price the biller will pay: a decimal string, more than 0, at most MAX_TICK_MICRO. */
-function priceOf(x: unknown): bigint | undefined {
+export function billablePrice(x: unknown): bigint | undefined {
   if (typeof x !== 'string' || !/^\d{1,12}$/.test(x)) return undefined;
   const p = BigInt(x);
   return p > 0n && p <= MAX_TICK_MICRO ? p : undefined;
@@ -474,7 +474,7 @@ class One {
   // ---- approval ----
 
   private async activate(st: Status): Promise<void> {
-    const tick = priceOf(this.a.tickMicro);
+    const tick = billablePrice(this.a.tickMicro);
     if (tick === undefined) return this.problem('allowance', `allowance ${short(this.id)}: tickMicro ${String(this.a.tickMicro)} is not a price the biller pays; not activated`);
     const seen = { account: this.p.permission.account, remainingMicro: st.remainingMicro.toString(), periodEndsAt: st.periodEndsAt };
     const c = await this.d.chain.canPull(this.p, tick);
@@ -517,9 +517,9 @@ class One {
     const leaseId = h.leaseId;
     const { lease, body } = await this.readLease(leaseId);
     const interval = isObj(body.offer) && Number.isSafeInteger(body.offer.intervalSeconds) && body.offer.intervalSeconds > 0 ? (body.offer.intervalSeconds as number) : 3600;
-    const tick = isObj(body.offer) ? priceOf(body.offer.tickPrice) : undefined;
+    const tick = isObj(body.offer) ? billablePrice(body.offer.tickPrice) : undefined;
     // Never more an hour than the price the person saw when they approved.
-    const approved = priceOf(this.a.tickMicro);
+    const approved = billablePrice(this.a.tickMicro);
     if (tick !== undefined && (approved === undefined || tick > approved)) {
       await this.post({ reason: PRICE_ROSE });
       return this.backOff('price', `lease ${short(leaseId)} asks ${tick} micro-USDC an hour, above the ${String(this.a.tickMicro)} the person approved; nothing paid or re-opened`);
@@ -661,6 +661,17 @@ class One {
   private async reopen(h: Home, prevLeaseId: string, tick: bigint, interval: number, st: Status): Promise<void> {
     const offerId = h.offerId;
     if (offerId === null) return this.backOff('open', `home ${this.a.homeId} has no offer on record; not re-opened anywhere`);
+    // A closed lease shows its open-time price; the re-open pays the offer's price now, so check that one too.
+    const listed = await this.d.door.get('/v1/offers');
+    const row = listed.status === 200 && Array.isArray(listed.body) ? listed.body.find((o: unknown) => isObj(o) && o.offerId === offerId) : undefined;
+    if (!isObj(row)) return this.backOff('open', `offer ${offerId} is not listed now (GET /v1/offers answered ${listed.status}); not re-opened`);
+    const now = billablePrice(row.tickPrice);
+    const approved = billablePrice(this.a.tickMicro);
+    if (now === undefined || approved === undefined || now > approved) {
+      await this.post({ reason: PRICE_ROSE });
+      return this.backOff('price', `offer ${offerId} asks ${String(row.tickPrice)} micro-USDC an hour, above the ${String(this.a.tickMicro)} the person approved; not re-opened`);
+    }
+    if (now > tick) tick = now;
     if (!(await this.haveCredit(tick, st))) {
       this.e.nextReadAt = this.t + BACKOFF_MS;
       this.save();

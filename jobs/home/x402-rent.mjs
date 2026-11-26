@@ -13,7 +13,7 @@
 //
 // CHARTER_X402_KEY_FILE: a file holding one private key as 0x + 64 hex (default ~/.charter/x402.key; never
 // the environment, never the command line). `address` makes one when the file is absent.
-// CHARTER_X402_MAX_TICK: the most one hour may cost, micro-USDC (default 10000 = 0.01 USDC). A dearer 402
+// CHARTER_X402_MAX_TICK: the most one hour may cost, micro-USDC (default 20000 = 0.02 USDC). A dearer 402
 // is never signed. CHARTER_DOOR_URL overrides the door. `renew` reads CHARTER_LEASE_ID, set in every home.
 //
 // `receipt` moves no money: the door signs a statement that the holder of this lease declared this SHA-256 at
@@ -28,6 +28,8 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const BASE = 'eip155:8453';
+/** The most one hour may cost by default, micro-USDC (0.02 USDC). */
+export const DEFAULT_MAX_TICK = 20000n;
 export const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const DEFAULT_DOOR = 'https://charterhome.dev';
 const LEASE_ID = /^[0-9a-f]{32}$/;
@@ -362,7 +364,7 @@ export async function main(argv, env) {
     return 2;
   }
 
-  const maxTick = BigInt(env.CHARTER_X402_MAX_TICK?.trim() || '10000');
+  const maxTick = env.CHARTER_X402_MAX_TICK?.trim() ? BigInt(env.CHARTER_X402_MAX_TICK.trim()) : DEFAULT_MAX_TICK;
   const acct = await account(env);
   const info = await get('/v1/door');
   if (info.status !== 200 || !/^0x[0-9a-fA-F]{40}$/.test(info.body?.payTo ?? '') || info.body.network !== BASE) {

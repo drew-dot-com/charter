@@ -10,7 +10,7 @@ import type { DoorPatch, FundGrant, FundState } from './state.js';
 /** A grant is this many hours of a home. */
 export const GRANT_HOURS = 720;
 /** The most the fund pays for one tick, in micro-USDC (the door client's signing cap is the same). */
-export const MAX_TICK_MICRO = 10_000n;
+export const MAX_TICK_MICRO = 20_000n;
 /** After a refused open or tick, the grant is left alone this long. */
 export const BACKOFF_MS = 5 * 60_000;
 /** An approved grant that waited this long for a slot expires. */

@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { ALLOWED_MOVES, type GrantState } from '../door/grants.js';
 import type { Answer, DoorClient } from './door-client.js';
 import type { PitchIn, Verdict } from './judge.js';
-import { commitmentOk, cycle, dayCapOk, grantEligible, HOME_USED_REASON, makeJudgeOne, MAX_JUDGE_TRIES, tickDue } from './paymaster.js';
+import { commitmentOk, cycle, dayCapOk, grantEligible, HOME_USED_REASON, makeJudgeOne, MAX_JUDGE_TRIES, MAX_TICK_MICRO, tickDue } from './paymaster.js';
 import { writeFileSync } from 'node:fs';
 import { emptyState, loadState, saveState, type FundState } from './state.js';
 
@@ -348,7 +348,7 @@ test('approved grants expire after 14 days', async () => {
 });
 
 test('no usable tick price on any offer: nothing is spent', async () => {
-  for (const tickPrice of ['', 'abc', '0', '10001', '-5', '7000.5']) {
+  for (const tickPrice of ['', 'abc', '0', '20001', '-5', '7000.5']) {
     const r = rig();
     r.door.offers = [offer({ tickPrice })];
     r.door.grant();
@@ -1436,4 +1436,8 @@ test('an ended grant releases its host', async () => {
   r.state.grants[a]!.endedAt = r.clock.t;
   await r.run({ grantHomesPerHost: 1 });
   assert.equal(r.door.paid().filter((p) => p.path === '/v1/rent').length, 2, 'released');
+});
+
+test('MAX_TICK_MICRO is 0.02 USDC an hour', () => {
+  assert.equal(MAX_TICK_MICRO, 20_000n);
 });
