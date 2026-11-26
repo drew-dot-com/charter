@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { privateKeyToAccount } from 'viem/accounts';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -34,6 +35,8 @@ interface DoorOpts {
   onPaid?: (path: string) => Response;
   /** Answer every POST with this instead of the x402 exchange. */
   post?: () => Response;
+  /** The address /v1/door names as the receipt signer. */
+  receiptSigner?: string;
 }
 
 /**
@@ -50,7 +53,7 @@ function door(routes: Record<string, unknown>, o: DoorOpts = {}) {
     assert.equal(req.redirect, 'error', 'every request refuses redirects');
     assert.ok(req.signal, 'every request has a timeout');
     if (req.method === 'GET') {
-      if (url.pathname === '/v1/door') return json({ payTo: o.payTo ?? PAY_TO, network: BASE });
+      if (url.pathname === '/v1/door') return json({ payTo: o.payTo ?? PAY_TO, network: BASE, ...(o.receiptSigner ? { receiptSigner: o.receiptSigner } : {}) });
       const hit = routes[url.pathname];
       return hit === undefined ? json({ error: 'not_found' }, 404) : json(hit);
     }
@@ -93,10 +96,10 @@ const done = (stdout: string) => ({
   [`/v1/leases/${ID}/output/0`]: { part: 0, parts: 1, data: Buffer.from(JSON.stringify({ kind: 'python', exitCode: 0, stdout, stderr: '' })).toString('base64') },
 });
 
-test('the server lists its thirteen tools, and every paid one says PAID first', async () => {
+test('the server lists its fourteen tools, and every paid one says PAID first', async () => {
   const { client } = await connect(options(), door({}).fetchFn);
   const { tools } = await client.listTools();
-  assert.deepEqual(tools.map((t) => t.name).sort(), ['charter_allowance_link', 'charter_allowance_status', 'charter_allowance_stop', 'charter_extend', 'charter_fetch_pages', 'charter_grant_pitch', 'charter_grant_status', 'charter_lease', 'charter_offers', 'charter_referral_status', 'charter_rent_home', 'charter_run_python', 'charter_wallet']);
+  assert.deepEqual(tools.map((t) => t.name).sort(), ['charter_allowance_link', 'charter_allowance_status', 'charter_allowance_stop', 'charter_extend', 'charter_fetch_pages', 'charter_grant_pitch', 'charter_grant_status', 'charter_lease', 'charter_offers', 'charter_receipt', 'charter_referral_status', 'charter_rent_home', 'charter_run_python', 'charter_wallet']);
   for (const t of tools) {
     const paid = ['charter_extend', 'charter_fetch_pages', 'charter_rent_home', 'charter_run_python'].includes(t.name);
     assert.equal(t.description!.startsWith('PAID.'), paid, t.name);
@@ -499,4 +502,65 @@ test('charter_offers passes referralShare through when the door sends it', async
   assert.equal(offers.offers[0].referralShare, '700');
   assert.equal(offers.offers[0].referralShareUsdc, '0.0007');
   assert.equal('referralShare' in offers.offers[1], false);
+});
+
+const RECEIPT_KEY = privateKeyToAccount(`0x${'33'.repeat(32)}`);
+/** A receipt as the door answers it, signed by `account`. */
+async function signedReceipt(account = RECEIPT_KEY, over: Record<string, unknown> = {}) {
+  const receipt = { v: 1, kind: 'job', door: 'https://charterhome.dev', leaseRef: 'ab'.repeat(32), hostId: 'cd'.repeat(32), ticksPaid: 1, intervalSeconds: 3600, sha256: 'ef'.repeat(32), bytes: 187, at: 1795000000000, ...over };
+  const message = `Charter receipt v1\n${JSON.stringify(receipt)}`;
+  return { receipt, message, signer: account.address, signature: await account.signMessage({ message }) };
+}
+
+test('charter_receipt returns the door\'s receipt only after checking its signature against the door\'s signer', async () => {
+  const signed = await signedReceipt();
+  const d = door({ [`/v1/leases/${ID}/receipt`]: signed }, { receiptSigner: RECEIPT_KEY.address });
+  const { call } = await connect(options({ makeKey: false }), d.fetchFn);
+  const r = await call('charter_receipt', { leaseId: ID });
+  assert.equal(r.isError, false, r.text);
+  const out = JSON.parse(r.text);
+  assert.equal(out.verified, true);
+  assert.deepEqual(out.receipt, signed.receipt);
+  assert.equal(out.message, signed.message);
+  assert.equal(out.signature, signed.signature);
+  assert.equal(d.seen.unpaidPosts.length, 0, 'a free read: nothing is posted');
+  const before = d.seen.urls.length;
+  assert.equal((await call('charter_receipt', { leaseId: 'nope' })).isError, true);
+  assert.equal(d.seen.urls.length, before, 'a bad lease id sends nothing');
+});
+
+test('charter_receipt refuses a receipt that does not check out', async () => {
+  const good = await signedReceipt();
+  const other = privateKeyToAccount(`0x${'44'.repeat(32)}`);
+  const cases: Array<[string, unknown, string | undefined, RegExp]> = [
+    ['the receipt beside the message was changed', { ...good, receipt: { ...good.receipt, sha256: '00'.repeat(32) } }, RECEIPT_KEY.address, /does not match what was signed/],
+    ['signed by a key the door does not name', await signedReceipt(other), RECEIPT_KEY.address, /not the door's receipt signer/],
+    ['the signature is not the signer\'s', { ...good, signature: (await signedReceipt(other)).signature }, RECEIPT_KEY.address, /signature does not verify/],
+    ['the message has no prefix', { ...good, message: JSON.stringify(good.receipt) }, RECEIPT_KEY.address, /does not match what was signed/],
+    ['the door names no signer', good, undefined, /names no receipt signer/],
+  ];
+  for (const [what, body, signer, want] of cases) {
+    const d = door({ [`/v1/leases/${ID}/receipt`]: body }, { receiptSigner: signer });
+    const { call } = await connect(options({ makeKey: false }), d.fetchFn);
+    const r = await call('charter_receipt', { leaseId: ID });
+    assert.equal(r.isError, true, what);
+    assert.match(r.text, want, what);
+  }
+});
+
+test('charter_receipt names the door\'s reason when there is no receipt', async () => {
+  const { call } = await connect(options({ makeKey: false }), door({}, { receiptSigner: RECEIPT_KEY.address }).fetchFn);
+  const unknown = await call('charter_receipt', { leaseId: ID });
+  assert.equal(unknown.isError, true);
+  assert.match(unknown.text, /does not know this lease/);
+  for (const error of ['no_output', 'unpaid', 'home_lease']) {
+    const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(new Request(input, init).url);
+      return new Response(JSON.stringify(url.pathname === '/v1/door' ? { payTo: PAY_TO, network: BASE } : { error }), { status: url.pathname === '/v1/door' ? 200 : 409 });
+    }) as typeof fetch;
+    const c = await connect(options({ makeKey: false }), fetchFn);
+    const r = await c.call('charter_receipt', { leaseId: ID });
+    assert.equal(r.isError, true);
+    assert.match(r.text, new RegExp(error));
+  }
 });

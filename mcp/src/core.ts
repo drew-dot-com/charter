@@ -14,6 +14,9 @@
  * by the wallet's balance, not by this book. Keep the wallet small.
  */
 
+import { isDeepStrictEqual } from 'node:util';
+import { verifyMessage } from 'viem';
+
 export const BASE = 'eip155:8453';
 export const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 export const DEFAULT_DOOR = 'https://charterhome.dev';
@@ -587,5 +590,52 @@ export async function referralStatus(d: Pick<Deps, 'get'>, address: string): Pro
     paidUsdc: money(b.paid),
     owedUsdc: money(b.owed),
     payouts,
+  };
+}
+
+/** The line every receipt message starts with (the door's src/door/receipts.ts). */
+export const RECEIPT_PREFIX = 'Charter receipt v1\n';
+
+/**
+ * A finished job's receipt (free): the door's signed statement of the SHA-256 and size of the lease's whole
+ * output. Checked here before it is handed on: the signer must be the address the door names as `receiptSigner`,
+ * the signature must be that signer's over `message`, and the receipt must be the one inside `message`. A
+ * receipt that fails any of the three is refused, never returned.
+ */
+export async function receipt(d: Pick<Deps, 'get'>, leaseId: string): Promise<unknown> {
+  if (!LEASE_ID.test(leaseId)) throw new Error('a leaseId is 32 lowercase hex characters');
+  const r = await d.get(`/v1/leases/${leaseId}/receipt`);
+  if (r.status === 404) throw new Error('the door does not know this lease (only a lease opened through the door can be read here)');
+  if (r.status === 429) throw new Error('the door is rate limiting reads of this lease, or the lease has no free read left for a part of its output. Wait a minute and ask again.');
+  const b = r.body;
+  if (r.status !== 200 || typeof b?.message !== 'string' || typeof b?.signer !== 'string' || typeof b?.signature !== 'string') {
+    const why = typeof b?.error === 'string' ? b.error.slice(0, 60) : `status ${r.status}`;
+    throw new Error(`the door signed no receipt (${why}). no_output: the job has not finished with output. unpaid: no interval was paid. home_lease: a home has no output; inside the home run charter-x402 receipt <file>.`);
+  }
+  const info = await d.get('/v1/door');
+  const named = info.status === 200 && typeof info.body?.receiptSigner === 'string' ? (info.body.receiptSigner as string) : undefined;
+  if (!named) throw new Error('the door names no receipt signer at /v1/door, so this receipt cannot be checked; it was not returned');
+  if (b.signer.toLowerCase() !== named.toLowerCase()) throw new Error(`the receipt is signed by ${b.signer}, not the door's receipt signer ${named}; it was not returned`);
+  let inside: unknown;
+  try {
+    inside = b.message.startsWith(RECEIPT_PREFIX) ? JSON.parse(b.message.slice(RECEIPT_PREFIX.length)) : undefined;
+  } catch {
+    inside = undefined;
+  }
+  if (inside === undefined || !isDeepStrictEqual(inside, b.receipt)) throw new Error('the receipt the door answered does not match what was signed; it was not returned');
+  let good = false;
+  try {
+    good = await verifyMessage({ address: b.signer as `0x${string}`, message: b.message, signature: b.signature as `0x${string}` });
+  } catch {
+    good = false;
+  }
+  if (!good) throw new Error('the receipt\'s signature does not verify; it was not returned');
+  return {
+    receipt: b.receipt,
+    message: b.message,
+    signer: b.signer,
+    signature: b.signature,
+    verified: true,
+    means: 'The door signed that this host returned output with this SHA-256 and size for a lease that was paid. Hosts are not vetted by Charter, so it does not say the result is correct. The receipt names the lease by a hash, never its id, so it is safe to publish.',
   };
 }

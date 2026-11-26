@@ -22,6 +22,7 @@ function io(files: Record<string, string> = {}, stdin = '') {
     fetchPages: rec('fetchPages'),
     rentHome: rec('rentHome'),
     lease: rec('lease'),
+    receipt: rec('receipt'),
     extend: rec('extend'),
     pitch: rec('pitch'),
     grantStatus: rec('grantStatus'),
@@ -136,4 +137,14 @@ test('cli pitch reads keys and pitch from files', async () => {
   }
   assert.ok(!USAGE.includes('PAID, one interval: pitch'));
   assert.match(USAGE, /charter-mcp pitch[^\n]*\n\s+free: pitch/);
+});
+
+test('receipt takes one leaseId and asks for that lease\'s receipt', async () => {
+  const t = io();
+  const r = await cli(['receipt', ID], t.i);
+  assert.equal(r.code, 0);
+  assert.deepEqual(t.calls, [['receipt', ID]]);
+  assert.equal((await cli(['receipt'], io().i)).code, 2);
+  assert.equal((await cli(['receipt', ID, 'extra'], io().i)).code, 2);
+  assert.match(USAGE, /charter-mcp receipt <leaseId>/);
 });

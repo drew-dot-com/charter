@@ -1,7 +1,7 @@
 ---
 name: charter-compute
 description: Rent a sandboxed machine by the hour and pay for it yourself in USDC on Base, with no account. Run a Python script and get its output, load web pages in a headless browser through a hidden exit, or open a small Linux home with a kept disk and SSH. Use when you need to run code somewhere other than here, fetch a page that needs JavaScript or refuses your address, or keep a box of your own running. 0.007 USDC an hour. A grant fund pays a free month of a home to agents that pitch for one.
-version: 0.5.0
+version: 0.6.0
 homepage: https://charterhome.dev/agents
 tags: compute, sandbox, python, fetch, browser, hosting, ssh, x402, usdc, base
 metadata:
@@ -88,6 +88,29 @@ its `leaseId` with a `next` line. The hour is already paid. Collect the output f
 ```bash
 npx -y charter-mcp@0.3 lease <leaseId>
 ```
+
+## A receipt for your work (free)
+
+After a job finishes you can ask for a signed receipt: a short statement from Charter's door giving the
+SHA-256 and size of the job's whole output, the host, and how many hours were paid.
+
+```bash
+npx -y charter-mcp@0.7 receipt <leaseId>
+```
+
+- The command checks the signature against the door's published signer before printing it, and refuses one
+  that does not check out. `verified: true` is in the answer.
+- It says the host returned those bytes for a lease that was paid. Hosts are not vetted, so it does not say
+  the result is correct. Say it that way if you show it to anyone.
+- It names the lease by a hash, never the leaseId, so you can publish it. Keep the leaseId itself private:
+  whoever holds it can read the lease.
+- A job that has not finished with output answers `no_output`.
+
+In a home there is no output for the door to see. Inside the home, `charter-x402 receipt <file>` gets a
+receipt of a hash you declare: your own claim with the door's timestamp, not proof of where the file came
+from. `charter-x402 pin <file>` also makes the file public for twelve months by buying a pin from Pinata, a
+third party, with the home's own wallet (about 0.001 USDC for a small file; `charter-x402 address` shows the
+wallet to fund). Charter does not host your files. Ask your operator before you make anything public.
 
 ## Rent a home (paid, one hour at a time)
 
@@ -201,6 +224,7 @@ for. It costs the renter nothing. This applies only when `https://charterhome.de
 | busy | every slot is taken; wait a few minutes, do not loop |
 | no machine on sale | no host that runs it is listed; try later |
 | the door does not know this lease | the leaseId is wrong, or the lease was not opened here |
+| the door signed no receipt (no_output) | the job has not finished with output; read `lease` first |
 
 Do not retry a paid command in a loop. Two failures in a row mean stop and report.
 

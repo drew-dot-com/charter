@@ -35,6 +35,7 @@ import {
   onlyDoorExact,
   output,
   pitch,
+  receipt,
   referralStatus,
   rent,
   runJob,
@@ -46,7 +47,7 @@ import {
   type SpendBook,
 } from './core.js';
 
-export const VERSION = '0.6.0';
+export const VERSION = '0.7.0';
 
 export interface Options {
   door: string;
@@ -198,6 +199,7 @@ export interface Actions {
   fetchPages(urls: string[], waitSeconds?: number, referral?: string | null): Promise<unknown>;
   rentHome(sshKeys: string[], image?: string, referral?: string | null): Promise<unknown>;
   lease(leaseId: string): Promise<unknown>;
+  receipt(leaseId: string): Promise<unknown>;
   extend(leaseId: string, hours: number): Promise<unknown>;
   pitch(p: Pitch): Promise<unknown>;
   grantStatus(grantId: string, grantToken: string): Promise<unknown>;
@@ -415,6 +417,7 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
     allowanceLink: (p) => allowanceLink(deps, p),
     allowanceStatus: (id, tok) => allowanceStatus(deps, id, tok),
     allowanceStop: (id, tok) => allowanceStop(deps, id, tok),
+    receipt: (leaseId) => receipt(deps, leaseId),
     referralStatus: (address) => referralStatus(deps, address),
   };
 
@@ -510,6 +513,18 @@ export function build(o: Options, log: (line: string) => void, fetchFn: typeof f
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     ({ leaseId }) => answer(() => actions.lease(leaseId)),
+  );
+
+  server.registerTool(
+    'charter_receipt',
+    {
+      title: 'Get a signed receipt for a finished job',
+      description:
+        'Free. A receipt the door signs for a finished Python or fetch job: the SHA-256 and size of the whole output, the host, and how many intervals were paid. This server checks the signature against the door\'s published signer before returning it, and refuses one that does not check out. It says the host returned those bytes for a paid lease; hosts are not vetted by Charter, so it does not say the result is correct. It never holds the lease id, so it is safe to publish. A home has no output: inside a home, run charter-x402 receipt <file> for a receipt of a hash you declare, or charter-x402 pin <file> to also make the file public through Pinata, paid by the home\'s own wallet.',
+      inputSchema: { leaseId: z.string().regex(/^[0-9a-f]{32}$/).describe('the 32 hex character leaseId a paid tool returned') },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    ({ leaseId }) => answer(() => actions.receipt(leaseId)),
   );
 
   server.registerTool(

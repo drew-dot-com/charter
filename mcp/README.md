@@ -49,6 +49,7 @@ Until the wallet is funded the free tools work and the paid ones answer with the
 | `charter_fetch_pages` | one interval | loads up to five pages and returns their text |
 | `charter_rent_home` | one interval | opens a Linux home with your SSH public keys |
 | `charter_lease` | free | a lease's state, paid time left, SSH address, finished output |
+| `charter_receipt` | free | a finished job's signed receipt: the SHA-256 of its output, checked before it is returned |
 | `charter_extend` | one interval each | pays the next 1 to 24 intervals of a running lease |
 | `charter_grant_pitch` | free | pitches the grant fund for a home paid by the fund |
 | `charter_grant_status` | free | your own grant, with its token: state, reason, full lease id |
@@ -58,6 +59,14 @@ Until the wallet is funded the free tools work and the paid ones answer with the
 | `charter_referral_status` | free | what a referral address has earned, been paid and is owed |
 
 A job tool waits up to 40 seconds by default, under most clients' tool timeout. A job still running then hands back its `leaseId`, and `charter_lease` collects the output for free.
+
+## Receipts
+
+After a job finishes, `charter_receipt` (or `charter-mcp receipt <leaseId>`) asks the door for a signed receipt: the SHA-256 and size of the whole output, the host, and how many intervals were paid. It is free. Before handing it back the server checks three things: the signer is the address the door names as `receiptSigner` at `/v1/door`, the signature is that signer's over `message`, and the receipt is the one inside `message`. A receipt that fails is refused, not returned.
+
+A receipt says the host returned those bytes for a lease that was paid. Hosts are not vetted by Charter, so it does not say the result is correct. It names the lease by `leaseRef`, a hash of the lease id, never by the id, so it is safe to publish. Charter stores none of your files to make one.
+
+A home has no output the door can see. Inside a home, `charter-x402 receipt <file>` gets a receipt of a hash you declare (your own claim with the door's timestamp), and `charter-x402 pin <file>` also buys a public pin from Pinata, a third party, paid by the home's own wallet. Charter does not host renter files.
 
 ## Grants
 

@@ -15,6 +15,7 @@ export const USAGE = `usage:
   charter-mcp rent-home <keys.pub> [--image charter-home | charter-hermes]
                                                 PAID, one interval: open a Linux home with these SSH public keys
   charter-mcp lease <leaseId>                   free: state, paid time left, SSH address, finished output
+  charter-mcp receipt <leaseId>                 free: a finished job's signed receipt (the output's SHA-256), checked
   charter-mcp extend <leaseId> <hours>          PAID, one interval each: pay the next 1 to 24 intervals
   charter-mcp pitch --name <n> --keys <keys.pub> --pitch-file <file> [--image charter-home | charter-hermes] [--link <https url>]
                                                 free: pitch the grant fund for a home (30 days, paid by the fund)
@@ -108,6 +109,11 @@ export async function cli(argv: string[], io: CliIo): Promise<CliResult> {
         const { rest } = parse(args, []);
         if (rest.length !== 1) throw new UsageError('lease takes one leaseId');
         return ok(await io.actions().lease(rest[0]!));
+      }
+      case 'receipt': {
+        const { rest } = parse(args, []);
+        if (rest.length !== 1) throw new UsageError('receipt takes one leaseId');
+        return ok(await io.actions().receipt(rest[0]!));
       }
       case 'extend': {
         const { rest } = parse(args, []);
