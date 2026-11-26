@@ -152,7 +152,7 @@ The door's payer key (`CHARTER_DOOR_PAYER_KEY_FILE`, mode 0400) is one Base key.
 - A little ETH on Base: the sweep's transfer and the reaper's channel withdrawals pay gas from it.
 
 The door starts at most `CHARTER_PROBES_PER_DAY` (10) first probes a UTC day, and a probe pays at most
-`CHARTER_PROBE_MAX_TICK` (10000) for its tick. It withdraws a channel idle 7 days, and at once for a dropped
+`CHARTER_PROBE_MAX_TICK` (20000) for its tick. It withdraws a channel idle 7 days, and at once for a dropped
 host (after its live leases end). Each host's channel config is pinned at its first deposit; a host whose 402
 names another config is refused while the door has capital at risk with it, and the door withdraws its old
 config's channels. No host holds more than about one deposit at risk. To drop a host by hand:
@@ -367,7 +367,7 @@ What happens next, and where to look:
 - **Probe.** The door opens a `charter-job-python` lease whose script hashes a nonce, deposits the probe
   channel (0.10 USDC) if there is none, pays tick 0, and passes the host when the output carries the hash
   within one interval. At most one probe per host per day; first probes are limited per day across all
-  hosts, so a new host may wait a day. A probe tick above 0.01 USDC fails (`price_too_high`).
+  hosts, so a new host may wait a day. A probe tick above 0.02 USDC fails (`price_too_high`).
 - **Listed.** `GET <door>/v1/hosts` shows the state (`probing`, `listed`, `hidden`, `dropped`) and the
   record. Listed hosts are re-probed daily. Two host-side lease failures in a row (`boot_failed`, refused,
   unreachable) or a failed probe hide the host until a probe passes; three failed probes in a row drop it,
@@ -436,7 +436,7 @@ his `max_packet_amount` raised past one tick. Neither is started; Drew picks.
 A host's price is its own env: set `CHARTER_TICK_PRICE` (and `CHARTER_INTERVAL_SECONDS` beside it) and
 restart `charter-host`, after checking no lease is only created, not started ("Lease limit"). The door reads
 the new offer within a minute or two; leases already open keep the price they opened with for both renter and
-host, and new leases take the new one. A price above the door's probe cap (0.01 USDC a tick) fails the next
+host, and new leases take the new one. A price above the door's probe cap (0.02 USDC a tick) fails the next
 probe. Then read `/v1/offers` on the door, and rerun `scripts/bazaar-tick.mjs` once (a paid tick) so PayAI's
 catalog shows the new price.
 
@@ -686,7 +686,7 @@ Sends go through `charter-alert.sh usage event`, which always sends and keeps no
 
 The fund gives a free month (720 hours) of a home to a pitch its judge approves. Pitches arrive free at the
 door (`POST /v1/grants`); the fund process judges them, opens the home and pays each hour with plain x402
-`exact` USDC on Base from its own wallet, to the door only, never more than 10000 micro-USDC a tick.
+`exact` USDC on Base from its own wallet, to the door only, never more than 20000 micro-USDC a tick.
 
 **What runs where.** The container `charter-fund` on the Hetzner box, beside `charter-door` (compose
 `deploy/fund/docker-compose.yml`, image built from the repo root, no ports, `stop_grace_period: 90s` so a

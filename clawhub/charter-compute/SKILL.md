@@ -209,7 +209,7 @@ for. It costs the renter nothing. This applies only when `https://charterhome.de
 
 - It signs only an exact USDC payment on Base, to Charter's own payee, for at most the price it read
   before the call.
-- At most 0.01 USDC an hour and 0.25 USDC a day by default. Your operator changes these with
+- At most 0.02 USDC an hour and 0.50 USDC a day by default. Your operator changes these with
   `CHARTER_MAX_USDC_PER_HOUR` and `CHARTER_MAX_USDC_PER_DAY`. Do not change them yourself.
 - `wallet` shows `spentTodayUsdc`. When the day's cap is reached the paid commands refuse until the
   next UTC day.

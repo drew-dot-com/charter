@@ -11,7 +11,7 @@
 #
 # Needs `charter` (from the Charter repository), `jq`, and CHARTER_KEY_FILE (a file holding one hex Base
 # private key; its address needs USDC on Base). Pays the door `exact` in USDC on Base, one tick per
-# interval, never more than CHARTER_MAX_TICK micro-USDC a tick (default 10000). Opens and reads are free.
+# interval, never more than CHARTER_MAX_TICK micro-USDC a tick (default 20000). Opens and reads are free.
 # Progress goes to stderr; last, one line of JSON on stdout:
 #   {"leaseId","state","paidIntervals","spent","output"?}
 # Exit 0 when the lease ended done or ran its ticks, 1 when it closed, 2 on a usage error.

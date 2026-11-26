@@ -108,7 +108,7 @@ that cannot be fetched stays listed 10 minutes, then is hidden until it answers.
 | --- | --- | --- | --- |
 | `CHARTER_KEY_FILE` | for `rent`, `renew`, `address` | | File holding one Base private key in hex (`0x` optional). Its address needs USDC on Base and no ETH. Inside a `charter-hermes` home the default boot makes `~/.charter/payer.key`. |
 | `CHARTER_DOOR_URL` | no | `https://charterhome.dev` | The door (`--door` wins). Set for you inside a home. |
-| `CHARTER_MAX_TICK` | no | `10000` | The most one tick may cost, micro-USDC (0.01 USDC). A dearer 402 is never signed. |
+| `CHARTER_MAX_TICK` | no | `20000` | The most one tick may cost, micro-USDC (0.02 USDC). A dearer 402 is never signed. |
 
 `CHARTER_PAYER` and `CHARTER_OFFER_JSON` belonged to the TOON payer, which is gone: the CLI refuses to run
 with either set, so an old script stops before paying another way. `--relay` is gone too.

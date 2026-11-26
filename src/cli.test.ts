@@ -125,7 +125,7 @@ test('renew pays from the host\'s paid count', async () => {
   assert.equal(j.paidIntervals, 4);
   assert.equal(j.spent, '7000');
   // The key file's hex key, with the default door and the default cap.
-  assert.deepEqual(door.built, [{ doorUrl: DEFAULT_DOOR, key: `0x${KEY_HEX}`, maxTickMicro: 10000n }]);
+  assert.deepEqual(door.built, [{ doorUrl: DEFAULT_DOOR, key: `0x${KEY_HEX}`, maxTickMicro: 20000n }]);
 });
 
 test('renew --from that is not the host\'s count pays nothing and exits 2', async () => {
@@ -253,4 +253,12 @@ test('an invalid access prints no ssh line', () => {
     { ...ok, user: 'root' },
     { ...ok, host: `${'a'.repeat(56)}.anyone`, port: 2222 },
   ]) assert.equal(sshLine({ ssh }), undefined, JSON.stringify(ssh));
+});
+
+test('with no CHARTER_MAX_TICK the cap is 0.02 USDC: rent pays up to 20000 a tick', async () => {
+  const clock = { t: 1_000_000 };
+  const door = fakeDoor({ clock });
+  await cli(['rent', '--offer', `${HOST}:o1`, '--urls', 'https://e.com', '--max-intervals', '1', '--door', 'https://d.example'],
+    { CHARTER_KEY_FILE: keyFile() }, door, clock);
+  assert.equal(door.built[0]!.maxTickMicro, 20_000n);
 });

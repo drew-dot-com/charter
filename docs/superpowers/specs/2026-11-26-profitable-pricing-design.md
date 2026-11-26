@@ -59,6 +59,7 @@ never holds more than six 1 GiB containers. Checked 11-26: 6.5 GB free with one 
 - charter-mcp `CHARTER_MAX_USDC_PER_HOUR` default 0.02, and `CHARTER_MAX_USDC_PER_DAY` default 0.25 to 0.50
   (a home at 0.012 costs 0.288 a day, above the old day cap).
 - Home rent script `jobs/home/x402-rent.mjs` `CHARTER_X402_MAX_TICK` default 20000.
+- `charter` CLI (`src/cli.ts`) `CHARTER_MAX_TICK` default 20000: every `charter-hermes` home renews through it.
 - Door `MAX_TICK_PRICE` (50000) is already above.
 
 **Copy:** every "0.007 USDC an hour" and what is derived from it ("about 5 USDC for 30 days", "1 USDC is about
@@ -71,9 +72,11 @@ evergreen. Old specs and plans are history and are not edited.
    explicit `CHARTER_PROBE_MAX_TICK` and drop or raise it.
 2. Grant fund and allowance biller on the box: redeploy with the new cap.
 3. charter-mcp: npm release (Drew's passkey), then the MCP registry, ClawHub, plugin.
-4. hel1: `CHARTER_TICK_PRICE=11000`, `CHARTER_MAX_HOMES=6`, restart the host, wait for the door to list
+4. hel1 home images (`charter-home`, `charter-hermes`): rebuild from the new tree. They carry `charter-x402`
+   and the `charter` CLI, whose old 0.01 default would refuse a home's own 0.012 renewals.
+5. hel1: `CHARTER_TICK_PRICE=11000`, `CHARTER_MAX_HOMES=6`, restart the host, wait for the door to list
    0.012 with 6 slots and a passed probe.
-5. Push charter main.
+6. Push charter main.
 
 **Leases already open keep their open-time price and fee.** Your bots' home (allowance 45b94233, approved at
 7000) keeps running as long as its lease does not lapse. If it ever re-opens, the biller refuses 12000 and backs

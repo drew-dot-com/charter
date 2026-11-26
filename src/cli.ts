@@ -11,8 +11,8 @@ import { FromMismatchError, continueLease, runLease, type LeaseEvent, type RunLe
 
 /** The door the CLI talks to unless --door or CHARTER_DOOR_URL names another. */
 export const DEFAULT_DOOR = 'https://charterhome.dev';
-/** The most one tick may cost unless CHARTER_MAX_TICK says otherwise: 0.01 USDC. */
-const DEFAULT_MAX_TICK: Micro = 10_000n;
+/** The most one tick may cost unless CHARTER_MAX_TICK says otherwise: 0.02 USDC. */
+const DEFAULT_MAX_TICK: Micro = 20_000n;
 
 const USAGE = `usage:
   charter offers [--door <url>]
@@ -22,7 +22,7 @@ const USAGE = `usage:
   charter address
 the door is --door, else CHARTER_DOOR_URL, else ${DEFAULT_DOOR}
 rent and renew pay the door over x402 (exact USDC on Base) from the hex key in the file CHARTER_KEY_FILE, at most
-  CHARTER_MAX_TICK micro-USDC a tick (default ${DEFAULT_MAX_TICK} = 0.01 USDC); address prints that key's address
+  CHARTER_MAX_TICK micro-USDC a tick (default ${DEFAULT_MAX_TICK} = 0.02 USDC); address prints that key's address
 rent without --offer takes the first offer in the door's ranking that runs the job; a home always opens on the host that holds it
 --home takes one SSH public key per line, --image picks the home image (charter-home by default, or charter-hermes)
 renew pays an open lease from the host's paid count on (--from, when given, must equal that count, or nothing is paid)`;

@@ -36,7 +36,7 @@ stops. The disk is kept 7 days; opening again with the same SSH keys brings the 
 - `charter-x402 renew --max-intervals <hours>` pays each hour 30 minutes before it runs out and logs
   each payment. It belongs in `~/.charter/boot.sh`, not in a chat turn: it must run for as long as the
   box does. Check with `tail ~/.charter/renew.log`.
-- It never signs more than 0.01 USDC for one hour and pays only the storefront's own address.
+- It never signs more than 0.02 USDC for one hour and pays only the storefront's own address.
 - Do not move that key off the box or print it. The host's operator can read this disk, so the wallet
   should hold rent money only.
 

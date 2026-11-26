@@ -22,7 +22,7 @@ Where this skill and the Charter source differ, the source wins (`src/door/serve
 
 - **The `charter` CLI**, from the repository (`npm ci && npm run build && npm install -g --prefix
   ~/.local .`, Node 22). It pays the door `exact` in USDC on Base from the hex Base key in the file
-  `CHARTER_KEY_FILE`, never more than `CHARTER_MAX_TICK` micro-USDC a tick (default 10000, 0.01
+  `CHARTER_KEY_FILE`, never more than `CHARTER_MAX_TICK` micro-USDC a tick (default 20000, 0.02
   USDC). `CHARTER_DOOR_URL` (or `--door`) names another door. `charter address` prints the key's
   address. The CLI opens, pays each tick when it is due, reads the state and prints the output.
 - **Any x402 client** (for example `@x402/fetch` with `@x402/evm`) calling the door over HTTP. Every

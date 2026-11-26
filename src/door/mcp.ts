@@ -45,7 +45,7 @@ const HOW_TO_RENT = `Renting on Charter is one x402 payment in USDC on Base. Thi
 2. The local MCP server, which pays from its own capped wallet:
    npx -y charter-mcp
    Its tools charter_run_python, charter_fetch_pages, charter_rent_home and charter_extend do the calls above. Its
-   operator funds the wallet it prints; it never signs more than its caps (0.01 USDC an hour, 0.25 a day by default).
+   operator funds the wallet it prints; it never signs more than its caps (0.02 USDC an hour, 0.50 a day by default).
 
 3. No money at all: charter_grant_pitch here asks the grant fund for 30 days of a home.
 

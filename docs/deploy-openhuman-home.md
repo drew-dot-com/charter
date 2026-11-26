@@ -63,7 +63,7 @@ node jobs/home/x402-rent.mjs status --lease <leaseId>     # until access.ssh is 
 Then SSH in over an Anyone SOCKS port (the `toon` VM has one), follow `/agents#openhuman` to the letter
 (install, start, boot script), and check: `ldd --version` says 2.41, `/health` is 200, the core's RSS
 stays near 100 MB after a minute, `docker restart` of the box brings it back. For the second tick, paid
-from inside: `charter-x402 address` in the box, send that address 0.01 USDC on Base, `charter-x402 renew
+from inside: `charter-x402 address` in the box, send that address 0.02 USDC on Base, `charter-x402 renew
 --once`. Let the lease lapse after; a home that paid keeps its disk 7 days.
 
 ## 4. The door

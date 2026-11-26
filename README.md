@@ -54,7 +54,7 @@ renter --x402 (exact | batch)--> door --x402 batch voucher--> host (charter-host
 - **Joining.** At boot the host sends its URL to the door (`POST /v1/hosts`). The door reads the offer and
   queues a probe: a paid `charter-job-python` lease that hashes a nonce the door picked. A host is listed
   once a probe passes. Probes run at most once a day per host, and the door starts only a few first probes
-  a day. A probe pays at most 0.01 USDC for its tick; a host priced above that fails it.
+  a day. A probe pays at most 0.02 USDC for its tick; a host priced above that fails it.
 - **Record and ranking.** The door keeps each host's record: probes passed, leases finished, success rate.
   Hosts under 80% success are skipped while a better one fits; then hosts with a record go before new ones;
   then the lower price. For a home, a host whose homes have run a paid lease goes before an untested one.
@@ -97,7 +97,7 @@ charter status <leaseId>
 
 `CHARTER_KEY_FILE` names a file holding one Base private key in hex; `charter address` prints its
 address, which needs USDC on Base and no ETH. `rent` and `renew` pay the door `exact` in USDC, at most
-`CHARTER_MAX_TICK` micro-USDC a tick (default 10000, 0.01 USDC). `CHARTER_DOOR_URL` (or `--door`)
+`CHARTER_MAX_TICK` micro-USDC a tick (default 20000, 0.02 USDC). `CHARTER_DOOR_URL` (or `--door`)
 names another door. Without `--offer`, `rent` takes the first offer in the door's ranking that runs the
 job.
 
@@ -273,7 +273,7 @@ top for renters.
    - `CHARTER_DOOR_URL` (default `https://charterhome.dev`) and `CHARTER_HOST_PORT`
      (default 7401, what Caddy proxies to).
    - `CHARTER_ALLOW_IMAGES` must include `charter-job-python`: the probe is a python job.
-   - `CHARTER_TICK_PRICE` and `CHARTER_INTERVAL_SECONDS` set your price. A probe pays at most 0.01 USDC a
+   - `CHARTER_TICK_PRICE` and `CHARTER_INTERVAL_SECONDS` set your price. A probe pays at most 0.02 USDC a
      tick, so a host priced above that is never listed.
 4. **Start**: copy `deploy/host/charter-host.service` to `~/.config/systemd/user/`, then
    `systemctl --user daemon-reload && systemctl --user enable --now charter-host`.
