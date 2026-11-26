@@ -9,6 +9,8 @@ export interface SocialConfig {
   /** Lowercased addresses. */
   firstParty: Set<string>;
   probes: Set<string>;
+  /** The door's allowance biller, lowercased. A lease it paid is judged by the account behind the allowance. */
+  allowAddress?: string;
   siteUrl: string;
   doorUrl: string;
   dataDir: string;
@@ -99,6 +101,9 @@ export function parseSocialConfig(env: NodeJS.ProcessEnv, readFile: (p: string) 
   const firstParty = payers('FIRST_PARTY_PAYERS', env.FIRST_PARTY_PAYERS, missing);
   if (firstParty.size === 0 && !missing.some((m) => m.startsWith('FIRST_PARTY_PAYERS'))) missing.push('FIRST_PARTY_PAYERS');
   const probes = payers('PROBE_PAYERS', env.PROBE_PAYERS, missing);
+  // The biller pays every allowance hour: without this each allowance lease reads as one outside wallet's.
+  const allowAddress = get('CHARTER_ALLOW_ADDRESS').toLowerCase();
+  if (allowAddress && !ADDRESS.test(allowAddress)) missing.push('CHARTER_ALLOW_ADDRESS must be a 0x address (40 hex characters)');
 
   // Ruling R18: posts link to the site, so its host must not carry a banned word (e.g. toonprotocol).
   const siteUrl = get('CHARTER_SITE_URL');
@@ -123,6 +128,7 @@ export function parseSocialConfig(env: NodeJS.ProcessEnv, readFile: (p: string) 
       telegram: { token, chatId: get('TELEGRAM_CHAT_ID') },
       firstParty,
       probes,
+      ...(allowAddress ? { allowAddress } : {}),
       siteUrl,
       doorUrl: get('CHARTER_DOOR_URL') || 'http://charter-door:3701',
       dataDir: get('CHARTER_DATA_DIR') || '/data',

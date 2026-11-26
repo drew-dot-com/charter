@@ -202,3 +202,36 @@ test('renter_returned under an hour says less than an hour', () => {
   const byId = Object.fromEntries(build(ev, src({ leases: [lease()] })).facts.map((f) => [f.id, f.text]));
   assert.equal(byId['event:hours'], 'a renter has paid for less than an hour in total, and came back for more.');
 });
+
+test('renter_opened states the hours paid and never a tx link or address', () => {
+  const opened: SocialEvent = { id: 'opened:L1', kind: 'renter_opened', at: NOW, leaseId: 'L1', payer: WALLET, hoursPaid: 1 };
+  const f = build(opened, src({ leases: [lease({ ticksPaidByRenter: 1 })], tickTxs: [{ leaseId: 'L1', tick: 1, tx: '0xdead', at: NOW }] }));
+  assert.ok(all(f).includes('a renter opened a lease and paid for 1 hour.'));
+  assert.ok(!all(f).includes(WALLET));
+  assert.deepEqual(f.txLinks, []);
+  const under: SocialEvent = { ...opened, hoursPaid: 0 };
+  assert.ok(all(build(under, src({ leases: [lease({ ticksPaidByRenter: 1 })] }))).includes('a renter opened a lease and paid for less than an hour.'));
+});
+
+test('a named renter who opens a lease is named', () => {
+  const opened: SocialEvent = { id: 'opened:L1', kind: 'renter_opened', at: NOW, leaseId: 'L1', payer: WALLET, hoursPaid: 1 };
+  const f = build(opened, src({ leases: [lease({ ticksPaidByRenter: 1 })] }), { renters: { [WALLET]: { name: 'Ada', handle: 'ada' } }, grants: {}, hosts: {} });
+  assert.ok(all(f).includes('Ada opened a lease and paid for 1 hour.'));
+  assert.deepEqual(f.mentionable, ['ada']);
+});
+
+test('totals count the leases outside renters paid for: no excluded payer, no grant lease, no unpaid lease', () => {
+  const s = src({
+    leases: [
+      lease({}),
+      lease({ leaseId: 'L2', payer: '0xother', ticksPaidByRenter: 1 }),
+      lease({ leaseId: 'L3', payer: '0xother', ticksPaidByRenter: 0 }),
+      lease({ leaseId: 'L4', payer: '0xours' }),
+      lease({ leaseId: 'L5', payer: '0xfund' }),
+      lease({ leaseId: 'L6', payer: undefined }),
+    ],
+    grants: [{ grantId: 'G1', state: 'active', leaseId: 'L5' }],
+  });
+  const f = buildFactSheet({ event: undefined, src: s, offers, factsMd: '', optins: none, siteUrl: 'u', now: NOW, excludePayers: new Set(['0xours']) });
+  assert.equal(f.facts.find((x) => x.id === 'totals:leases')?.text, 'Leases paid for by outside renters so far: 2.');
+});

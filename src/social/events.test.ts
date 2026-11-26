@@ -11,8 +11,34 @@ const short = (o: Record<string, unknown>) => lease({ offer: { intervalSeconds: 
 const src = (o: Partial<Record<keyof Sources, unknown[]>>): Sources =>
   ({ leases: [], grants: [], hosts: [], tickTxs: [], ...o }) as unknown as Sources;
 
-test('one paid hour from an outside wallet is not an event', () => {
-  assert.deepEqual(detectEvents(src({ leases: [lease({})] }), none, cfg), []);
+test('a first paid hour from an outside wallet is renter_opened', () => {
+  const ev = detectEvents(src({ leases: [lease({ lastTickAt: 300 })] }), none, cfg);
+  assert.deepEqual(ev, [{ id: 'opened:L1', kind: 'renter_opened', at: 300, leaseId: 'L1', payer: '0xrenter', hoursPaid: 1 }]);
+});
+
+test('a lease with no paid tick is not an event', () => {
+  assert.deepEqual(detectEvents(src({ leases: [lease({ ticksPaidByRenter: 0 })] }), none, cfg), []);
+});
+
+test('renter_opened fires once', () => {
+  assert.deepEqual(detectEvents(src({ leases: [lease({})] }), new Set(['opened:L1']), cfg), []);
+});
+
+test('a lease first seen at two paid hours yields renter_returned only, and implies opened', () => {
+  const ev = detectEvents(src({ leases: [lease({ ticksPaidByRenter: 2, lastTickAt: 500 })] }), none, cfg);
+  assert.deepEqual(ev.map((e) => e.id), ['returned:L1']);
+  assert.deepEqual(impliedSeen(ev[0]!), ['opened:L1']);
+});
+
+test('a lease past its second hour never yields a late renter_opened', () => {
+  assert.deepEqual(detectEvents(src({ leases: [lease({ ticksPaidByRenter: 3 })] }), new Set(['returned:L1']), cfg), []);
+});
+
+test('a first-party, probe or grant lease never yields renter_opened', () => {
+  assert.deepEqual(detectEvents(src({ leases: [lease({ payer: '0xFUND' })] }), none, cfg), []);
+  assert.deepEqual(detectEvents(src({ leases: [lease({ payer: '0xProbe' })] }), none, cfg), []);
+  const grants = [{ grantId: 'G1', state: 'active', leaseId: 'L1', updatedAt: 1 }];
+  assert.deepEqual(detectEvents(src({ leases: [lease({})], grants }), new Set(['grant:G1']), cfg), []);
 });
 
 test('a second paid hour is renter_returned', () => {

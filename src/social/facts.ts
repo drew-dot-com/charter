@@ -23,6 +23,7 @@ export function subjectOf(e: SocialEvent, _src: Sources, optins: Optins): Subjec
   let fallback: string;
   let hit: { name: string; handle?: string } | undefined;
   switch (e.kind) {
+    case 'renter_opened':
     case 'renter_returned':
       fallback = 'a renter';
       hit = optins.renters[e.payer.toLowerCase()];
@@ -68,6 +69,12 @@ export function outsideHoursPaid(src: Sources, excluded: ReadonlySet<string>): n
   return totalHoursPaid(src.leases.filter((l) => l.payer && !excluded.has(l.payer.toLowerCase()) && !grantLeases.has(l.leaseId)));
 }
 
+/** Leases an outside renter paid at least one tick of: no excluded payer, no grant lease. */
+export function outsideLeasesPaid(src: Sources, excluded: ReadonlySet<string>): number {
+  const grantLeases = new Set(src.grants.map((g) => g.leaseId).filter((x): x is string => !!x));
+  return src.leases.filter((l) => l.payer && !excluded.has(l.payer.toLowerCase()) && !grantLeases.has(l.leaseId) && Number(l.ticksPaidByRenter) > 0).length;
+}
+
 /**
  * Everything the writer may state. No wallet address, unopted name, pitch name or host url is ever put in a fact.
  * `excludePayers` is required (lowercased wallets; Task 10 passes firstParty union probes). Those payers are left out of
@@ -98,6 +105,7 @@ export function buildFactSheet(input: { event?: SocialEvent; src: Sources; offer
   const grantsApproved = src.grants.filter((g) => g.state !== 'queued' && g.state !== 'declined').length;
   facts.push({ id: 'totals:running', text: `Leases running now: ${running}.` });
   facts.push({ id: 'totals:hours', text: `Hours paid by outside renters so far: ${outsideHours}.` });
+  facts.push({ id: 'totals:leases', text: `Leases paid for by outside renters so far: ${outsideLeasesPaid(src, excluded)}.` });
   facts.push({ id: 'totals:hosts', text: `Hosts listed: ${hostsListed}.` });
   facts.push({ id: 'totals:grants', text: `Grants approved: ${grantsApproved}.` });
   facts.push({ id: 'site', text: `Site: ${siteUrl}` });
@@ -111,7 +119,9 @@ export function buildFactSheet(input: { event?: SocialEvent; src: Sources; offer
     const s = subjectOf(event, src, optins);
     facts.push({ id: 'event:subject', text: `Subject: ${s.name}.` });
     if (s.handle) mentionable.push(s.handle);
-    if (event.kind === 'renter_returned') {
+    if (event.kind === 'renter_opened') {
+      facts.push({ id: 'event:hours', text: `${s.name} opened a lease and paid for ${hoursText(event.hoursPaid)}.` });
+    } else if (event.kind === 'renter_returned') {
       facts.push({ id: 'event:hours', text: `${s.name} has paid for ${hoursText(event.hoursPaid)} in total, and came back for more.` });
     } else if (event.kind === 'milestone') {
       facts.push({ id: 'event:hours', text: `${s.name} has reached ${hoursText(event.hours)} paid.` });
@@ -121,7 +131,7 @@ export function buildFactSheet(input: { event?: SocialEvent; src: Sources; offer
       facts.push({ id: 'event:kind', text: `${s.name} was listed on the network.` });
     }
     // A per-wallet tx link only for a named renter.
-    const renterNamed = s.named && (event.kind === 'renter_returned' || (event.kind === 'milestone' && event.grantId === undefined));
+    const renterNamed = s.named && (event.kind === 'renter_opened' || event.kind === 'renter_returned' || (event.kind === 'milestone' && event.grantId === undefined));
     if (renterNamed && 'leaseId' in event) {
       const newest = src.tickTxs.filter((t) => t.leaseId === event.leaseId).sort((a, b) => b.at - a.at)[0];
       if (newest) {

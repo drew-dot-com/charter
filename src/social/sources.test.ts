@@ -60,3 +60,50 @@ test('readSources reads the opt-in code hashes and skips anything else on those 
   writeFileSync(join(d, 'optin-codes.jsonl'), [JSON.stringify({ kind: 'lease', id: 'L1', hash: 'h1' }), '{torn', JSON.stringify({ kind: 'host', id: 'x', hash: 'h' }), JSON.stringify({ kind: 'grant', id: 'G1', hash: 'h2' })].join('\n'));
   assert.deepEqual((readSources(d) as { optinCodes: unknown[] }).optinCodes, [{ kind: 'lease', id: 'L1', hash: 'h1' }, { kind: 'grant', id: 'G1', hash: 'h2' }]);
 });
+
+const BILLER = '0x17F2000000000000000000000000000000000001';
+const allow = (o: Record<string, unknown>) => JSON.stringify({ allowanceId: 'A1', homeId: 'H1', state: 'active', createdAt: 10, updatedAt: 10, ...o }) + '\n';
+
+test('a lease paid by the allowance biller takes the payer of the account behind the allowance', () => {
+  const d = dir();
+  writeFileSync(join(d, 'door-ledger.json'), JSON.stringify([{ ...lease, payer: BILLER.toLowerCase(), homeId: 'H1', createdAt: 50 }]));
+  writeFileSync(join(d, 'allowances.jsonl'), allow({ state: 'waiting' }) + allow({ account: '0xAccount' }));
+  const s = readSources(d, { allowAddress: BILLER });
+  assert.ok(!('error' in s));
+  assert.equal(s.leases[0]!.payer, '0xaccount');
+});
+
+test('the newest allowance made before the lease was last paid wins', () => {
+  const d = dir();
+  writeFileSync(join(d, 'door-ledger.json'), JSON.stringify([{ ...lease, payer: BILLER, homeId: 'H1', createdAt: 50, lastTickAt: 90 }]));
+  writeFileSync(join(d, 'allowances.jsonl'),
+    allow({ account: '0xOld' }) + allow({ allowanceId: 'A2', createdAt: 40, account: '0xNew' }) + allow({ allowanceId: 'A3', createdAt: 200, account: '0xLater' }));
+  const s = readSources(d, { allowAddress: BILLER });
+  assert.ok(!('error' in s));
+  assert.equal(s.leases[0]!.payer, '0xnew');
+});
+
+test('a biller lease with no allowance account behind it has no payer', () => {
+  const d = dir();
+  writeFileSync(join(d, 'door-ledger.json'), JSON.stringify([
+    { ...lease, payer: BILLER, homeId: 'H9' },
+    { ...lease, leaseId: 'L2', payer: BILLER },
+  ]));
+  writeFileSync(join(d, 'allowances.jsonl'), allow({ account: '0xAccount' }));
+  const s = readSources(d, { allowAddress: BILLER });
+  assert.ok(!('error' in s));
+  assert.equal(s.leases[0]!.payer, undefined);
+  assert.equal(s.leases[1]!.payer, undefined);
+});
+
+test('other payers are untouched, and without allowAddress nothing is remapped', () => {
+  const d = dir();
+  writeFileSync(join(d, 'door-ledger.json'), JSON.stringify([{ ...lease, homeId: 'H1' }, { ...lease, leaseId: 'L2', payer: BILLER, homeId: 'H1' }]));
+  writeFileSync(join(d, 'allowances.jsonl'), allow({ account: '0xAccount' }));
+  const a = readSources(d, { allowAddress: BILLER });
+  assert.ok(!('error' in a));
+  assert.equal(a.leases[0]!.payer, '0xabc');
+  const b = readSources(d);
+  assert.ok(!('error' in b));
+  assert.equal(b.leases[1]!.payer, BILLER);
+});

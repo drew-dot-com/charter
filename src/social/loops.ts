@@ -128,6 +128,7 @@ function markSeen(deps: LoopDeps, e: SocialEvent, now: number, reason?: string):
 
 /** Trusted text written by code: the event's kind, never anything from the data. */
 const EVENT_BRIEF: Record<SocialEvent['kind'], string> = {
+  renter_opened: 'A renter opened a lease and paid for it. The fact with id "totals:leases" counts every such lease so far; you may state it.',
   renter_returned: 'A renter paid again for the same lease: they came back.',
   milestone: 'A lease reached a milestone of hours paid.',
   grant_approved: 'A grant was approved: a free home for its grantee.',

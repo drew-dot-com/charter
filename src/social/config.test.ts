@@ -116,3 +116,11 @@ test('Ruling R18: a CHARTER_SITE_URL whose host contains a default banned word i
   // Only the host counts: a path is not a host.
   assert.deepEqual(parseSocialConfig({ ...good, CHARTER_SITE_URL: 'https://charter.example/toon' }, read).missing, []);
 });
+
+test('CHARTER_ALLOW_ADDRESS is optional, lowercased, and must be an address', () => {
+  assert.equal(parseSocialConfig(good, read).config?.allowAddress, undefined);
+  assert.equal(parseSocialConfig({ ...good, CHARTER_ALLOW_ADDRESS: ' 0x' + 'AB'.repeat(20) + ' ' }, read).config?.allowAddress, '0x' + 'ab'.repeat(20));
+  const bad = parseSocialConfig({ ...good, CHARTER_ALLOW_ADDRESS: '0x12' }, read);
+  assert.equal(bad.config, undefined);
+  assert.ok(bad.missing.includes('CHARTER_ALLOW_ADDRESS must be a 0x address (40 hex characters)'));
+});

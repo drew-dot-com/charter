@@ -654,7 +654,10 @@ reminder: a new lease from a wallet not in `FIRST_PARTY_PAYERS` (`/etc/charter-o
 paying its second hour (a one-tick probe never does, so this is the signal of a real renter), a new grant
 pitch, and the judge's decision on it. The open message (👀) never says "renter": paying x402 crawlers open
 one-hour leases, and it notes when a wallet's earlier leases each paid one hour. Wallets in `PROBE_PAYERS`
-(known crawlers) get no open message; their second hour (🟢) is still sent. It reads `door-ledger.json` and `grants.jsonl` in
+(known crawlers) get no open message; their second hour (🟢) is still sent. A lease paid by the door's
+allowance biller (`CHARTER_ALLOW_ADDRESS` in `/etc/charter-ops/env`) is judged by the account that approved
+the allowance (`allowances.jsonl`) and is marked "(monthly allowance)"; without that line every allowance
+lease reads as one outside wallet's. It reads `door-ledger.json` and `grants.jsonl` in
 `CHARTER_DOOR_DATA` and keeps the ids it has reported in `/var/lib/charter-ops/usage-seen.json`; delete
 that file and the next run records everything as seen again without sending. The ledger records the offer,
 not the image, so the message cannot say whether a lease is a home or a job. Dry run:
@@ -850,8 +853,10 @@ the report but no public summary). The loops start a minute after boot.
 **Files.** Under `/root/charter-social`, owned by uid 1000 (the image's `node` user), mode 700:
 
 - `social.env` (mode 600): from `deploy/social/social.env.example`. The X keys, the Gemini key and models,
-  `TELEGRAM_CHAT_ID`, `CHARTER_SITE_URL`, `FIRST_PARTY_PAYERS` and `PROBE_PAYERS` (copy both from
-  `/etc/charter-ops/env`), `DRY_RUN`, the caps. Startup refuses, and the loops stay idle with `/status` saying
+  `TELEGRAM_CHAT_ID`, `CHARTER_SITE_URL`, `FIRST_PARTY_PAYERS` (copy it from `/etc/charter-ops/env`),
+  `PROBE_PAYERS` (a never-post list, empty since 2026-11-26: a paying crawler's lease is posted like any
+  other outside lease), `CHARTER_ALLOW_ADDRESS` (the door's allowance biller, so an allowance lease is judged
+  by the account behind it), `DRY_RUN`, the caps. Startup refuses, and the loops stay idle with `/status` saying
   why: an empty `FIRST_PARTY_PAYERS`; any payer entry that is not `0x` and 40 hex digits; a
   `SPEND_CAP_USD_DAY` below 0.20 (one post with a link); a `CHARTER_SITE_URL` whose host contains a default
   banned word (token, airdrop, presale, guarantee, escape, jailbreak, unfenced, toon), so the old storefront

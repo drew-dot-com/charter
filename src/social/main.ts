@@ -153,7 +153,7 @@ async function main(): Promise<number> {
       files: () => withSelfOptins(loadConfigFiles(config.configDir), selfOptins.read()),
       selfOptins,
       model: geminiModel(config.gemini.apiKey, geminiAllowance(state, config.geminiCallsCapDay)),
-      sources: () => readSources(config.dataDir),
+      sources: () => readSources(config.dataDir, { allowAddress: config.allowAddress }),
       offers: () => fetchOffers(config.doorUrl, offersFetch),
     };
     // At most one Telegram alert an hour per loop; an in-memory clock covers a state file that cannot be written.

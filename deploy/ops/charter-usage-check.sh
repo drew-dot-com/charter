@@ -9,6 +9,9 @@
 #   - such a lease paying its second hour: the renter came back, which a one-tick probe never does (sent for
 #     every outside wallet, PROBE_PAYERS included)
 #   - a new grant pitch, and the judge's decision on it
+# A lease paid by the door's allowance biller (CHARTER_ALLOW_ADDRESS) is judged by the account that approved
+# the allowance, read from allowances.jsonl: the biller pays every allowance hour, so its own address says
+# nothing about who rents. A biller lease with no such account is left out.
 # Seen ids live in $CHARTER_OPS_STATE/usage-seen.json. The first run records everything already
 # there and sends nothing. Without --alert it prints what it would send and changes no state;
 # USAGE_SHOW_ALL=1 with no --alert also prints what a first run would hold back (a dry run of everything).
@@ -32,7 +35,8 @@ alert=0; [ "${1:-}" = --alert ] && alert=1
 # Python prints one message per event, separated by a NUL, and saves the seen set only with --alert.
 out="$(mktemp)"; trap 'rm -f "$out"' EXIT
 USAGE_ALERT=$alert USAGE_STATE="$STATE/usage-seen.json" USAGE_DATA="$DATA" USAGE_OUT="$out" \
-  USAGE_SHOW_ALL="${USAGE_SHOW_ALL:-0}" FIRST_PARTY_PAYERS="${FIRST_PARTY_PAYERS:-}" PROBE_PAYERS="${PROBE_PAYERS:-}" python3 -I - <<'EOF'
+  USAGE_SHOW_ALL="${USAGE_SHOW_ALL:-0}" FIRST_PARTY_PAYERS="${FIRST_PARTY_PAYERS:-}" PROBE_PAYERS="${PROBE_PAYERS:-}" \
+  USAGE_BILLER="${CHARTER_ALLOW_ADDRESS:-}" python3 -I - <<'EOF'
 import json, os, sys
 alert = os.environ["USAGE_ALERT"] == "1"
 state_file = os.environ["USAGE_STATE"]
@@ -55,6 +59,31 @@ try:
 except FileNotFoundError:
     pass
 
+# The biller's leases take the payer behind their allowance: the newest allowance for the lease's home made
+# before the lease was last paid (the same rule as src/social/sources.ts).
+biller = os.environ["USAGE_BILLER"].strip().lower()
+by_allowance = {}
+if biller:
+    by_id = {}
+    try:
+        for line in open(os.path.join(data, "allowances.jsonl")):
+            try:
+                a = json.loads(line)
+                if a.get("account"): by_id[a["allowanceId"]] = a  # the log appends; the last line is the state now
+                else: by_id.pop(a["allowanceId"], None)
+            except Exception:
+                pass
+    except FileNotFoundError:
+        pass
+    allowances = sorted(by_id.values(), key=lambda a: -a.get("createdAt", 0))
+    for l in leases:
+        if (l.get("payer") or "").lower() != biller:
+            continue
+        at = l.get("lastTickAt") or l.get("createdAt", 0)
+        hit = next((a for a in allowances if l.get("homeId") and a.get("homeId") == l["homeId"] and a.get("createdAt", 0) <= at), None)
+        l["payer"] = str(hit["account"]) if hit else None
+        if hit: by_allowance[l["leaseId"]] = True
+
 first = not os.path.exists(state_file)
 seen = {"leases": [], "renewed": [], "pitches": [], "decided": []}
 if not first:
@@ -67,7 +96,7 @@ S = {k: set(v) for k, v in seen.items()}
 def short(a): return a[:6] + "…" + a[-4:] if a else "unknown"
 def kind(l):
     # The ledger records the offer, not the image, so a home and a job look alike here.
-    return f"a lease on {str((l.get('offer') or {}).get('id', '?'))}"
+    return f"a lease on {str((l.get('offer') or {}).get('id', '?'))}" + (" (monthly allowance)" if l["leaseId"] in by_allowance else "")
 
 out = []
 outside = [l for l in leases if (l.get("payer") or "").lower() not in mine and l.get("payer")]

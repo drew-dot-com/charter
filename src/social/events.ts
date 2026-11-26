@@ -4,12 +4,14 @@ export const MILESTONES = [24, 100, 500, 1000] as const;
 export const STALE_EVENT_MS = 6 * 3_600_000;
 
 export type SocialEvent =
+  | { id: string; kind: 'renter_opened'; at: number; leaseId: string; payer: string; hoursPaid: number }
   | { id: string; kind: 'renter_returned'; at: number; leaseId: string; payer: string; hoursPaid: number }
   | { id: string; kind: 'milestone'; at: number; leaseId: string; hours: 24 | 100 | 500 | 1000; payer?: string; grantId?: string }
   | { id: string; kind: 'grant_approved'; at: number; grantId: string }
   | { id: string; kind: 'host_listed'; at: number; hostId: string };
 
 const milestoneId = (leaseId: string, hours: number): string => `milestone:${leaseId}:${hours}`;
+const openedId = (leaseId: string): string => `opened:${leaseId}`;
 
 type Lease = Sources['leases'][number];
 
@@ -27,8 +29,12 @@ export const hoursPaid = (l: Lease): number => Math.floor(secondsPaid(l) / 3600)
 /** Whole hours paid across leases (summed before rounding down). */
 export const totalHoursPaid = (leases: readonly Lease[]): number => Math.floor(leases.reduce((n, l) => n + secondsPaid(l), 0) / 3600);
 
-/** Ids of the lower milestones of the same lease: a lease that jumped past several marks them all seen. */
+/**
+ * Ids this event makes moot: the lower milestones of the same lease (a lease that jumped past several marks them
+ * all seen), and the opening of a lease first seen at its second paid tick.
+ */
 export function impliedSeen(e: SocialEvent): string[] {
+  if (e.kind === 'renter_returned') return [openedId(e.leaseId)];
   if (e.kind !== 'milestone') return [];
   return MILESTONES.filter((h) => h < e.hours).map((h) => milestoneId(e.leaseId, h));
 }
@@ -52,6 +58,10 @@ export function detectEvents(src: Sources, seen: ReadonlySet<string>, cfg: { fir
       if (!payer || cfg.firstParty.has(payer)) continue;
       outsider = payer;
       const id = `returned:${l.leaseId}`;
+      // The first paid tick opens the lease in public; from the second on only the return is told.
+      if (l.ticksPaidByRenter === 1 && !seen.has(openedId(l.leaseId))) {
+        out.push({ id: openedId(l.leaseId), kind: 'renter_opened', at, leaseId: l.leaseId, payer, hoursPaid: hours });
+      }
       // The trigger is the second paid tick, whatever the interval; the event states whole hours paid.
       if (l.ticksPaidByRenter >= 2 && !seen.has(id)) out.push({ id, kind: 'renter_returned', at, leaseId: l.leaseId, payer, hoursPaid: hours });
     }
