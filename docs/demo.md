@@ -838,3 +838,44 @@ and run once from start to finish with a test home and Drew's test Base Account 
 Only one biller-paid hour was watched (the plan asked for two); the second would have needed another hour's wait.
 One fault was found on the way and fixed: the web server's general Content-Security-Policy overwrote the approval
 page's wider one (`deploy/door/Caddy.snippet`, the `@notallow` matcher).
+
+## 23. Receipts, and a pin a home paid for itself (2026-11-26)
+
+The door was deployed with receipts (`caf5110`), both home images on hel1 were rebuilt with the new
+`charter-x402` subcommands, and each kind of receipt was taken once on the live door. Charter stored and
+served none of the content: it signed two hashes.
+
+**A job receipt.** `GET /v1/leases/<id>/receipt` on a finished fetch job from 11-24 (lease `e2a0c0e5…`, paid
+by the test payer `0xb66E…c715`), whose output the door already held:
+
+- `kind: "job"`, `sha256` `9e82b465ff4705f05a4a25b729f72e70c2f764c2d6b9527b1a068f4ef4de0f5b`, `bytes` 187,
+  `ticksPaid` 1 at 3600 s, host `b6cbc290…` (hel1). No `image`: the lease was opened before the ledger kept it.
+- Checked offline: the signature recovers to `0xb3fF4E7358c5D3286F6f26cbcc38f08CB9dF8c7d`, which
+  `GET /v1/door` names as `receiptSigner`; the hash and size match what `GET …/output/0` serves; `leaseRef` is
+  the SHA-256 of `charter-lease:<id>`; the lease id is nowhere in the answer.
+
+**A declared receipt with a pin.** A `charter-home` on hel1 (lease `82b03b96…`, home `72da8cb1bc5b31ff`),
+opened from the Mac with `charter-x402 open` and paid by the test wallet `0x46FC…F93E`
+(`0x03b5949112eae70a365e9372f902f4d42efa631bb935d1a2e06a233ea729c6b1`). In the home:
+
+- `charter-x402 address` made the home's own wallet, `0x83f2831d269b782b677Ca8F1F9E9766d277F5e86`. Drew sent
+  it 0.011 USDC (`0xb8b3f959a0f6aede7cc7659165a66ae0227d782c1ada11a1245d7bb22277f045`).
+- `charter-x402 pin proof.txt` on a 116-byte file: the home's wallet paid Pinata 0.001 USDC, to
+  `0xc900f41481B4F7C612AF9Ce3B1d16A7A1B6bd96E`
+  (`0x31c63d70ec03dd1d8bf7bc2035fd903eea9cbda305e77b54db01608dd57deaf9`). The wallet then held 0.01.
+- The CID: `bafkreibsfpqbevfkvsijp4ttyantttivko43u77vlnu653ju6zmm3m4vci`. Pinata's gateway served the file and
+  its SHA-256 matched. `ipfs.io` and `dweb.link` answered 429 at the time, so a read from a gateway Pinata
+  does not run was not seen.
+- The receipt, saved in the home at `~/.charter/receipts/<sha256>.json`: `kind: "declared"`, `image`
+  `charter-home`, `sha256` `322be01254aaac9097f273c01b39cd1553b9ba7ff55b69eeed34f658cdb39512`, `bytes` 116,
+  `payer` the wallet that paid the hour, and `cid`
+  `f01551220322be01254aaac9097f273c01b39cd1553b9ba7ff55b69eeed34f658cdb39512`: the same CID in base16, the
+  form the door signs. Signed at 14:49:16Z. Checked offline the same way: signature, signer and `leaseRef` hold.
+
+**The listing.** `setAgentURI` was sent again with the same address so directories re-read the registration
+file (`0x6dc9aace317ec7094c014a2b57d2f6259f1fa1f33cdb7cce7db75043df9e5f02`, block 62564082, about 0.00000025
+ETH). 8004scan parsed it again within a minute.
+
+Not shown here: a job receipt that had to fetch parts from the host (this one came from the door's own copy),
+the 60-an-hour limit on a live lease, and `charter_receipt` called through the remote MCP endpoint against a
+real lease (it is listed there, and tested).
