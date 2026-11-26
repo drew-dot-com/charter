@@ -879,3 +879,27 @@ ETH). 8004scan parsed it again within a minute.
 Not shown here: a job receipt that had to fetch parts from the host (this one came from the door's own copy),
 the 60-an-hour limit on a live lease, and `charter_receipt` called through the remote MCP endpoint against a
 real lease (it is listed there, and tested).
+
+## 24. A price that pays for the host: 0.012 an hour (2026-11-26)
+
+Design: `docs/superpowers/specs/2026-11-26-profitable-pricing-design.md`. At 0.007 an hour hel1's four homes
+earned at most about 20 USDC a month against a 36.09 USD server, and the door took nothing on any host. Now a
+renter pays 0.012 an hour on hel1: the host's 0.011 plus the door's 0.001 fee. hel1 holds six homes, so it
+breaks even a little past half full.
+
+Rolled out in this order, so hel1 never priced above a cap that would refuse it:
+
+1. **Door** (23:2xZ): new tree with every 0.01 cap at 0.02, and `CHARTER_DOOR_FEE=1000`. `/v1/offers` showed
+   hel1 at `tickPrice` 8000 (its old 7000 plus the fee) and `referralShare` 800.
+2. **Grant fund and allowance biller**: rebuilt with the 0.02 cap. The bots' allowance kept its own lease,
+   opened at 7000, untouched.
+3. **charter-mcp 0.8.0** on npm (default caps 0.02 an hour, 0.50 a day; shasum `4cf16e6c`). ClawHub
+   `charter-compute` 0.7.0 submitted, now pinning `charter-mcp@0.8`.
+4. **hel1 images**: `charter-home` and `charter-hermes` rebuilt from main, so `charter-x402` and the
+   `charter` CLI inside default to the 0.02 cap. Old images kept as `:pre-pricing-20261126`.
+5. **hel1**: `CHARTER_TICK_PRICE=11000`, `CHARTER_MAX_HOMES=6`, host restarted at 23:43:24Z. The running bots'
+   home was left alone (its container stayed up). Four minutes later `/v1/offers` listed hel1 at `tickPrice`
+   12000, `referralShare` 1200, six slots with five free, record unchanged (3 probes passed, 8 leases
+   finished, new false). A bare `POST /v1/rent` answered 402 for 12000 on `exact` and on `batch-settlement`.
+
+A lease keeps the price it opened with, so leases opened before this pay their old hour until they end.
