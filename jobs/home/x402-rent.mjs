@@ -8,15 +8,23 @@
 //   charter-x402 renew [--lease <id>] [--max-intervals <n>] [--once]             in the box: pay each hour when due
 //   charter-x402 status [--lease <id>]                                           free: state and paid-through
 //   charter-x402 address                                                         the wallet to fund
+//   charter-x402 receipt <file> [--lease <id>] [--cid <cid>]                      free: the door signs the file's hash
+//   charter-x402 pin <file> [--lease <id>] [--no-receipt]                         pay Pinata to pin the file, then the receipt
 //
 // CHARTER_X402_KEY_FILE: a file holding one private key as 0x + 64 hex (default ~/.charter/x402.key; never
 // the environment, never the command line). `address` makes one when the file is absent.
 // CHARTER_X402_MAX_TICK: the most one hour may cost, micro-USDC (default 10000 = 0.01 USDC). A dearer 402
 // is never signed. CHARTER_DOOR_URL overrides the door. `renew` reads CHARTER_LEASE_ID, set in every home.
-import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+//
+// `receipt` moves no money: the door signs a statement that the holder of this lease declared this SHA-256 at
+// this time (a claim of yours with the door's timestamp, not proof of where the file came from). `pin` buys a
+// public pin from Pinata, a third party: the file is readable by anyone for twelve months, Charter never sees
+// it, and the wallet above pays (0.10 USDC per GiB, floor 0.001). CHARTER_X402_MAX_PIN: the most one pin may
+// cost, micro-USDC (default 10000 = 0.01 USDC, about 100 MiB). Receipts are kept in ~/.charter/receipts.
+import { createHash, randomBytes } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const BASE = 'eip155:8453';
@@ -44,6 +52,99 @@ export function onlyDoorExact(payTo, maxTick) {
         /^\d+$/.test(String(r.amount)) &&
         BigInt(r.amount) <= maxTick,
     );
+}
+
+export const PINATA_402 = 'https://402.pinata.cloud';
+const PINATA_GATEWAY = 'https://gateway.pinata.cloud/ipfs/';
+/** What the door takes as a CID: v0, or v1 in base32. */
+const CID = /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{50,120})$/;
+
+const isBaseUsdcExact = (r) =>
+  r?.scheme === 'exact' && r.network === BASE && String(r.asset).toLowerCase() === BASE_USDC.toLowerCase() && /^\d+$/.test(String(r.amount));
+
+/** The pin policy: of what Pinata's 402 offers, only `exact` in USDC on Base, to the payee its price named, at no more than `max`. */
+export function onlyPinataExact(payTo, max) {
+  return (_version, reqs) => reqs.filter((r) => isBaseUsdcExact(r) && String(r.payTo).toLowerCase() === String(payTo).toLowerCase() && BigInt(r.amount) <= max);
+}
+
+/** The price in an x402 v2 `payment-required` header: `{ amount, payTo }` of its exact USDC-on-Base offer. Throws when there is none. */
+export function pinPrice(header) {
+  let accepts;
+  try {
+    accepts = JSON.parse(Buffer.from(header, 'base64').toString('utf8')).accepts;
+  } catch {
+    throw new Error('Pinata answered no price (no readable payment-required header): nothing signed');
+  }
+  const offer = Array.isArray(accepts) ? accepts.find((r) => isBaseUsdcExact(r) && /^0x[0-9a-fA-F]{40}$/.test(String(r.payTo))) : undefined;
+  if (!offer) throw new Error('Pinata offered no exact USDC price on Base: nothing signed');
+  return { amount: BigInt(offer.amount), payTo: offer.payTo };
+}
+
+/** A regular, non-empty file: its bytes and their SHA-256 as hex. */
+export function fileToPin(path) {
+  if (!path) throw new Error('this command needs a file: charter-x402 receipt <file> | pin <file>');
+  let st;
+  try {
+    st = statSync(path);
+  } catch {
+    throw new Error(`no file at ${path}`);
+  }
+  if (!st.isFile()) throw new Error(`${path} is not a regular file`);
+  if (st.size === 0) throw new Error(`${path} is empty`);
+  const bytes = readFileSync(path);
+  return { bytes, sha256: createHash('sha256').update(bytes).digest('hex') };
+}
+
+/**
+ * Pins `bytes` through Pinata's x402 door: an unpaid POST answers the price, the paid POST answers a signed
+ * upload address, and a multipart POST there answers the CID. Nothing is signed for a price over `max`.
+ *
+ * deps: `fetch`; `paidFetchFor(payTo, max)` answers a fetch that pays under that policy; `address` is the
+ * wallet that pays. Returns `{ cid, url, price }`.
+ */
+export async function pinFile({ bytes, name, base = PINATA_402, max }, deps) {
+  const door = `${base.replace(/\/$/, '')}/v1/pin/public?fileSize=${bytes.length}`;
+  const probe = await deps.fetch(door, { method: 'POST' });
+  if (probe.status !== 402) throw new Error(`Pinata's price probe answered ${probe.status}, not 402: nothing signed`);
+  const price = pinPrice(probe.headers.get('payment-required'));
+  if (price.amount > max) {
+    throw new Error(`pinning ${bytes.length} bytes costs ${usdc(price.amount)} USDC, over the cap of ${usdc(max)} (CHARTER_X402_MAX_PIN, micro-USDC): nothing signed`);
+  }
+  const paid = await deps.paidFetchFor(price.payTo, max)(door, { method: 'POST' });
+  if (paid.status === 402) throw new Error(`payment refused by Pinata, nothing settled: does the wallet ${deps.address} hold ${usdc(price.amount)} USDC on Base?`);
+  if (!paid.ok) throw new Error(`Pinata's door answered ${paid.status}: ${JSON.stringify(await body(paid)).slice(0, 200)}`);
+  const signed = await body(paid);
+  if (typeof signed.url !== 'string' || !/^https:\/\//.test(signed.url)) throw new Error('Pinata was paid but answered no upload address');
+  const form = new FormData();
+  form.append('file', new Blob([bytes], { type: 'application/octet-stream' }), name);
+  form.append('network', 'public');
+  form.append('name', name);
+  const up = await deps.fetch(signed.url, { method: 'POST', body: form });
+  if (!up.ok) throw new Error(`Pinata was paid but the upload answered ${up.status}: ${JSON.stringify(await body(up)).slice(0, 200)}`);
+  const cid = (await body(up)).data?.cid;
+  if (typeof cid !== 'string' || !CID.test(cid)) throw new Error('Pinata was paid and took the upload but answered no CID');
+  return { cid, url: PINATA_GATEWAY + cid, price: price.amount };
+}
+
+/**
+ * Asks the door for a declared receipt of `sha256` for `leaseId`, and keeps the signed answer at
+ * `<saveDir>/<sha256>.json`. deps: `fetch`, `saveDir`. Returns `{ signed, file }`.
+ */
+export async function declareReceipt({ door, leaseId, sha256, bytes, cid }, deps) {
+  const res = await deps.fetch(`${door}/v1/leases/${leaseId}/receipt`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sha256, ...(bytes !== undefined ? { bytes } : {}), ...(cid ? { cid } : {}) }),
+  });
+  const signed = await body(res);
+  if (res.status !== 200 || typeof signed.signature !== 'string') {
+    throw new Error(`the door signed no receipt (${signed.error ?? `status ${res.status}`}). not_running: the home's paid time has run out. unpaid: no interval is paid yet. not_a_home: only a home declares a hash.`);
+  }
+  mkdirSync(deps.saveDir, { recursive: true, mode: 0o700 });
+  const file = join(deps.saveDir, `${sha256}.json`);
+  writeFileSync(`${file}.tmp`, JSON.stringify(signed, null, 2) + '\n', { mode: 0o600 });
+  renameSync(`${file}.tmp`, file);
+  return { signed, file };
 }
 
 async function body(res) {
@@ -172,6 +273,7 @@ function flags(argv) {
     const a = argv[i];
     if (!a.startsWith('--')) throw new Error(`unexpected argument ${a}`);
     if (a === '--once') out.once = true;
+    else if (a === '--no-receipt') out['no-receipt'] = true;
     else out[a.slice(2)] = argv[++i];
   }
   return out;
@@ -179,7 +281,9 @@ function flags(argv) {
 
 async function main(argv, env) {
   const [cmd, ...rest] = argv;
-  const f = flags(rest);
+  // `receipt` and `pin` take one file before their flags.
+  const takesFile = (cmd === 'receipt' || cmd === 'pin') && rest[0] !== undefined && !rest[0].startsWith('--');
+  const f = flags(takesFile ? rest.slice(1) : rest);
   const door = (f.door ?? env.CHARTER_DOOR_URL ?? DEFAULT_DOOR).replace(/\/$/, '');
   const log = (line) => console.log(`${utc(Date.now())} ${line}`);
   const get = async (path) => {
@@ -215,8 +319,43 @@ async function main(argv, env) {
     }, null, 2));
     return 0;
   }
+  if (cmd === 'receipt' || cmd === 'pin') {
+    const path = takesFile ? rest[0] : undefined;
+    const { bytes, sha256 } = fileToPin(path);
+    const saveDir = join(homedir(), '.charter', 'receipts');
+    // `receipt --cid`: for a file pinned earlier whose receipt was not signed then.
+    let cid = cmd === 'receipt' ? f.cid : undefined;
+    if (cmd === 'pin') {
+      const max = BigInt(env.CHARTER_X402_MAX_PIN?.trim() || '10000');
+      const acct = await account(env);
+      const { ExactEvmScheme } = await import('@x402/evm/exact/client');
+      const { wrapFetchWithPaymentFromConfig } = await import('@x402/fetch');
+      const paidFetchFor = (payTo, cap) =>
+        wrapFetchWithPaymentFromConfig(fetch, { schemes: [{ network: BASE, client: new ExactEvmScheme(acct) }], policies: [onlyPinataExact(payTo, cap)] });
+      log(`pinning ${path} (${bytes.length} bytes, sha256 ${sha256}) through Pinata, paid from ${acct.address}, at most ${usdc(max)} USDC`);
+      const pinned = await pinFile({ bytes, name: basename(path), base: env.PINATA_402_URL?.trim() || PINATA_402, max }, { fetch, paidFetchFor, address: acct.address });
+      cid = pinned.cid;
+      log(`pinned for ${usdc(pinned.price)} USDC: ${cid}`);
+      log(`public for twelve months at ${pinned.url} (Pinata's public gateway can take minutes to show a new pin, and rate-limits)`);
+      if (f['no-receipt']) {
+        console.log(JSON.stringify({ sha256, bytes: bytes.length, cid, url: pinned.url }, null, 2));
+        return 0;
+      }
+    }
+    let got;
+    try {
+      got = await declareReceipt({ door, leaseId: leaseOf(), sha256, bytes: bytes.length, cid }, { fetch, saveDir });
+    } catch (e) {
+      // The pin is paid and done either way: say so before the failure.
+      if (cid) console.error(`charter-x402: the file is pinned (${cid}) but no receipt was signed. Ask again with: charter-x402 receipt ${path} --cid ${cid}`);
+      throw e;
+    }
+    log(`receipt saved to ${got.file}: a declared receipt, your own claim with the door's timestamp`);
+    console.log(JSON.stringify(got.signed, null, 2));
+    return 0;
+  }
   if (cmd !== 'open' && cmd !== 'renew') {
-    console.error('usage: charter-x402 open --keys <file> [--image charter-home] | renew [--lease <id>] [--max-intervals <n>] [--once] | status [--lease <id>] | address');
+    console.error('usage: charter-x402 open --keys <file> [--image charter-home] | renew [--lease <id>] [--max-intervals <n>] [--once] | status [--lease <id>] | address | receipt <file> [--lease <id>] [--cid <cid>] | pin <file> [--lease <id>] [--no-receipt]');
     return 2;
   }
 

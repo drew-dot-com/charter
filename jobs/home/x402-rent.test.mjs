@@ -122,3 +122,125 @@ test('the payment policy signs only exact USDC on Base to the door payee, at or 
   ]);
   assert.deepEqual(kept, [ok]);
 });
+
+// ---- receipt and pin ----
+
+import { mkdtempSync, mkdirSync as mkdir, readFileSync as readFile, statSync, writeFileSync as writeFile } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { declareReceipt, fileToPin, onlyPinataExact, pinFile, pinPrice, PINATA_402 } from './x402-rent.mjs';
+
+const PINATA_PAYEE = '0xc900f41481B4F7C612AF9Ce3B1d16A7A1B6bd96E';
+const CID = 'bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy';
+const offer = (over = {}) => ({ scheme: 'exact', network: BASE, amount: '1200', asset: BASE_USDC, payTo: PINATA_PAYEE, ...over });
+const header = (accepts) => Buffer.from(JSON.stringify({ x402Version: 2, accepts })).toString('base64');
+const json = (status, body, headers = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
+
+test('fileToPin hashes a regular file, and refuses a directory, a missing path and an empty file', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pin-'));
+  writeFile(join(dir, 'a.txt'), 'hello');
+  writeFile(join(dir, 'empty'), '');
+  const f = fileToPin(join(dir, 'a.txt'));
+  assert.equal(f.bytes.toString(), 'hello');
+  assert.equal(f.sha256, createHash('sha256').update('hello').digest('hex'));
+  assert.throws(() => fileToPin(dir), /not a regular file/);
+  assert.throws(() => fileToPin(join(dir, 'nope')), /no file at/);
+  assert.throws(() => fileToPin(join(dir, 'empty')), /empty/);
+  assert.throws(() => fileToPin(undefined), /needs a file/);
+});
+
+test('pinPrice reads the exact USDC-on-Base price, and refuses any other offer', () => {
+  assert.deepEqual(pinPrice(header([offer()])), { amount: 1200n, payTo: PINATA_PAYEE });
+  assert.deepEqual(pinPrice(header([offer({ network: 'eip155:1' }), offer({ amount: '5' })])), { amount: 5n, payTo: PINATA_PAYEE });
+  for (const bad of [offer({ asset: '0x' + '1'.repeat(40) }), offer({ network: 'eip155:1' }), offer({ scheme: 'upto' }), offer({ amount: '1.5' }), offer({ payTo: 'pinata' })]) {
+    assert.throws(() => pinPrice(header([bad])), /no exact USDC price on Base/, JSON.stringify(bad));
+  }
+  assert.throws(() => pinPrice(null), /no price/);
+  assert.throws(() => pinPrice('not base64 json'), /no price/);
+});
+
+test('the pin policy signs only exact USDC on Base to the quoted payee, at or under the cap', () => {
+  const policy = onlyPinataExact(PINATA_PAYEE, 10_000n);
+  const all = [offer(), offer({ amount: '10001' }), offer({ payTo: '0x' + '9'.repeat(40) }), offer({ scheme: 'upto' }), offer({ network: 'eip155:1' }), offer({ asset: '0x' + '1'.repeat(40) })];
+  assert.deepEqual(policy(2, all), [offer()]);
+});
+
+/** Pinata's door and upload host, scripted. `paid` answers the paid POST. */
+function pinata({ price = '1200', paid = () => json(200, { url: 'https://uploads.example/signed' }), upload = () => json(200, { data: { cid: CID } }) } = {}) {
+  const w = { calls: [], policy: null, form: null };
+  w.deps = {
+    address: '0x' + 'a'.repeat(40),
+    fetch: async (url, init) => {
+      w.calls.push(`${init?.method ?? 'GET'} ${url}`);
+      if (String(url).startsWith(PINATA_402)) return json(402, {}, { 'payment-required': header([offer({ amount: price })]) });
+      w.form = init.body;
+      return upload();
+    },
+    paidFetchFor: (payTo, max) => {
+      w.policy = { payTo, max };
+      return async (url, init) => {
+        w.calls.push(`PAID ${init?.method} ${url}`);
+        return paid();
+      };
+    },
+  };
+  return w;
+}
+const BYTES = Buffer.from('hello');
+
+test('pin probes the price, pays Pinata, uploads the file and returns the CID', async () => {
+  const w = pinata();
+  const r = await pinFile({ bytes: BYTES, name: 'a.txt', base: PINATA_402, max: 10_000n }, w.deps);
+  assert.deepEqual(r, { cid: CID, url: `https://gateway.pinata.cloud/ipfs/${CID}`, price: 1200n });
+  assert.deepEqual(w.calls, [`POST ${PINATA_402}/v1/pin/public?fileSize=5`, `PAID POST ${PINATA_402}/v1/pin/public?fileSize=5`, 'POST https://uploads.example/signed']);
+  assert.deepEqual(w.policy, { payTo: PINATA_PAYEE, max: 10_000n });
+  assert.equal(w.form.get('network'), 'public');
+  assert.equal(w.form.get('name'), 'a.txt');
+  assert.equal(Buffer.from(await w.form.get('file').arrayBuffer()).toString(), 'hello');
+});
+
+test('pin signs nothing when the price is over the cap', async () => {
+  const w = pinata({ price: '20000' });
+  await assert.rejects(pinFile({ bytes: BYTES, name: 'a.txt', base: PINATA_402, max: 10_000n }, w.deps), /0\.02 USDC, over the cap of 0\.01/);
+  assert.equal(w.policy, null);
+  assert.equal(w.calls.length, 1);
+});
+
+test('pin names the wallet to fund when the payment is refused, and fails loudly on a bad upload answer', async () => {
+  const refused = pinata({ paid: () => json(402, {}) });
+  await assert.rejects(pinFile({ bytes: BYTES, name: 'a.txt', base: PINATA_402, max: 10_000n }, refused.deps), new RegExp(`payment refused.*0x${'a'.repeat(40)}`));
+  assert.equal(refused.calls.length, 2, 'nothing was uploaded');
+  const noUrl = pinata({ paid: () => json(200, { url: 'http://plain.example/x' }) });
+  await assert.rejects(pinFile({ bytes: BYTES, name: 'a.txt', base: PINATA_402, max: 10_000n }, noUrl.deps), /no upload address/);
+  const noCid = pinata({ upload: () => json(200, { data: {} }) });
+  await assert.rejects(pinFile({ bytes: BYTES, name: 'a.txt', base: PINATA_402, max: 10_000n }, noCid.deps), /no CID/);
+  const oddCid = pinata({ upload: () => json(200, { data: { cid: 'not a cid' } }) });
+  await assert.rejects(pinFile({ bytes: BYTES, name: 'a.txt', base: PINATA_402, max: 10_000n }, oddCid.deps), /no CID/);
+  const failed = pinata({ upload: () => json(500, { error: 'boom' }) });
+  await assert.rejects(pinFile({ bytes: BYTES, name: 'a.txt', base: PINATA_402, max: 10_000n }, failed.deps), /upload answered 500/);
+});
+
+test('declareReceipt posts the hash to the door for the lease and saves the signed answer', async () => {
+  const dir = join(mkdtempSync(join(tmpdir(), 'rcpt-')), 'receipts');
+  const sha = 'cd'.repeat(32);
+  const signed = { receipt: { v: 1, kind: 'declared', sha256: sha }, message: 'm', signer: '0x1', signature: '0x2' };
+  const sent = [];
+  const fetch = async (url, init) => (sent.push({ url, method: init.method, body: JSON.parse(init.body) }), json(200, signed));
+  const r = await declareReceipt({ door: 'https://door.example', leaseId: LEASE, sha256: sha, bytes: 5, cid: CID }, { fetch, saveDir: dir });
+  assert.deepEqual(r, { signed, file: join(dir, `${sha}.json`) });
+  assert.deepEqual(sent, [{ url: `https://door.example/v1/leases/${LEASE}/receipt`, method: 'POST', body: { sha256: sha, bytes: 5, cid: CID } }]);
+  assert.deepEqual(JSON.parse(readFile(join(dir, `${sha}.json`), 'utf8')), signed);
+  assert.equal(statSync(join(dir, `${sha}.json`)).mode & 0o777, 0o600);
+  // No CID: the key is left out, not sent as null.
+  await declareReceipt({ door: 'https://door.example', leaseId: LEASE, sha256: sha, bytes: 5 }, { fetch, saveDir: dir });
+  assert.deepEqual(sent[1].body, { sha256: sha, bytes: 5 });
+});
+
+test('declareReceipt says why the door signed nothing, and saves nothing', async () => {
+  const dir = join(mkdtempSync(join(tmpdir(), 'rcpt-')), 'receipts');
+  const fetch = async () => json(409, { error: 'not_running' });
+  await assert.rejects(declareReceipt({ door: 'https://door.example', leaseId: LEASE, sha256: 'cd'.repeat(32), bytes: 5 }, { fetch, saveDir: dir }), /not_running/);
+  assert.throws(() => statSync(dir));
+  mkdir(dir, { recursive: true });
+});
