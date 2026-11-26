@@ -2250,6 +2250,13 @@ test('GET /openapi.json describes the paid rent route for x402 indexes, with the
       assert.equal(doc.paths[p]![m]!['x-payment-info'], undefined);
     }
     assert.equal(doc.paths['/v1/leases/{leaseId}/ticks'], undefined, 'the tick route is in the guidance, not probed: it needs a live lease');
+    for (const m of ['get', 'post'] as const) {
+      const op = doc.paths['/v1/leases/{leaseId}/receipt']![m]!;
+      assert.deepEqual(op.security, [], `${m} receipt is public`);
+      assert.equal(op['x-payment-info'], undefined);
+      assert.ok(op.responses['200']);
+    }
+    assert.ok(doc.paths['/v1/leases/{leaseId}/receipt']!.post!.requestBody);
   } finally {
     d.close();
   }

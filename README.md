@@ -204,6 +204,39 @@ costs the renter nothing: the price is the same with or without it.
   `400 bad_referral` before any payment.
 - **Who pays.** The door, from its own wallet. A bad or missing referral never changes whether a rent works.
 
+### Receipts
+
+After a lease, the door will sign a short statement you can keep or publish. It is free, and Charter stores
+none of your files to make one: it signs a SHA-256.
+
+- **A finished job.** `GET /v1/leases/<leaseId>/receipt` answers a receipt of `kind: "job"`: the `sha256` and
+  `bytes` of the whole output, the `hostId`, the `image`, and `ticksPaid` at `intervalSeconds` each. It means
+  the host returned those bytes for a lease that was paid. Hosts are not vetted, so it does not mean the
+  result is correct.
+- **A running home.** A home has no output the door can see. `POST /v1/leases/<leaseId>/receipt` with
+  `{ "sha256": "<64 lower hex>" }` (and optionally `"cid"`, `"bytes"`) answers a receipt of
+  `kind: "declared"`: your own claim with the door's timestamp, not proof of where the file came from. In the
+  home, `charter-x402 receipt <file>` does it. The body takes those three keys only, so the door never signs
+  free text.
+- **Safe to publish.** A receipt names the lease by `leaseRef`, the SHA-256 of `charter-lease:<leaseId>`,
+  never by the id that reads the lease.
+- **Checking one.** The door signs `message` (the line `Charter receipt v1`, a newline, the receipt as JSON)
+  as an EIP-191 personal message with the address `GET /v1/door` answers as `receiptSigner`:
+
+```js
+import { verifyMessage } from 'viem';
+const { message, signer, signature } = signed;
+const door = await (await fetch('https://charterhome.dev/v1/door')).json();
+const ok = signer.toLowerCase() === door.receiptSigner.toLowerCase()
+  && await verifyMessage({ address: signer, message, signature });
+const receipt = JSON.parse(message.slice(message.indexOf('\n') + 1));
+```
+
+- **Making a file public.** Charter does not host renter files. In a home, `charter-x402 pin <file>` buys a
+  pin from Pinata, a third party, over x402 from the home's own wallet (0.10 USDC per GiB for twelve months,
+  floor 0.001; `CHARTER_X402_MAX_PIN` caps one pin, default 0.01 USDC), then gets a declared receipt with the
+  CID in it. The file is then readable by anyone. Pinata holds it; Charter never sees it.
+
 ## Run a host
 
 Anyone can run a host. In v1 a host needs a public HTTPS address (no hosts behind NAT yet), serves only

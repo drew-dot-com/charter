@@ -10,7 +10,8 @@
     { "name": "offers", "endpoint": "https://charterhome.dev/v1/offers" },
     { "name": "openapi", "endpoint": "https://charterhome.dev/openapi.json" },
     { "name": "llms.txt", "endpoint": "https://charterhome.dev/llms.txt" },
-    { "name": "mcp-stdio", "endpoint": "https://www.npmjs.com/package/charter-mcp" }
+    { "name": "mcp-stdio", "endpoint": "https://www.npmjs.com/package/charter-mcp" },
+    { "name": "receipts", "endpoint": "https://charterhome.dev/v1/door" }
   ],
   "x402Support": true,
   "active": true,

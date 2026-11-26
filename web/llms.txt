@@ -135,6 +135,30 @@ Once a day the door sends each address one USDC transfer on Base when it is owed
 
 A renter may name its own address: that is a discount. A home's referrer is set at the home's first paid hour and no later request changes it. Hours paid by the grant fund earn nothing. A malformed address answers 400 `bad_referral` before any payment is taken.
 
+## Receipts
+
+A receipt is a short signed statement you can keep or publish after a lease. It is free. Charter stores none of your files to make one: it signs a SHA-256.
+
+- A finished job: `GET https://charterhome.dev/v1/leases/<leaseId>/receipt` (or the MCP tool `charter_receipt`). The receipt has `kind: "job"`, the `sha256` and `bytes` of the whole output (every part decoded and joined in order), `hostId`, `image`, `ticksPaid` and `intervalSeconds`. It means the host returned those bytes for a lease that was paid. Hosts are run by independent operators and are not vetted, so it does not mean the result is correct. A job that has not finished with output answers 409 `no_output`; one with no paid interval answers 409 `unpaid`.
+- A running home: `POST https://charterhome.dev/v1/leases/<leaseId>/receipt` with `{ "sha256": "<64 lower hex>" }`, and optionally `"cid"` and `"bytes"`. Inside the home, `charter-x402 receipt <file>` hashes the file, asks, and saves the answer in `~/.charter/receipts/`. The receipt has `kind: "declared"`: it is your own claim with the door's timestamp, and proves nothing about where the file came from. The body takes those three keys only. 60 an hour per lease.
+- A receipt names the lease by `leaseRef`, the SHA-256 of `charter-lease:<leaseId>`, never by the id, so publishing it gives nobody a way to read your lease. You can show a receipt is yours by showing the id.
+- `payer` is the wallet that paid, and is left out when the grant fund or a monthly allowance paid.
+
+Check a receipt offline. The door signs `message` (the line `Charter receipt v1`, a newline, then the receipt as JSON) as an EIP-191 personal message, with the address `GET https://charterhome.dev/v1/door` answers as `receiptSigner`. Read the receipt out of `message`, not out of the `receipt` field beside it:
+
+```js
+import { verifyMessage } from 'viem';
+const { message, signer, signature } = signed;
+const door = await (await fetch('https://charterhome.dev/v1/door')).json();
+const ok = signer.toLowerCase() === door.receiptSigner.toLowerCase()
+  && await verifyMessage({ address: signer, message, signature });
+const receipt = JSON.parse(message.slice(message.indexOf('\n') + 1));
+```
+
+### Making a file public yourself
+
+Charter does not host renter files. To make one public, buy a pin from Pinata, a third party that sells IPFS pinning over x402 with no account: inside a home, `charter-x402 pin <file>` pays from the home's own wallet (`charter-x402 address` shows it; about 0.001 USDC for a small file, 0.10 USDC per GiB, for twelve months), prints the CID, then gets a declared receipt with the CID in it. `CHARTER_X402_MAX_PIN` caps one pin in micro-USDC (default 10000). The file is then readable by anyone; Pinata holds it and Charter never sees it. Pinata's public gateway can take minutes to show a new pin. Outside a home, any x402 client can make the same purchase at `https://402.pinata.cloud`.
+
 ## Being named on X
 
 Charter has an X account that posts when a renter keeps paying, a grant is approved or a host is listed. It names nobody who has not asked: without an opt-in a post says "a renter", "a grantee" or "a host", with no handle, wallet or transaction link. Opting in is optional and free, and it needs an X account you control.

@@ -90,7 +90,7 @@ GET /v1/leases/&lt;leaseId&gt;/output/0</pre>
 
     <p>A client that takes only a remote address can use the door's own MCP endpoint (streamable HTTP, no account, no key):</p>
 <pre>claude mcp add --transport http charter https://charterhome.dev/mcp</pre>
-    <p>It has the free tools only: <code>charter_offers</code>, <code>charter_lease</code>, <code>charter_grant_pitch</code>, <code>charter_grant_status</code>, <code>charter_referral_status</code> and <code>charter_how_to_rent</code>. It holds no wallet and cannot pay: to rent, make the x402 call of Way 1 yourself or install the local server above.</p>
+    <p>It has the free tools only: <code>charter_offers</code>, <code>charter_lease</code>, <code>charter_grant_pitch</code>, <code>charter_grant_status</code>, <code>charter_referral_status</code>, <code>charter_receipt</code> and <code>charter_how_to_rent</code>. It holds no wallet and cannot pay: to rent, make the x402 call of Way 1 yourself or install the local server above.</p>
 
     <h2>Way 2: the charter command line</h2>
     <p>The same calls from a shell, with the <code>charter</code> CLI from the <a href="https://github.com/drew-dot-com/charter">repository</a> (<code>npm ci &amp;&amp; npm run build &amp;&amp; npm install -g --prefix ~/.local .</code>, Node 22). It pays <code>exact</code> in USDC on Base from the hex key in the file <code>CHARTER_KEY_FILE</code>, at most <code>CHARTER_MAX_TICK</code> micro-USDC a tick (default 10000, 0.01 USDC); <code>CHARTER_DOOR_URL</code> names another storefront.</p>
@@ -265,6 +265,22 @@ done</pre>
     <p>A rent request can name a referral: <code>POST /v1/rent</code> (or <code>POST /v1/leases</code>) takes <code>"referral": "&lt;0x address on Base&gt;"</code>, and so do the MCP tools <code>charter_run_python</code>, <code>charter_fetch_pages</code> and <code>charter_rent_home</code> (charter-mcp 0.6.0 or later). That address earns a share of every hour the renter pays for, and the renter pays the same price with or without it. The rate is in <code>GET /v1/door</code> as <code>referral.bps</code> (1000 is 10%); it is absent when the door pays none. An offer that carries <code>referralShare</code> (micro-USDC per hour) earns it; an offer without it earns nothing, whatever you name.</p>
     <p>Once a day the door sends each address one USDC transfer on Base when it is owed at least 0.10 USDC. You do nothing to claim. <code>GET /v1/referrals/&lt;address&gt;</code> (or the MCP tool <code>charter_referral_status</code>) is free and answers <code>bps</code>, <code>hours</code>, <code>earned</code>, <code>paid</code>, <code>owed</code>, <code>held</code> and <code>payouts</code> with each transaction hash, so the payment can be checked on chain. <code>held: true</code> means payouts to that address are paused until the operator clears it.</p>
     <p>A renter may name its own address: that is a discount. A home's referrer is set at the home's first paid hour and no later request changes it. Hours paid by the grant fund earn nothing. A malformed address answers 400 <code>bad_referral</code> before any payment is taken.</p>
+
+    <h2 id="receipts">Receipts</h2>
+    <p>A receipt is a short signed statement you can keep or publish after a lease. It is free. Charter stores none of your files to make one: it signs a SHA-256.</p>
+    <ul>
+      <li>A finished job: <code>GET /v1/leases/&lt;leaseId&gt;/receipt</code> (or the MCP tool <code>charter_receipt</code>). The receipt has <code>kind: "job"</code>, the <code>sha256</code> and <code>bytes</code> of the whole output, <code>hostId</code>, <code>image</code>, <code>ticksPaid</code> and <code>intervalSeconds</code>. It means the host returned those bytes for a lease that was paid. Hosts are not vetted, so it does not mean the result is correct.</li>
+      <li>A running home: <code>POST /v1/leases/&lt;leaseId&gt;/receipt</code> with <code>{ "sha256": "&lt;64 lower hex&gt;" }</code>, and optionally <code>"cid"</code> and <code>"bytes"</code>. Inside the home, <code>charter-x402 receipt &lt;file&gt;</code> does it and saves the answer in <code>~/.charter/receipts/</code>. The receipt has <code>kind: "declared"</code>: it is your own claim with the door's timestamp, and proves nothing about where the file came from.</li>
+      <li>A receipt names the lease by <code>leaseRef</code>, a hash of the lease id, never by the id, so publishing it gives nobody a way to read your lease.</li>
+    </ul>
+    <p>Check a receipt offline. The door signs <code>message</code> as an EIP-191 personal message with the address <code>GET /v1/door</code> answers as <code>receiptSigner</code>. Read the receipt out of <code>message</code>, not out of the field beside it:</p>
+    <pre><code>import { verifyMessage } from 'viem';
+const { message, signer, signature } = signed;
+const door = await (await fetch('https://charterhome.dev/v1/door')).json();
+const ok = signer.toLowerCase() === door.receiptSigner.toLowerCase()
+  &amp;&amp; await verifyMessage({ address: signer, message, signature });
+const receipt = JSON.parse(message.slice(message.indexOf('\n') + 1));</code></pre>
+    <p>Charter does not host renter files. To make one public, buy a pin from Pinata, a third party that sells IPFS pinning over x402 with no account: inside a home, <code>charter-x402 pin &lt;file&gt;</code> pays from the home's own wallet (about 0.001 USDC for a small file, 0.10 USDC per GiB, for twelve months), prints the CID, then gets a declared receipt with the CID in it. The file is then readable by anyone; Pinata holds it and Charter never sees it.</p>
 
     <h2 id="named">Being named on X</h2>
     <p>Charter has an X account that posts when a renter keeps paying, a grant is approved or a host is listed. It names nobody who has not asked: without an opt-in a post says "a renter", "a grantee" or "a host", with no handle, wallet or transaction link. Opting in is optional and free, and it needs an X account you control.</p>

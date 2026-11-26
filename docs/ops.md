@@ -283,6 +283,24 @@ makes money that was paid look owed, and the next run would pay it again. Before
 `CHARTER_REFERRAL_BPS=0` (no run happens at 0), restore, reconcile every address's paid total against the
 door wallet's USDC transfers on Base, and only then turn payouts back on.
 
+## Receipts
+
+The door signs receipts with its payer key (`CHARTER_DOOR_PAYER_KEY_FILE`): `GET /v1/door` names the address
+as `receiptSigner`. There is no setting; a door with a payer key signs them. Design:
+`docs/superpowers/specs/2026-11-26-output-receipts-design.md`. For agents: README "Receipts".
+
+- A job receipt is signed once and kept at `<data dir>/receipts/<leaseId>.json` (mode 0600). The file name is
+  the lease id, so treat the directory like the ledger. Deleting a file makes the next request sign again with
+  a new time; the hash is the same as long as the output parts under `output/<leaseId>/` are still there.
+- A declared (home) receipt is not kept anywhere on the box.
+- Moving the payer key changes `receiptSigner`: receipts signed by the old key still recover to the old
+  address, so keep a note of it if the key is ever rotated.
+- The door never calls Pinata. `charter-x402 pin` runs in the renter's home and pays from the renter's wallet.
+
+Rollout after a deploy that adds or changes receipts: rebuild the home image on each host so new homes carry
+the `charter-x402` subcommands, then run `deploy/identity/set-uri.mjs` so directories read the registration
+file again.
+
 ## Backup
 
 Nightly at 03:40 Air local, `charter-backup-pull.sh` on the Air pulls `/root/charter-door/data` from the box as

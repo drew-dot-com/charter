@@ -26,6 +26,35 @@ const json = (schema: object, description = 'OK') => ({ description, content: { 
 const error = (description: string) => json({ type: 'object', properties: { error: { type: 'string' } }, required: ['error'] }, description);
 const allowanceIdParam = { name: 'id', in: 'path', required: true, schema: { type: 'string', pattern: '^[0-9a-f]{32}$' } };
 const allowanceTokenParam = { name: 'x-allowance-token', in: 'header', required: true, schema: { type: 'string' }, description: 'The ownerToken from creating the allowance.' };
+/** What both receipt routes answer (src/door/receipts.ts). */
+const signedReceipt = {
+  type: 'object',
+  required: ['receipt', 'message', 'signer', 'signature'],
+  properties: {
+    receipt: {
+      type: 'object',
+      required: ['v', 'kind', 'door', 'leaseRef', 'hostId', 'ticksPaid', 'intervalSeconds', 'sha256', 'at'],
+      properties: {
+        v: { type: 'integer', enum: [1] },
+        kind: { type: 'string', enum: ['job', 'declared'] },
+        door: { type: 'string' },
+        leaseRef: { type: 'string', description: 'SHA-256 hex of "charter-lease:" and the lease id' },
+        hostId: { type: 'string' },
+        image: { type: 'string' },
+        ticksPaid: { type: 'integer' },
+        intervalSeconds: { type: 'integer' },
+        payer: { type: 'string', description: 'The wallet that paid; absent when the grant fund or an allowance paid' },
+        sha256: { type: 'string' },
+        bytes: { type: 'integer' },
+        cid: { type: 'string', description: 'declared only, as the caller gave it' },
+        at: { type: 'integer', description: 'Epoch ms the door signed' },
+      },
+    },
+    message: { type: 'string', description: 'What was signed: "Charter receipt v1", a newline, the receipt as JSON' },
+    signer: { type: 'string' },
+    signature: { type: 'string', description: 'EIP-191 personal-message signature of message' },
+  },
+};
 const leaseIdParam = { name: 'leaseId', in: 'path', required: true, schema: { type: 'string', pattern: '^[0-9a-f]{32}$' } };
 
 /**
@@ -181,6 +210,45 @@ export function openApiDoc(prices: Micro[], max: Micro, usd: (m: Micro) => strin
           security: [],
           parameters: [leaseIdParam, { name: 'part', in: 'path', required: true, schema: { type: 'integer', minimum: 0 } }],
           responses: { '200': json({ type: 'object' }), '404': error('not_found') },
+        },
+      },
+      '/v1/leases/{leaseId}/receipt': {
+        get: {
+          operationId: 'getJobReceipt',
+          summary: 'A finished job\'s signed receipt: the SHA-256 of its whole output, the host, and the intervals paid',
+          description:
+            'Free. The door signs "Charter receipt v1" and the receipt as one line of JSON (EIP-191) with the address in GET /v1/door as receiptSigner. It says the host returned those bytes for a paid lease; hosts are not vetted, so it does not say the result is correct. The receipt names the lease by leaseRef, a hash, never by its id.',
+          tags: ['Compute'],
+          security: [],
+          parameters: [leaseIdParam],
+          responses: { '200': json(signedReceipt), '404': error('not_found'), '409': error('no_output') },
+        },
+        post: {
+          operationId: 'declareHomeReceipt',
+          summary: 'A running home\'s declared receipt: the door signs a SHA-256 the lease holder gives, with its own time',
+          description:
+            'Free. A home has no output the door can see, so this receipt is the holder\'s own claim with the door\'s timestamp (kind "declared"), not proof of where a file came from. The body is a hash, and optionally a CID and a size: no other key is taken, so the door never signs free text. 60 an hour per lease.',
+          tags: ['Compute'],
+          security: [],
+          parameters: [leaseIdParam],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['sha256'],
+                  properties: {
+                    sha256: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+                    cid: { type: 'string', description: 'CIDv0, or CIDv1 in base32. Signed as given; the door does not fetch it.' },
+                    bytes: { type: 'integer', minimum: 0 },
+                  },
+                },
+              },
+            },
+          },
+          responses: { '200': json(signedReceipt), '400': error('bad_request'), '404': error('not_found'), '409': error('not_running'), '429': error('rate_limited') },
         },
       },
       '/v1/allowances': {
