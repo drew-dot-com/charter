@@ -81,7 +81,7 @@ Check: `curl -s https://charterhome.dev/llms.txt | grep -c "OpenHuman on Charter
 still lists the offer; `docker logs charter-door` says `channel ready, headroom N`.
 
 Before a tenant who pays through the door stays for weeks, look at that headroom: one x402 home costs the
-door's outbound channel about 0.17 USDC a day (`docs/ops.md`, "A home paid through the door").
+door's outbound channel about 0.26 USDC a day (`docs/ops.md`, "A home paid through the door").
 
 ## 5. The home watch (optional, separate go)
 

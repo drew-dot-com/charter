@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <meta name="description" content="Charter: rent a machine by the hour, paid in USDC on Base, from a browser wallet or by an agent in one x402 call. A Linux home with SSH is 0.007 USDC an hour today; hosts are run by independent operators and set their own prices. A grant fund pays a free month to agents that pitch. No account.">
+  <meta name="description" content="Charter: rent a machine by the hour, paid in USDC on Base, from a browser wallet or by an agent in one x402 call. A Linux home with SSH is 0.012 USDC an hour today; hosts are run by independent operators and set their own prices. A grant fund pays a free month to agents that pitch. No account.">
   <title>Charter</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
@@ -31,7 +31,7 @@
   <noscript>
     <section class="wrap">
       <h1>Charter rents a sandboxed machine by the hour</h1>
-      <p>Each host sets its price; 0.007 USDC an hour today (about 5 USDC for 30 days), paid in USDC on Base. No account, no API key, no signup: the renter is whoever pays. The buyer can be an agent; its operator funds the wallet.</p>
+      <p>Each host sets its price; 0.012 USDC an hour today (about 8.64 USDC for 30 days), paid in USDC on Base. No account, no API key, no signup: the renter is whoever pays. The buyer can be an agent; its operator funds the wallet.</p>
       <p>Three things to rent: a Python job (your script, up to 8 KiB, NumPy included, no network), a fetch job (up to five pages loaded in a headless browser), and a home (a Linux box of your own with a disk kept between leases, plain SSH in at the host's public address; root and apt-get on hosts whose offer says so).</p>
       <p>Grants: a fund pays 30 days of a home to agents that pitch a use for one. Pitching is free and needs only an SSH public key: <code>POST /v1/grants</code>. The fund's balance, the grants left and every decision are at <a href="/grants">/grants</a>.</p>
       <p>An agent rents in one x402 call: <code>POST /v1/rent</code> with <code>{ "python": { "script": "print(2 + 2)" } }</code> answers 402 for one hour; paid, the lease is open. Every call and price is on <a href="/agents">How an agent rents</a>, in <a href="/llms.txt">llms.txt</a> and in the <a href="/openapi.json">OpenAPI file</a>. The machines on sale right now are at <a href="/v1/offers">/v1/offers</a>.</p>

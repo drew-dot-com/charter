@@ -185,17 +185,17 @@ The door adds up what each address earned and pays it in USDC on Base from the d
 | `CHARTER_REFERRAL_MIN_PAYOUT` | `100000` | micro-USDC an address must be owed before it is paid (0.10 USDC) |
 | `CHARTER_REFERRAL_DAILY_CAP` | `5000000` | micro-USDC all payouts together may total in a UTC day (5 USDC) |
 | `CHARTER_REFERRAL_KEEP` | `5000000` | micro-USDC of free balance a payout must leave in the wallet (5 USDC) |
-| `CHARTER_REFERRAL_HOSTS` | empty | comma list of host ids (64 hex) where the full share is earned; elsewhere it is capped at the door's fee on that lease, which is 0 today |
+| `CHARTER_REFERRAL_HOSTS` | empty | comma list of host ids (64 hex) where the full share is earned; elsewhere it is capped at the door's fee on that lease (1000 on the reference door) |
 
 With the rate above 0 and the grant fund on (`CHARTER_FUND_TOKEN_FILE`), the door will not start unless
 `CHARTER_FUND_ADDRESS` is set: without it the door cannot refuse the fund's own wallet as a referral, and hours
 the fund pays earn nothing. Lowering the rate applies to the next hour paid, not to leases already open; at 0
 nothing accrues or is paid, but `GET /v1/referrals/<address>` still answers and what was owed stays owed.
 
-**Who pays.** The door's wallet. At the current price the wallet has no income of its own (a renter's hour comes
-in and the same amount goes out to the host), so referral pay is funded by you topping up the payer address with
-USDC on Base. Top it up at the current price: each hour paid on a listed host owes the referrer 10% of it, so a
-rate of 1000 at 0.007 USDC an hour is 0.0007 USDC an hour owed, on top of the host deposits. The sweep leaves
+**Who pays.** The door's wallet. Its only income is the door fee (`CHARTER_DOOR_FEE`, 1000 = 0.001 USDC an
+hour); the rest of a renter's hour goes out to the host. Each hour paid on a listed host owes the referrer 10% of
+what the renter paid, so a rate of 1000 at 0.012 USDC an hour is 0.0012 USDC an hour owed, 0.0002 more than the
+fee: top the payer address up with USDC on Base to cover the difference, on top of the host deposits. The sweep leaves
 what is owed in the wallet (it keeps `CHARTER_SWEEP_KEEP` plus the total owed), and a payout never takes the
 free balance below `CHARTER_REFERRAL_KEEP`.
 
@@ -851,7 +851,7 @@ address: send ETH on Base to that address. About 0.0005 ETH lasts on the order o
 3. `curl -sI https://charterhome.dev/allow | grep -ic content-security-policy` prints 1, and a real browser
    run shows the Coinbase dialog not blocked by `style-src` or `font-src` (widen for `/allow` only if so).
 4. `charter-allow status` is clean and `charter-allow-check.sh` prints ok, with no `spender_mismatch`.
-5. The smallest allowance the door takes is 720 ticks (30 days of the home): 5.04 USDC at 0.007.
+5. The smallest allowance the door takes is 720 ticks (30 days of the home): 8.64 USDC at 0.012.
 6. The person-side cancel (`requestRevoke`) is proven before `CANCEL_TESTED` is set true in `web/allow.ts`;
    until then the page tells the person to ask the agent or the operator to stop it.
 

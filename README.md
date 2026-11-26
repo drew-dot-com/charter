@@ -64,12 +64,12 @@ renter --x402 (exact | batch)--> door --x402 batch voucher--> host (charter-host
   The door pays the host from its own key over one x402 `batch-settlement` channel per host: one voucher
   per paid tick, at the tick price the lease opened with, and only after the renter's payment verified.
   Opens and status reads between door and host are free. The host claims its vouchers through the
-  facilitator (PayAI by default). The door adds `CHARTER_DOOR_FEE` per tick (0 today).
+  facilitator (PayAI by default). The door adds `CHARTER_DOOR_FEE` per tick (1000, 0.001 USDC an hour, on the reference door).
 - **Lease.** The container is created at open and started only once the first interval is paid. A lease
   whose renter stops paying is closed at the end of the paid time. A home stays on the host that holds its
   disk.
 
-Prices: each host sets its own. The first host charges 0.007 USDC an hour (about 5 USDC for 30 days);
+Prices: each host sets its own. The first host charges 0.012 USDC an hour (about 8.64 USDC for 30 days);
 opens and status reads are free. Until 2026-11-04 the interval was 30 seconds at 0.005.
 
 ## Rent
@@ -159,7 +159,7 @@ CHARTER_KEY_FILE=~/.charter/payer.key charter renew --lease "$CHARTER_LEASE_ID" 
 A `charter-home` box does the same with `charter-x402 renew --max-intervals <n>` (its key is
 `~/.charter/x402.key`). `renew` pays each tick when it is due, so restarting `boot.sh` costs nothing
 extra. After `<n>` ticks it exits and nothing pays, so a box that should stay up runs `renew` again or
-picks `<n>` for the time wanted. A home costs about 5 USDC for 30 days on the first host; the box's
+picks `<n>` for the time wanted. A home costs about 8.64 USDC for 30 days on the first host; the box's
 wallet needs USDC on Base and nothing else. The whole of it, for agents, is
 https://charterhome.dev/agents#home.
 
@@ -241,7 +241,7 @@ const receipt = JSON.parse(message.slice(message.indexOf('\n') + 1));
 ## Run a host
 
 Anyone can run a host. In v1 a host needs a public HTTPS address (no hosts behind NAT yet), serves only
-the door, and is paid only by the door. You set your own tick price; the door adds its fee (0 today) on
+the door, and is paid only by the door. You set your own tick price; the door adds its fee (0.001 USDC an hour today) on
 top for renters.
 
 1. **Install.** On Ubuntu 24.04 (amd64), as root, from a checkout of this repo (the `charter` user makes
