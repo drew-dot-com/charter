@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { privateKeyToAccount } from 'viem/accounts';
-import { buildReceipt, declaredBody, isCid, leaseRefOf, messageOf, RECEIPT_PREFIX, signReceipt, verifyReceipt } from './receipts.js';
+import { buildReceipt, canonicalCid, declaredBody, isCid, leaseRefOf, messageOf, RECEIPT_PREFIX, signReceipt, verifyReceipt } from './receipts.js';
 
 const ACCOUNT = privateKeyToAccount(`0x${'11'.repeat(32)}`);
 const LEASE = 'ab'.repeat(16);
@@ -9,6 +9,8 @@ const SHA = 'cd'.repeat(32);
 const HOST = 'ef'.repeat(32);
 const CID0 = 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
 const CID1 = 'bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy';
+const CID1_HEX = 'f01551220c7d01489080858c500065836c658f847a6ca67c4864619212be4f8200e4bbace';
+const DAG_PB = 'bafybeibnoelefnzgwbcacyt4vh52ymxvzbjq7mmqhtcnwarfq4lzegsiqe';
 
 const bare = () => buildReceipt({ kind: 'declared', door: 'https://charterhome.dev', leaseRef: leaseRefOf(LEASE), hostId: HOST, ticksPaid: 2, intervalSeconds: 3600, sha256: SHA, at: 1795000000000 });
 
@@ -54,7 +56,7 @@ test('a signed receipt verifies, and any tampering fails', async () => {
 
 test('a declared body is exactly a hash, and optionally a CID and a size', () => {
   assert.deepEqual(declaredBody({ sha256: SHA }), { sha256: SHA });
-  assert.deepEqual(declaredBody({ sha256: SHA, cid: CID1, bytes: 12 }), { sha256: SHA, cid: CID1, bytes: 12 });
+  assert.deepEqual(declaredBody({ sha256: SHA, cid: CID1, bytes: 12 }), { sha256: SHA, cid: CID1_HEX, bytes: 12 });
   assert.deepEqual(declaredBody({ sha256: SHA, bytes: 0 }), { sha256: SHA, bytes: 0 });
   for (const bad of [
     { sha256: SHA, name: 'x' },
@@ -83,8 +85,30 @@ test('a CID is a v0 or a base32 v1, nothing else', () => {
   assert.equal(isCid(CID1.toUpperCase()), false);
   assert.equal(isCid(`https://gateway.pinata.cloud/ipfs/${CID1}`), false);
   assert.equal(isCid(`${CID1} buy now`), false);
-  assert.equal(isCid('b' + 'a'.repeat(49)), false);
-  assert.equal(isCid('b' + 'a'.repeat(121)), false);
+  assert.equal(isCid('b' + 'a'.repeat(57)), false);
+  assert.equal(isCid('b' + 'a'.repeat(59)), false);
   assert.equal(isCid(''), false);
   assert.equal(isCid(undefined), false);
+});
+
+test('a CID is signed in base16, so no CID can carry words the caller chose', () => {
+  assert.equal(canonicalCid(CID1), CID1_HEX);
+  assert.equal(canonicalCid(CID1_HEX), CID1_HEX);
+  assert.equal(canonicalCid(DAG_PB), 'f017012202d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881');
+  // A v0 CID is the same object as a v1 dag-pb CID over the same digest.
+  assert.equal(canonicalCid(CID0), 'f017012209d6c2be50f706953479ab9df2ce3edca90b68053c00b3004b7f0accbe1e8eedf');
+  // 59 lower-case letters that spell a sentence have the shape of a base32 CID and are not one.
+  const words = 'b' + 'thisdoorcertifiesthattheoutputwasverifiedcorrectbycharterx';
+  assert.equal(words.length, 59);
+  assert.equal(canonicalCid(words), null);
+  assert.equal(declaredBody({ sha256: SHA, cid: words }), null);
+  // Whatever a caller sends, what is signed is `f`, a fixed header and hex.
+  for (const c of [CID0, CID1, DAG_PB]) assert.match(canonicalCid(c)!, /^f01(55|70)1220[0-9a-f]{64}$/);
+  // Not sha2-256, not raw or dag-pb, wrong length, or upper case: refused.
+  assert.equal(canonicalCid('f01551320' + 'ab'.repeat(32)), null);
+  assert.equal(canonicalCid('f01711220' + 'ab'.repeat(32)), null);
+  assert.equal(canonicalCid('f01551220' + 'ab'.repeat(31)), null);
+  assert.equal(canonicalCid(CID1_HEX.toUpperCase()), null);
+  assert.equal(canonicalCid('Qm' + 'z'.repeat(44)), null);
+  assert.equal(canonicalCid(7), null);
 });

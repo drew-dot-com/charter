@@ -6,7 +6,7 @@ import { verifyMessage } from 'viem';
  * A receipt is a short statement the door signs about a lease: the SHA-256 of a job's output (`job`), or a hash
  * the holder of a home lease declared (`declared`). The door signs `RECEIPT_PREFIX` and the receipt as one line of
  * JSON, as an EIP-191 personal message: an x402 `exact` payment is EIP-712 typed data, so a receipt signature can
- * never be one. Every field is hex, an integer, a CID shape or one of two words: the door never signs free text.
+ * never be one. Every field is hex, an integer, a CID in base16 or one of two words: the door never signs free text.
  */
 export const RECEIPT_PREFIX = 'Charter receipt v1\n';
 
@@ -31,7 +31,7 @@ export interface Receipt {
   /** job: of the whole output, the decoded parts joined in order. declared: as the caller gave it. */
   sha256: string;
   bytes?: number;
-  /** declared only, as the caller gave it. The door never fetches or checks it. */
+  /** declared only: the caller's CID as canonicalCid writes it (v1, base16). The door never fetches it. */
   cid?: string;
   /** Epoch ms the door signed. */
   at: number;
@@ -95,20 +95,61 @@ export async function verifyReceipt(s: SignedReceipt): Promise<boolean> {
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const CID_V0 = /^Qm[1-9A-HJ-NP-Za-km-z]{44}$/;
-const CID_V1 = /^b[a-z2-7]{50,120}$/;
+const CID_V1_BASE32 = /^b[a-z2-7]{58}$/;
+const CID_V1_BASE16 = /^f01(55|70)1220[0-9a-f]{64}$/;
+const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const BASE32 = 'abcdefghijklmnopqrstuvwxyz234567';
 
-/** CIDv0 (`Qm` and 44 base58 characters) or CIDv1 in base32 (`b` and 50 to 120 of a-z, 2-7). */
-export function isCid(v: unknown): v is string {
-  return typeof v === 'string' && (CID_V0.test(v) || CID_V1.test(v));
+/** The 34 bytes of a v0 CID (a sha2-256 multihash) as hex, or null. */
+function base58Hex34(text: string): string | null {
+  let n = 0n;
+  for (const ch of text) n = n * 58n + BigInt(BASE58.indexOf(ch));
+  const hex = n.toString(16);
+  return hex.length <= 68 ? hex.padStart(68, '0') : null;
 }
 
-/** A declared receipt's request body, or null: `sha256` (64 lower hex), and optionally `cid` and `bytes`. No other key. */
+/** 58 base32 characters as the 36 bytes they hold, in hex; null when the two spare bits are not zero. */
+function base32Hex36(text: string): string | null {
+  let n = 0n;
+  for (const ch of text) n = (n << 5n) | BigInt(BASE32.indexOf(ch));
+  if ((n & 3n) !== 0n) return null;
+  return (n >> 2n).toString(16).padStart(72, '0');
+}
+
+/**
+ * The CID `v` in the one form the door signs: version 1 in base16 (`f`, then hex), for a raw or dag-pb block
+ * named by a sha2-256 digest. Takes a v0 CID (`Qm…`), a v1 CID in base32 (`bafk…`, `bafy…`) or that base16 form;
+ * null for anything else. Base32 can spell words and hex cannot, so a signed CID never carries a caller's
+ * sentence; any IPFS tool reads the base16 form as the same CID.
+ */
+export function canonicalCid(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  if (CID_V1_BASE16.test(v)) return v;
+  if (CID_V0.test(v)) {
+    const hex = base58Hex34(v.slice(0));
+    return hex !== null && hex.startsWith('1220') ? `f0170${hex}` : null;
+  }
+  if (CID_V1_BASE32.test(v)) {
+    const hex = base32Hex36(v.slice(1));
+    const out = hex === null ? null : `f${hex}`;
+    return out !== null && CID_V1_BASE16.test(out) ? out : null;
+  }
+  return null;
+}
+
+/** Whether `v` is a CID the door will sign (canonicalCid). */
+export function isCid(v: unknown): v is string {
+  return canonicalCid(v) !== null;
+}
+
+/** A declared receipt's request body, or null: `sha256` (64 lower hex), and optionally `cid` (answered as canonicalCid) and `bytes`. No other key. */
 export function declaredBody(v: unknown): { sha256: string; cid?: string; bytes?: number } | null {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
   const { sha256, cid, bytes, ...rest } = v as { sha256?: unknown; cid?: unknown; bytes?: unknown };
   if (Object.keys(rest).length > 0) return null;
   if (typeof sha256 !== 'string' || !SHA256.test(sha256)) return null;
-  if (cid !== undefined && !isCid(cid)) return null;
+  const signedCid = cid === undefined ? undefined : canonicalCid(cid);
+  if (signedCid === null) return null;
   if (bytes !== undefined && (typeof bytes !== 'number' || !Number.isSafeInteger(bytes) || bytes < 0)) return null;
-  return { sha256, ...(cid !== undefined ? { cid } : {}), ...(bytes !== undefined ? { bytes } : {}) };
+  return { sha256, ...(signedCid !== undefined ? { cid: signedCid } : {}), ...(bytes !== undefined ? { bytes } : {}) };
 }

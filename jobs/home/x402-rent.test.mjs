@@ -129,7 +129,7 @@ import { mkdtempSync, mkdirSync as mkdir, readFileSync as readFile, statSync, wr
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { declareReceipt, fileToPin, onlyPinataExact, pinFile, pinPrice, PINATA_402 } from './x402-rent.mjs';
+import { declareReceipt, fileToPin, main, onlyPinataExact, pinFile, pinPrice, PINATA_402 } from './x402-rent.mjs';
 
 const PINATA_PAYEE = '0xc900f41481B4F7C612AF9Ce3B1d16A7A1B6bd96E';
 const CID = 'bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy';
@@ -194,7 +194,8 @@ test('pin probes the price, pays Pinata, uploads the file and returns the CID', 
   const r = await pinFile({ bytes: BYTES, name: 'a.txt', base: PINATA_402, max: 10_000n }, w.deps);
   assert.deepEqual(r, { cid: CID, url: `https://gateway.pinata.cloud/ipfs/${CID}`, price: 1200n });
   assert.deepEqual(w.calls, [`POST ${PINATA_402}/v1/pin/public?fileSize=5`, `PAID POST ${PINATA_402}/v1/pin/public?fileSize=5`, 'POST https://uploads.example/signed']);
-  assert.deepEqual(w.policy, { payTo: PINATA_PAYEE, max: 10_000n });
+  // The paid leg may sign no more than the price the probe quoted, whatever the cap allows.
+  assert.deepEqual(w.policy, { payTo: PINATA_PAYEE, max: 1200n });
   assert.equal(w.form.get('network'), 'public');
   assert.equal(w.form.get('name'), 'a.txt');
   assert.equal(Buffer.from(await w.form.get('file').arrayBuffer()).toString(), 'hello');
@@ -243,4 +244,21 @@ test('declareReceipt says why the door signed nothing, and saves nothing', async
   await assert.rejects(declareReceipt({ door: 'https://door.example', leaseId: LEASE, sha256: 'cd'.repeat(32), bytes: 5 }, { fetch, saveDir: dir }), /not_running/);
   assert.throws(() => statSync(dir));
   mkdir(dir, { recursive: true });
+});
+
+test('pin and receipt check the lease before any money moves', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pin-'));
+  writeFile(join(dir, 'a.txt'), 'hello');
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => (calls.push(String(url)), json(500, {}));
+  try {
+    for (const cmd of ['pin', 'receipt']) {
+      await assert.rejects(main([cmd, join(dir, 'a.txt')], { HOME: dir }), /no lease/, cmd);
+      await assert.rejects(main([cmd, join(dir, 'a.txt'), '--lease', 'nope'], { HOME: dir }), /no lease/, cmd);
+    }
+    assert.deepEqual(calls, [], 'nothing was fetched, so nothing was paid');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

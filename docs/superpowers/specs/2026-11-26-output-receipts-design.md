@@ -1,6 +1,6 @@
 # Output receipts and renter-paid pinning: design
 
-Status: DRAFT, awaiting Drew's approval. 2026-11-26.
+Status: APPROVED by Drew 2026-11-26. Built on feat/receipts. One change after the final review, marked below.
 
 ## Intent
 
@@ -119,7 +119,10 @@ Response body of both routes:
 - `sha256`, `bytes`: for `job`, of the whole output, meaning the decoded parts joined in order: the
   same bytes a renter gets by reading every part. For `declared`, as the caller gave them (`bytes`
   optional there).
-- `cid`: `declared` only, optional, as the caller gave it. The door does not fetch or check it.
+- `cid`: `declared` only, optional. Changed after the final review: the door checks the CID's bytes (version
+  0, or version 1 over a sha2-256 digest, raw or dag-pb) and signs it as version 1 in base16 (`f`, then hex).
+  Base32 can spell words, so signing the caller's own string would have let a caller put a sentence under
+  the door's key, against the anti-goal below. The door still never fetches it.
 - `at`: epoch ms the door signed.
 - Keys appear in the order above; absent optional keys are simply left out.
 - `message` is the literal line `Charter receipt v1`, a newline, then `JSON.stringify(receipt)`.

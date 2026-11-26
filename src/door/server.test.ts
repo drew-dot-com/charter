@@ -2641,6 +2641,8 @@ const OUTPUT = Buffer.concat([Buffer.from('p0'), Buffer.from('p1')]);
 const HOME_KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl you@host';
 const HOME_OFFER: Offer = { ...OFFER, images: ['charter-job-fetch', 'charter-home'], home: { diskGiB: 10, retentionDays: 30, slots: 2 } };
 const CID_V1 = 'bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy';
+/** The same CID as the door signs it: version 1 in base16. */
+const CID_V1_HEX = 'f01551220c7d01489080858c500065836c658f847a6ca67c4864619212be4f8200e4bbace';
 
 /** A host whose lease is running until `state.now` is set to something else. */
 function receiptHost(state: { now: Lease }, over: Partial<HostApi> = {}) {
@@ -2831,7 +2833,7 @@ test('receipt: a running paid home gets a declared receipt for the hash it gives
     assert.equal(await verifyReceipt(s), true);
     assert.deepEqual(s.receipt, {
       v: 1, kind: 'declared', door: 'https://door.example', leaseRef: leaseRefOf(LEASE), hostId: OFFER.hostId, image: 'charter-home',
-      ticksPaid: 1, intervalSeconds: OFFER.intervalSeconds, payer: '0xabc', sha256: hash, bytes: 12, cid: CID_V1, at: d.clock.t,
+      ticksPaid: 1, intervalSeconds: OFFER.intervalSeconds, payer: '0xabc', sha256: hash, bytes: 12, cid: CID_V1_HEX, at: d.clock.t,
     });
     const bare = (await (await d.post(`/v1/leases/${LEASE}/receipt`, { sha256: hash })).json()) as SignedReceipt;
     assert.equal('cid' in bare.receipt || 'bytes' in bare.receipt, false);
@@ -2862,7 +2864,7 @@ test('receipt: a declared receipt is refused for a job, an unpaid or stopped hom
     assert.equal(unpaid.status, 409);
     assert.deepEqual(await unpaid.json(), { error: 'unpaid' });
     assert.equal((await d2.post(`/v1/leases/${LEASE}/ticks`, { index: 0 }, { 'x-test-payer': '0xabc' })).status, 200);
-    for (const bad of [{ sha256: hash, name: 'Charter endorses this' }, { sha256: hash.toUpperCase() }, { sha256: hash, cid: 'free text' }, { sha256: hash, bytes: -1 }, {}, [hash]]) {
+    for (const bad of [{ sha256: hash, name: 'Charter endorses this' }, { sha256: hash.toUpperCase() }, { sha256: hash, cid: 'free text' }, { sha256: hash, cid: 'b' + 'thisdoorcertifiesthattheoutputwasverifiedcorrectbycharterx' }, { sha256: hash, bytes: -1 }, {}, [hash]]) {
       const b = await d2.post(`/v1/leases/${LEASE}/receipt`, bad);
       assert.equal(b.status, 400, JSON.stringify(bad));
       assert.deepEqual(await b.json(), { error: 'bad_request' });

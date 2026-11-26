@@ -212,12 +212,13 @@ none of your files to make one: it signs a SHA-256.
 - **A finished job.** `GET /v1/leases/<leaseId>/receipt` answers a receipt of `kind: "job"`: the `sha256` and
   `bytes` of the whole output, the `hostId`, the `image`, and `ticksPaid` at `intervalSeconds` each. It means
   the host returned those bytes for a lease that was paid. Hosts are not vetted, so it does not mean the
-  result is correct.
+  result is correct. A lease that never read its own output spends its free reads on this, one per part
+  (429 `rate_limited` when none are left).
 - **A running home.** A home has no output the door can see. `POST /v1/leases/<leaseId>/receipt` with
   `{ "sha256": "<64 lower hex>" }` (and optionally `"cid"`, `"bytes"`) answers a receipt of
   `kind: "declared"`: your own claim with the door's timestamp, not proof of where the file came from. In the
-  home, `charter-x402 receipt <file>` does it. The body takes those three keys only, so the door never signs
-  free text.
+  home, `charter-x402 receipt <file>` does it. The body takes those three keys only, and a CID is signed as
+  version 1 in base16 (`f`, then hex), so the door never signs free text.
 - **Safe to publish.** A receipt names the lease by `leaseRef`, the SHA-256 of `charter-lease:<leaseId>`,
   never by the id that reads the lease.
 - **Checking one.** The door signs `message` (the line `Charter receipt v1`, a newline, the receipt as JSON)

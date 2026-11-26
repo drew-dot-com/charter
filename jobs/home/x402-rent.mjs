@@ -56,8 +56,8 @@ export function onlyDoorExact(payTo, maxTick) {
 
 export const PINATA_402 = 'https://402.pinata.cloud';
 const PINATA_GATEWAY = 'https://gateway.pinata.cloud/ipfs/';
-/** What the door takes as a CID: v0, or v1 in base32. */
-const CID = /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{50,120})$/;
+/** The look of a CID the door takes: v0, or v1 in base32 over a sha2-256 digest. The door checks the bytes. */
+const CID = /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{58})$/;
 
 const isBaseUsdcExact = (r) =>
   r?.scheme === 'exact' && r.network === BASE && String(r.asset).toLowerCase() === BASE_USDC.toLowerCase() && /^\d+$/.test(String(r.amount));
@@ -110,7 +110,8 @@ export async function pinFile({ bytes, name, base = PINATA_402, max }, deps) {
   if (price.amount > max) {
     throw new Error(`pinning ${bytes.length} bytes costs ${usdc(price.amount)} USDC, over the cap of ${usdc(max)} (CHARTER_X402_MAX_PIN, micro-USDC): nothing signed`);
   }
-  const paid = await deps.paidFetchFor(price.payTo, max)(door, { method: 'POST' });
+  // The paid leg may sign the quoted price and no more, even when the cap would allow it.
+  const paid = await deps.paidFetchFor(price.payTo, price.amount)(door, { method: 'POST' });
   if (paid.status === 402) throw new Error(`payment refused by Pinata, nothing settled: does the wallet ${deps.address} hold ${usdc(price.amount)} USDC on Base?`);
   if (!paid.ok) throw new Error(`Pinata's door answered ${paid.status}: ${JSON.stringify(await body(paid)).slice(0, 200)}`);
   const signed = await body(paid);
@@ -279,7 +280,7 @@ function flags(argv) {
   return out;
 }
 
-async function main(argv, env) {
+export async function main(argv, env) {
   const [cmd, ...rest] = argv;
   // `receipt` and `pin` take one file before their flags.
   const takesFile = (cmd === 'receipt' || cmd === 'pin') && rest[0] !== undefined && !rest[0].startsWith('--');
@@ -323,6 +324,8 @@ async function main(argv, env) {
     const path = takesFile ? rest[0] : undefined;
     const { bytes, sha256 } = fileToPin(path);
     const saveDir = join(homedir(), '.charter', 'receipts');
+    // Before any money moves: a pin that is to end in a receipt needs a lease to ask for.
+    const leaseId = cmd === 'pin' && f['no-receipt'] ? undefined : leaseOf();
     // `receipt --cid`: for a file pinned earlier whose receipt was not signed then.
     let cid = cmd === 'receipt' ? f.cid : undefined;
     if (cmd === 'pin') {
@@ -344,13 +347,13 @@ async function main(argv, env) {
     }
     let got;
     try {
-      got = await declareReceipt({ door, leaseId: leaseOf(), sha256, bytes: bytes.length, cid }, { fetch, saveDir });
+      got = await declareReceipt({ door, leaseId, sha256, bytes: bytes.length, cid }, { fetch, saveDir });
     } catch (e) {
       // The pin is paid and done either way: say so before the failure.
       if (cid) console.error(`charter-x402: the file is pinned (${cid}) but no receipt was signed. Ask again with: charter-x402 receipt ${path} --cid ${cid}`);
       throw e;
     }
-    log(`receipt saved to ${got.file}: a declared receipt, your own claim with the door's timestamp`);
+    log(`receipt saved to ${got.file}: a declared receipt, your own claim with the door's timestamp${got.signed.receipt?.cid ? `. It names the CID in base16 (${got.signed.receipt.cid}): the same CID, in the form the door signs` : ''}`);
     console.log(JSON.stringify(got.signed, null, 2));
     return 0;
   }
