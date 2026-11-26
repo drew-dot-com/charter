@@ -6,7 +6,31 @@ export interface Optin { name: string; handle?: string }
 /** Keys are lowercased: wallet addresses for renters, grant ids, host ids. */
 export interface Optins { renters: Record<string, Optin>; grants: Record<string, Optin>; hosts: Record<string, Optin> }
 export interface Rules { banned: string[] }
-export interface ConfigFiles { factsMd: string; rules: Rules; optins: Optins; blocklist: Set<string> }
+/** leads.json: what the leads loop searches X for, and its daily limits. */
+export interface LeadsConfig { queries: string[]; maxPerDay: number; maxReadsPerDay: number; everyHours: number }
+/** `leads` is absent when there is no leads.json: the leads loop is off. */
+export interface ConfigFiles { factsMd: string; rules: Rules; optins: Optins; blocklist: Set<string>; leads?: LeadsConfig }
+
+export const LEADS_DEFAULTS = { maxPerDay: 5, maxReadsPerDay: 40, everyHours: 6 };
+const LEADS_MAX_QUERIES = 8;
+const LEADS_MAX_QUERY_CHARS = 200;
+
+/** leads.json checked field by field: a bad file throws, so a typo never searches for the wrong thing. */
+function leadsOf(raw: unknown): LeadsConfig {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('leads.json must be an object');
+  const o = raw as Record<string, unknown>;
+  if (!Array.isArray(o.queries) || o.queries.some((q) => typeof q !== 'string')) throw new Error('leads.json: queries must be an array of strings');
+  const queries = [...new Set((o.queries as string[]).map((q) => q.trim()).filter(Boolean))];
+  if (queries.length > LEADS_MAX_QUERIES) throw new Error(`leads.json: at most ${LEADS_MAX_QUERIES} queries`);
+  if (queries.some((q) => q.length > LEADS_MAX_QUERY_CHARS)) throw new Error(`leads.json: a query is longer than ${LEADS_MAX_QUERY_CHARS} characters`);
+  const num = (k: keyof typeof LEADS_DEFAULTS, max: number): number => {
+    const v = o[k];
+    if (v === undefined) return LEADS_DEFAULTS[k];
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > max) throw new Error(`leads.json: ${k} must be a whole number from 1 to ${max}`);
+    return v;
+  };
+  return { queries, maxPerDay: num('maxPerDay', 20), maxReadsPerDay: num('maxReadsPerDay', 200), everyHours: num('everyHours', 24) };
+}
 
 export const DEFAULT_BANNED = ['token', 'airdrop', 'presale', 'guarantee', 'escape', 'jailbreak', 'unfenced', 'toon'];
 
@@ -41,7 +65,8 @@ function optinMap(raw: unknown): Record<string, Optin> {
  * (nobody opted in, nobody blocked); a file that exists but does not parse throws, so a typo never opens the gates.
  * The effective banned list is the union of DEFAULT_BANNED and
  * the words in rules.json (lowercased, deduped): the file can add words, never remove one, and `toon` is always present.
- * blocklist.json must be an array of strings; any other shape throws.
+ * blocklist.json must be an array of strings; any other shape throws. leads.json is optional: absent, the leads loop
+ * is off; present but malformed, it throws.
  */
 export function loadConfigFiles(dir: string): ConfigFiles {
   const factsMd = read(dir, 'facts.md') ?? '';
@@ -60,5 +85,8 @@ export function loadConfigFiles(dir: string): ConfigFiles {
   if (!Array.isArray(blockRaw) || blockRaw.some((h) => typeof h !== 'string')) throw new Error('blocklist.json must be an array of handle strings');
   const blocklist = new Set((blockRaw as string[]).map((h) => bare(h).toLowerCase()).filter(Boolean));
 
-  return { factsMd, rules: { banned }, optins, blocklist };
+  const leadsText = read(dir, 'leads.json');
+  const leads = leadsText === undefined ? undefined : leadsOf(JSON.parse(leadsText) as unknown);
+
+  return leads ? { factsMd, rules: { banned }, optins, blocklist, leads } : { factsMd, rules: { banned }, optins, blocklist };
 }

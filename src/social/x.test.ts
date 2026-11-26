@@ -100,3 +100,23 @@ test('costOf counts a URL post at postWithUrl', () => {
   assert.equal(costOf('post', {}), X_PRICE_USD.post);
   assert.equal(costOf('read', { count: 3 }), 3 * X_PRICE_USD.readPost);
 });
+
+test('search asks recent search for original English posts and maps them like mentions', async () => {
+  const seen: string[] = [];
+  const fetchFn = (async (url: string | URL) => {
+    seen.push(String(url));
+    return new Response(JSON.stringify({
+      data: [{ id: '7', text: 'where do I host my agent', author_id: 'u1', conversation_id: '7', created_at: '2026-11-26T10:00:00.000Z' }],
+      includes: { users: [{ id: 'u1', username: 'ada' }] },
+      meta: { newest_id: '7' },
+    }), { status: 200 });
+  }) as typeof fetch;
+  const x = new XClient({ consumerKey: 'k', consumerSecret: 's', accessToken: 't', accessSecret: 'u', userId: '1' }, fetchFn);
+  const r = await x.search('host my agent', '5');
+  const u = new URL(seen[0]!);
+  assert.equal(u.pathname, '/2/tweets/search/recent');
+  assert.equal(u.searchParams.get('query'), '(host my agent) -is:retweet -is:reply lang:en');
+  assert.equal(u.searchParams.get('since_id'), '5');
+  assert.equal(u.searchParams.get('max_results'), '10');
+  assert.deepEqual(r, { posts: [{ id: '7', text: 'where do I host my agent', authorId: 'u1', authorHandle: 'ada', conversationId: '7', createdAt: Date.parse('2026-11-26T10:00:00.000Z') }], newestId: '7' });
+});

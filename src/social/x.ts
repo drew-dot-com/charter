@@ -135,4 +135,30 @@ export class XClient {
     }));
     return { mentions, newestId: r.meta?.newest_id };
   }
+
+  /**
+   * Recent search (the last 7 days): original posts in English that match `query`, never a repost or a reply.
+   * Ten posts at most, the endpoint's smallest page, since every returned post is charged as a read.
+   */
+  async search(query: string, sinceId?: string): Promise<{ posts: Mention[]; newestId?: string }> {
+    const q: Record<string, string> = {
+      query: `(${query}) -is:retweet -is:reply lang:en`,
+      'tweet.fields': 'conversation_id,created_at,author_id',
+      expansions: 'author_id',
+      'user.fields': 'username',
+      max_results: '10',
+    };
+    if (sinceId) q.since_id = sinceId;
+    const r = (await this.call('GET', '/2/tweets/search/recent', q)) as MentionsBody;
+    const handles = new Map((r.includes?.users ?? []).map((u) => [u.id, u.username]));
+    const posts = (r.data ?? []).map((t) => ({
+      id: t.id,
+      text: t.text,
+      authorId: t.author_id,
+      authorHandle: handles.get(t.author_id) ?? '',
+      conversationId: t.conversation_id,
+      createdAt: Date.parse(t.created_at),
+    }));
+    return { posts, newestId: r.meta?.newest_id };
+  }
 }

@@ -47,7 +47,7 @@ function log(deps: LoopDeps, row: LogRow): void {
 }
 
 /** Telegram at most once an hour per key. Best effort. */
-async function alertHourly(deps: LoopDeps, key: string, text: string, now: number): Promise<void> {
+export async function alertHourly(deps: LoopDeps, key: string, text: string, now: number): Promise<void> {
   let due = false;
   try {
     deps.state.update((s) => void (due = hourlyAlertDue(s, key, now)));
@@ -58,7 +58,7 @@ async function alertHourly(deps: LoopDeps, key: string, text: string, now: numbe
 }
 
 /** The config files, or undefined after an hourly alert: a file that does not parse never opens the gates. */
-async function loadFiles(deps: LoopDeps, now: number): Promise<ConfigFiles | undefined> {
+export async function loadFiles(deps: LoopDeps, now: number): Promise<ConfigFiles | undefined> {
   try {
     return deps.files();
   } catch (e) {
@@ -80,7 +80,7 @@ const utcDay = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
  * Gemini calls used up. Both caps hold until the UTC day ends. Alerts: the kill switch once an hour (as `publish`
  * does), each cap once a day. `publish` re-checks its part before any X write.
  */
-async function blocked(deps: LoopDeps, now: number): Promise<Block | undefined> {
+export async function blocked(deps: LoopDeps, now: number): Promise<Block | undefined> {
   let block: Block | undefined;
   let alert: string | undefined;
   const cap = deps.cfg.spendCapUsdDay;

@@ -1,0 +1,11 @@
+{
+  "queries": [
+    "\"host my agent\" OR \"hosting my agent\" OR \"deploy my agent\" OR \"where to host my agent\"",
+    "\"run my agent 24/7\" OR \"keep my agent running\" OR \"agent running 24/7\" OR \"always-on agent\"",
+    "\"vps for my agent\" OR \"server for my agent\" OR \"vps for my bot\" OR \"mac mini for my agent\"",
+    "x402 (compute OR vps OR server OR hosting)"
+  ],
+  "maxPerDay": 5,
+  "maxReadsPerDay": 40,
+  "everyHours": 6
+}

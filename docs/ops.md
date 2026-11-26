@@ -942,6 +942,22 @@ does not parse stops all posting with the hourly "config files do not load" aler
 
 The handle has no `@` and is optional. Posts from the next tick use it; nothing already posted changes.
 
+**Leads (off until `config/leads.json` exists).** Every `everyHours` (default 6) the service searches X for
+the queries in `leads.json` (copy `deploy/social/leads.json.example`; X search syntax, at most 8 queries),
+original English posts only, at most 10 per query and only those newer than the last run. Each found post
+is charged as a read (0.005 USD) against the day's spend, within `maxReadsPerDay` (default 40, so at most
+0.20 USD a day). A post from the account itself, a blocklisted or banned handle, an author already sent
+once, a post older than 24 hours or one the mention pre-filter refuses is dropped in code. The checker
+model then says whether the author is looking for somewhere to run an agent; only then the writer drafts a
+reply, which passes the same lint and fact check as every post. Drew gets one Telegram message per lead
+(at most `maxPerDay`, default 5): the post, the draft, and an `x.com/intent/post` link that opens X with
+the reply filled in. **The service never posts a lead reply.** Drew posts it by hand, logged in as the
+Charter account, or ignores it. Two rules make this the only shape allowed: since 2026-02-23 X's API
+refuses a reply unless the post's author mentioned or quoted the account (docs.x.com changelog), and X's
+developer guidelines list "app auto-replies to anyone mentioning a keyword" as unsolicited interaction.
+`/pause` stops the searches too. Delete `leads.json` to turn the loop off; edit it and the next run uses
+the new queries. The log (`state.json`) has a `lead` row per lead sent and a `skip` row per post dropped.
+
 **Limits it keeps by itself.** At most 4 event posts a UTC day (past that, events roll into the weekly
 totals); 20 replies a day, 2 per author a day, 1 per X conversation ever; mentions older than 24 hours
 skipped. `SPEND_CAP_USD_DAY` (default 2) counts X's per-call prices (`X_PRICE_USD` in `src/social/x.ts`) for

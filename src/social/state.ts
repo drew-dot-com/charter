@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-export interface LogRow { at: number; kind: 'post' | 'reply' | 'skip' | 'error'; text: string; id?: string }
+export interface LogRow { at: number; kind: 'post' | 'reply' | 'skip' | 'error' | 'lead'; text: string; id?: string }
 
 export interface SocialState {
   initialized: boolean;
@@ -26,9 +26,16 @@ export interface SocialState {
   /** Alert key to epoch ms, for "at most once an hour" alerts. Time based: it survives the day rollover. */
   alertedAt: Record<string, number>;
   week: { key: string; hoursPaidAtStart: number; summaryPosted: boolean; reportSent: boolean };
+  /**
+   * The leads loop. `cursors`: the newest post id read per search query. `authors`: X user ids already sent to Drew as
+   * a lead, so nobody is pitched twice (the last 2000). The two counters belong to `day`.
+   */
+  leads: { lastRunAt?: number; cursors: Record<string, string>; authors: string[]; sentToday: number; readsToday: number };
   /** The last 500 rows. */
   log: LogRow[];
 }
+
+export const LEAD_AUTHORS_MAX = 2000;
 
 const LOG_MAX = 500;
 
@@ -51,6 +58,7 @@ function fresh(day: string): SocialState {
     paused: false,
     alertedAt: {},
     week: { key: '', hoursPaidAtStart: 0, summaryPosted: false, reportSent: false },
+    leads: { cursors: {}, authors: [], sentToday: 0, readsToday: 0 },
     log: [],
   };
 }
@@ -68,6 +76,7 @@ export class StateStore {
     const s = this.load();
     fn(s);
     if (s.log.length > LOG_MAX) s.log = s.log.slice(-LOG_MAX);
+    if (s.leads.authors.length > LEAD_AUTHORS_MAX) s.leads.authors = s.leads.authors.slice(-LEAD_AUTHORS_MAX);
     mkdirSync(dirname(this.file), { recursive: true });
     const tmp = `${this.file}.tmp`;
     writeFileSync(tmp, JSON.stringify(s, null, 2), { mode: 0o600 });
@@ -103,6 +112,8 @@ export class StateStore {
       s.spendUsdToday = 0;
       s.geminiCallsToday = 0;
       s.capAlerted = false;
+      s.leads.sentToday = 0;
+      s.leads.readsToday = 0;
     }
     return s;
   }
@@ -132,7 +143,8 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 const isStrs = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string');
 const isNumMap = (v: unknown): v is Record<string, number> => isObj(v) && Object.values(v).every((x) => typeof x === 'number' && Number.isFinite(x));
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
-const KINDS = ['post', 'reply', 'skip', 'error'];
+const KINDS = ['post', 'reply', 'skip', 'error', 'lead'];
+const isStrMap = (v: unknown): v is Record<string, string> => isObj(v) && Object.values(v).every((x) => typeof x === 'string');
 const isLogRow = (v: unknown): v is LogRow =>
   isObj(v) && isNum(v.at) && typeof v.kind === 'string' && KINDS.includes(v.kind) && typeof v.text === 'string' && (v.id === undefined || typeof v.id === 'string');
 
@@ -144,6 +156,14 @@ function checked(raw: Record<string, unknown>, day: string): SocialState {
     isObj(w) && typeof w.key === 'string' && isNum(w.hoursPaidAtStart) && typeof w.summaryPosted === 'boolean' && typeof w.reportSent === 'boolean'
       ? { key: w.key, hoursPaidAtStart: w.hoursPaidAtStart, summaryPosted: w.summaryPosted, reportSent: w.reportSent }
       : d.week;
+  const l = isObj(raw.leads) ? raw.leads : {};
+  const leads: SocialState['leads'] = {
+    cursors: isStrMap(l.cursors) ? l.cursors : {},
+    authors: isStrs(l.authors) ? l.authors : [],
+    sentToday: isNum(l.sentToday) ? l.sentToday : 0,
+    readsToday: isNum(l.readsToday) ? l.readsToday : 0,
+  };
+  if (isNum(l.lastRunAt)) leads.lastRunAt = l.lastRunAt;
   const s: SocialState = {
     initialized: typeof raw.initialized === 'boolean' ? raw.initialized : d.initialized,
     seen: isStrs(raw.seen) ? raw.seen : d.seen,
@@ -162,6 +182,7 @@ function checked(raw: Record<string, unknown>, day: string): SocialState {
     paused: raw.paused === undefined ? d.paused : typeof raw.paused === 'boolean' ? raw.paused : true,
     alertedAt: isNumMap(raw.alertedAt) ? raw.alertedAt : d.alertedAt,
     week,
+    leads,
     log: Array.isArray(raw.log) && raw.log.every(isLogRow) ? raw.log : d.log,
   };
   if (typeof raw.mentionSinceId === 'string') s.mentionSinceId = raw.mentionSinceId;

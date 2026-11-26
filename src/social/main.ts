@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { parseSocialConfig } from './config.js';
 import { fetchOffers } from './facts.js';
 import { loadConfigFiles } from './files.js';
+import { LEADS_TICK_MS, leadsTick } from './leads.js';
 import { EVENT_TICK_MS, eventTick, MENTION_TICK_MS, mentionTick, WEEKLY_TICK_MS, weeklyTick } from './loops.js';
 import { geminiModel } from './model.js';
 import { SELF_OPTINS_FILE, SelfOptinStore, withSelfOptins } from './optin.js';
@@ -177,6 +178,8 @@ async function main(): Promise<number> {
     schedule('event', EVENT_TICK_MS, FIRST_TICK_DELAY_MS, () => eventTick(deps), onError, ac.signal);
     schedule('mention', MENTION_TICK_MS, FIRST_TICK_DELAY_MS, () => mentionTick(deps), onError, ac.signal);
     schedule('weekly', WEEKLY_TICK_MS, FIRST_TICK_DELAY_MS, () => weeklyTick(deps), onError, ac.signal);
+    // Off until config/leads.json exists. It reads X and writes to Drew; it never posts.
+    schedule('leads', LEADS_TICK_MS, FIRST_TICK_DELAY_MS, () => leadsTick({ ...deps, x }), onError, ac.signal);
     console.log(`charter-social up: DRY_RUN ${dryRun ? 'on' : 'off'}`);
     await tell(tg, `charter-social started: DRY_RUN ${dryRun ? 'on' : 'off'}`);
   } else {
