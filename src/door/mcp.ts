@@ -15,7 +15,7 @@ import { slidingLimit } from './limit.js';
 
 /** JSON-RPC posts one caller may make in a minute. A client spends three on connecting and listing tools. */
 export const MCP_POSTS_PER_MINUTE = 60;
-export const MCP_TOOLS = ['charter_offers', 'charter_lease', 'charter_grant_pitch', 'charter_grant_status', 'charter_referral_status', 'charter_how_to_rent'] as const;
+export const MCP_TOOLS = ['charter_offers', 'charter_lease', 'charter_receipt', 'charter_grant_pitch', 'charter_grant_status', 'charter_referral_status', 'charter_how_to_rent'] as const;
 
 const MINUTE_MS = 60_000;
 const CALL_TIMEOUT_MS = 25_000;
@@ -139,7 +139,7 @@ const answer = async (run: () => Promise<unknown>) => {
 };
 
 /** One MCP server for one request, its tools bound to that request's caller. */
-function serverFor(door: Door): McpServer {
+function serverFor(door: Door, receipts: boolean): McpServer {
   const server = new McpServer({ name: 'charter', title: 'Charter: rent a machine by the hour', version: '1.0.0' }, { instructions: INSTRUCTIONS });
   const read = { readOnlyHint: true, openWorldHint: true };
 
@@ -179,6 +179,26 @@ function serverFor(door: Door): McpServer {
         const parts = Number.isSafeInteger(l.outputParts) && l.outputParts > 0 ? (l.outputParts as number) : 0;
         const finished = l.state === 'done' || l.state === 'closed';
         return { ...r.body, ...(finished && parts > 0 ? { output: await outputOf(door, leaseId, parts) } : {}) };
+      }),
+  );
+
+  server.registerTool(
+    'charter_receipt',
+    {
+      title: 'Get a signed receipt for a finished job',
+      description:
+        'Free. A receipt the door signs for a finished fetch or Python job: the SHA-256 and size of the whole output, the host, the image, and how many intervals were paid. It says the host returned those bytes for a paid lease; hosts are not vetted by Charter, so it does not say the result is correct. It never holds the lease id, so it is safe to publish. Check it by recovering the signer of `message` and comparing it with `receiptSigner` at https://charterhome.dev/v1/door. A home has no output: inside a home, run `charter-x402 receipt <file>` for a receipt of a hash you declare.',
+      inputSchema: { leaseId: z.string().regex(/^[0-9a-f]{32}$/).describe('the 32 hex character leaseId the rent call returned') },
+      annotations: read,
+    },
+    ({ leaseId }) =>
+      answer(async () => {
+        if (!receipts) throw new Error('this door does not sign receipts');
+        const r = await door('GET', `/v1/leases/${leaseId}/receipt`);
+        if (r.status === 404) throw new Error('the door does not know this lease (only a lease opened through the door can be read here)');
+        if (r.status === 429) throw new Error('the door is rate limiting reads from you, or the lease has no free reads left (rate_limited). Wait a minute and ask again.');
+        if (r.status !== 200 || typeof r.body?.signature !== 'string') throw new Error(`the door signed no receipt (${errorOf(r)}). no_output: the job has not finished with output. unpaid: no interval was paid. home_lease: a home declares its own hash.`);
+        return r.body;
       }),
   );
 
@@ -266,7 +286,7 @@ function serverFor(door: Door): McpServer {
 const rpcError = (code: number, message: string) => ({ jsonrpc: '2.0', error: { code, message }, id: null });
 
 /** Mounts /mcp on the door. Call it after the JSON body parser: the transport is handed the parsed body. */
-export function mountMcp(app: express.Express, now: () => number): void {
+export function mountMcp(app: express.Express, now: () => number, opts: { receipts?: boolean } = {}): void {
   const allow = slidingLimit(now, MCP_POSTS_PER_MINUTE, MINUTE_MS);
 
   app.all('/mcp', async (req, res) => {
@@ -283,7 +303,7 @@ export function mountMcp(app: express.Express, now: () => number): void {
     if (req.method !== 'POST') return void res.status(405).set('Allow', 'POST').json(rpcError(-32000, 'Method not allowed: this server is stateless, POST only.'));
     if (!allow(req.ip ?? 'unknown')) return void res.status(429).json(rpcError(-32000, 'rate_limited: wait a minute and ask again.'));
 
-    const server = serverFor(doorOf(req));
+    const server = serverFor(doorOf(req), opts.receipts === true);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on('close', () => {
       void transport.close();

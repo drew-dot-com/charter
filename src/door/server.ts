@@ -486,7 +486,7 @@ export function doorApp(deps: DoorDeps): express.Express {
   app.use(express.json({ limit: '32kb', type: () => true }));
 
   // The remote MCP endpoint: the free tools only (src/door/mcp.ts).
-  mountMcp(app, now);
+  mountMcp(app, now, { receipts: deps.receiptSigner !== undefined });
 
   // Only a door with no payment gate (local development) answers this, so the page knows to skip x402.
   if (deps.x402 === 'free-for-tests') app.get('/v1/dev', (_req, res) => void res.json({ dev: true }));

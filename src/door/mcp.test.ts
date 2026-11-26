@@ -13,6 +13,8 @@ import { GrantStore } from './grants.js';
 import { DoorLedger } from './ledger.js';
 import { MCP_POSTS_PER_MINUTE, MCP_TOOLS } from './mcp.js';
 import { doorApp, type DoorDeps } from './server.js';
+import { privateKeyToAccount } from 'viem/accounts';
+import { leaseRefOf, verifyReceipt, type SignedReceipt } from './receipts.js';
 
 const LEASE = 'ab'.repeat(16);
 const OFFER_ID = `${OFFER.hostId}:${OFFER.id}`;
@@ -78,7 +80,7 @@ test('POST /mcp speaks MCP: it initializes and lists exactly the free tools', as
     assert.equal(c.getServerVersion()?.name, 'charter');
     const { tools } = await c.listTools();
     assert.deepEqual(tools.map((t) => t.name).sort(), [...MCP_TOOLS].sort());
-    assert.deepEqual([...MCP_TOOLS].sort(), ['charter_grant_pitch', 'charter_grant_status', 'charter_how_to_rent', 'charter_lease', 'charter_offers', 'charter_referral_status']);
+    assert.deepEqual([...MCP_TOOLS].sort(), ['charter_grant_pitch', 'charter_grant_status', 'charter_how_to_rent', 'charter_lease', 'charter_offers', 'charter_receipt', 'charter_referral_status']);
     // No tool here pays or holds a wallet, and every description says it is free.
     for (const t of tools) {
       assert.match(t.description ?? '', /^Free\./, t.name);
@@ -207,6 +209,48 @@ test('/mcp is POST only, stateless, and rate limited per caller', async () => {
     assert.equal(over.status, 429);
     d.clock.t += 61_000;
     assert.equal((await ping()).status, 200);
+  } finally {
+    await d.close();
+  }
+});
+
+test('charter_receipt returns the door\'s signed receipt for a finished job, and names the door\'s refusal otherwise', async () => {
+  const running: Lease = { leaseId: LEASE, state: 'running', createdAt: 1_000, paidIntervals: 1, paidThrough: 31_000 } as Lease;
+  const state = { now: running };
+  const d = await start({ receiptSigner: privateKeyToAccount(`0x${'33'.repeat(32)}`) }, host({ status: async () => state.now }));
+  try {
+    assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, urls: ['https://example.com'] })).status, 200);
+    assert.equal((await d.post(`/v1/leases/${LEASE}/ticks`, { index: 0 })).status, 200);
+    d.clock.t += 60_000;
+    const c = await d.client();
+    const early = await c.callTool({ name: 'charter_receipt', arguments: { leaseId: LEASE } });
+    assert.equal(isError(early), true);
+    assert.match(textOf(early), /no_output/);
+
+    state.now = { ...running, state: 'done', outputParts: 1 } as Lease;
+    d.clock.t += 60_000;
+    const r = await c.callTool({ name: 'charter_receipt', arguments: { leaseId: LEASE } });
+    assert.equal(isError(r), false, textOf(r));
+    const signed = JSON.parse(textOf(r)) as SignedReceipt;
+    assert.equal(await verifyReceipt(signed), true);
+    assert.equal(signed.receipt.kind, 'job');
+    assert.equal(signed.receipt.leaseRef, leaseRefOf(LEASE));
+
+    const unknown = await c.callTool({ name: 'charter_receipt', arguments: { leaseId: 'cd'.repeat(16) } });
+    assert.equal(isError(unknown), true);
+    assert.match(textOf(unknown), /does not know this lease/);
+  } finally {
+    await d.close();
+  }
+});
+
+test('charter_receipt says so when the door signs no receipts', async () => {
+  const d = await start();
+  try {
+    assert.equal((await d.post('/v1/leases', { offerId: OFFER_ID, urls: ['https://example.com'] })).status, 200);
+    const r = await (await d.client()).callTool({ name: 'charter_receipt', arguments: { leaseId: LEASE } });
+    assert.equal(isError(r), true);
+    assert.match(textOf(r), /does not sign receipts/);
   } finally {
     await d.close();
   }
