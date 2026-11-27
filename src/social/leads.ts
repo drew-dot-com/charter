@@ -4,7 +4,7 @@ import { alertHourly, blocked, loadFiles } from './loops.js';
 import { tell } from './publish.js';
 import { preFilter, type LoopDeps } from './replies.js';
 import type { SocialState } from './state.js';
-import { costOf, type Mention, type XClient } from './x.js';
+import { costOf, XError, type Mention, type XClient } from './x.js';
 
 export const LEADS_TICK_MS = 10 * 60_000;
 export const LEAD_MAX_AGE_MS = 24 * 3_600_000;
@@ -17,6 +17,23 @@ export type LeadsDeps = Omit<LoopDeps, 'x'> & { x: LoopDeps['x'] & Pick<XClient,
 const bare = (h: string): string => String(h ?? '').trim().replace(/^@+/, '').toLowerCase();
 const idNum = (id: string): bigint => (/^\d+$/.test(id) ? BigInt(id) : -1n);
 const msg = (e: unknown): string => String((e as Error)?.message ?? e).slice(0, 200);
+
+/**
+ * Recent search only reaches back 7 days, and X refuses a `since_id` older than that with a 400. A quiet query never
+ * moves its cursor, so it ages into that refusal; then the query is read again with no cursor (its last 7 days).
+ */
+async function searchFrom(
+  x: LeadsDeps['x'],
+  query: string,
+  sinceId: string | undefined,
+): Promise<{ posts: Mention[]; newestId?: string; cursorRefused: boolean }> {
+  try {
+    return { ...(await x.search(query, sinceId)), cursorRefused: false };
+  } catch (e) {
+    if (!sinceId || !(e instanceof XError) || e.status !== 400 || !/since_id/.test(e.message)) throw e;
+    return { ...(await x.search(query, undefined)), cursorRefused: true };
+  }
+}
 
 /** X's own compose page, opened as a reply to `postId` with `text` filled in. Drew posts it himself, by hand. */
 export function intentUrl(postId: string, text: string): string {
@@ -96,13 +113,14 @@ export async function leadsTick(deps: LeadsDeps): Promise<void> {
     if (st.leads.sentToday >= cfg.maxPerDay || st.leads.readsToday + PAGE > cfg.maxReadsPerDay) return;
     if (await blocked(deps, deps.now())) return;
 
-    const r = await deps.x.search(query, st.leads.cursors[query]);
+    const r = await searchFrom(deps.x, query, st.leads.cursors[query]);
     const posts = [...r.posts].sort((a, b) => (idNum(a.id) < idNum(b.id) ? -1 : 1));
     const newest = r.newestId ?? posts[posts.length - 1]?.id;
     deps.state.update((s) => {
       s.spendUsdToday += costOf('read', { count: r.posts.length });
       s.leads.readsToday += r.posts.length;
       if (newest) s.leads.cursors[query] = newest;
+      else if (r.cursorRefused) delete s.leads.cursors[query];
       // A query taken out of leads.json loses its cursor.
       for (const q of Object.keys(s.leads.cursors)) if (!cfg.queries.includes(q)) delete s.leads.cursors[q];
     });

@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StateStore } from './state.js';
-import type { Mention } from './x.js';
+import { XError, type Mention } from './x.js';
 import type { Telegram } from './telegram.js';
 import { GeminiCapError, type Model } from './model.js';
 import type { SocialConfig } from './config.js';
@@ -132,6 +132,43 @@ test('it runs once per everyHours, and the next run reads from the cursor', asyn
   t.beat();
   await leadsTick(t.deps);
   assert.deepEqual(t.searches[1], { query: 'host my agent', sinceId: '100' });
+});
+
+test('a cursor X calls too old is dropped, and the query is read again without it', async () => {
+  const t = setup();
+  t.state.update((s) => void (s.leads.cursors['host my agent'] = '50'));
+  const real = t.deps.x.search;
+  (t.deps.x as { search: unknown }).search = async (query: string, sinceId?: string) => {
+    if (sinceId) {
+      t.searches.push({ query, sinceId });
+      throw new XError("X GET /2/tweets/search/recent failed with 400: {\"errors\":[{\"message\":\"'since_id' must be a tweet id created after 2026-11-20T03:30Z.\"}]}", 400);
+    }
+    return real(query, sinceId);
+  };
+  await leadsTick(t.deps);
+  assert.deepEqual(t.searches, [{ query: 'host my agent', sinceId: '50' }, { query: 'host my agent', sinceId: undefined }]);
+  assert.equal(t.sent.length, 1);
+  assert.equal(t.state.get().leads.cursors['host my agent'], '100');
+});
+
+test('a too-old cursor on a quiet query is forgotten, so the next run does not fail on it again', async () => {
+  const t = setup({ results: {} });
+  t.state.update((s) => void (s.leads.cursors['host my agent'] = '50'));
+  (t.deps.x as { search: unknown }).search = async (query: string, sinceId?: string) => {
+    t.searches.push({ query, sinceId });
+    if (sinceId) throw new XError("X GET /2/tweets/search/recent failed with 400: 'since_id' must be a tweet id created after 2026-11-20T03:30Z.", 400);
+    return { posts: [] };
+  };
+  await leadsTick(t.deps);
+  assert.equal(t.searches.length, 2);
+  assert.equal(t.state.get().leads.cursors['host my agent'], undefined);
+});
+
+test('any other X error still stops the run', async () => {
+  const t = setup();
+  t.state.update((s) => void (s.leads.cursors['host my agent'] = '50'));
+  (t.deps.x as { search: unknown }).search = async () => { throw new XError('X GET /2/tweets/search/recent failed with 503: busy', 503); };
+  await assert.rejects(leadsTick(t.deps), /503/);
 });
 
 test('paused or a dead kill switch: no read, and the run is not used up', async () => {
