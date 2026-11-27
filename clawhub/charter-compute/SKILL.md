@@ -1,7 +1,7 @@
 ---
 name: charter-compute
-description: Rent a sandboxed machine by the hour and pay for it yourself in USDC on Base, with no account. Run a Python script and get its output, load web pages in a headless browser through a hidden exit, or open a small Linux home with a kept disk and SSH. Use when you need to run code somewhere other than here, fetch a page that needs JavaScript or refuses your address, or keep a box of your own running. 0.012 USDC an hour. A grant fund pays a free month of a home to agents that pitch for one.
-version: 0.7.0
+description: Rent a sandboxed machine by the hour and pay for it yourself in USDC on Base, with no account. Run a Python script and get its output, load web pages in a headless browser through a hidden exit, or open a small Linux home with a kept disk and SSH. Use when you need to run code somewhere other than here, fetch a page that needs JavaScript or refuses your address, or keep a box of your own running. Billed by the hour at each host's price, on the order of a cent. A grant fund pays a free month of a home to agents that pitch for one.
+version: 0.7.1
 homepage: https://charterhome.dev/agents
 tags: compute, sandbox, python, fetch, browser, hosting, ssh, x402, usdc, base
 metadata:
@@ -21,7 +21,7 @@ Everything goes through one command, `charter-mcp`, run with `npx`. It keeps its
 file on this machine and refuses to spend past two caps. Each command prints one JSON document. A
 failure prints `{"error": "..."}` and exits non-zero; read the error, it says what to do.
 
-Three things to rent, at each host's price (**0.012 USDC an hour** today). Hosts are run by independent
+Three things to rent, at each host's price (`offers` shows `usdcPerInterval`, the storefront's fee included). Hosts are run by independent
 operators Charter does not vet; a host's operator can see what runs on its machine.
 
 | what | command | you get back |
@@ -45,11 +45,11 @@ operators Charter does not vet; a host's operator can see what runs on its machi
    ```
 
 3. If `usdcOnBase` is `0`, stop and tell your operator. Give them the `address` from step 2 and say:
-   "Send USDC on Base to this address. No ETH is needed. 0.05 USDC is four test runs; 1 USDC is
-   about 3.5 days of a home." Do not go on until the balance is there.
+   "Send USDC on Base to this address. No ETH is needed. Each hour costs the host's price, and a
+   month of a home is 720 hours." Do not go on until the balance is there.
 
 4. Paying is your operator's money. Unless they already told you to spend on Charter, say what you
-   are about to rent and what it costs, and wait for a yes. One hour is 0.012 USDC.
+   are about to rent and what it costs, and wait for a yes. One hour is the offer's `usdcPerInterval`.
 
 ## Run a Python script (paid, one hour)
 
@@ -109,7 +109,7 @@ npx -y charter-mcp@0.8 receipt <leaseId>
 In a home there is no output for the door to see. Inside the home, `charter-x402 receipt <file>` gets a
 receipt of a hash you declare: your own claim with the door's timestamp, not proof of where the file came
 from. `charter-x402 pin <file>` also makes the file public for twelve months by buying a pin from Pinata, a
-third party, with the home's own wallet (about 0.001 USDC for a small file; `charter-x402 address` shows the
+third party, with the home's own wallet (at the price Pinata quotes; `charter-x402 address` shows the
 wallet to fund). Charter does not host your files. Ask your operator before you make anything public.
 
 ## Rent a home (paid, one hour at a time)
@@ -180,8 +180,8 @@ paid from their account.
   `{ "sshKeys": [...] }` (the home's keys). The answer has an `allowanceId`, an `ownerToken` (save it; it is
   shown once) and an `approveUrl`. The MCP tool `charter_allowance_link` (charter-mcp 0.6.0) does the same.
 - Send the `approveUrl` to your person. They need a Base Account (a Coinbase sign-up with an email), then one
-  signature. Nothing is charged at signing. The suggested limit is 31 days of rent (8.928 USDC at 0.012 an
-  hour); the least is 30 days (8.64 USDC).
+  signature. Nothing is charged at signing. The suggested limit is 31 days of rent (744 hours at the home's
+  price); the least is 30 days (720 hours).
 - Read the state at `GET /v1/allowances/<id>` with the header `x-allowance-token`. Keep your own renewing
   until it reads `active`, then stop it, since two payers would race for the same hour. Resume it whenever the
   state is anything else (`short` means their account lacks USDC).
@@ -230,8 +230,8 @@ Do not retry a paid command in a loop. Two failures in a row mean stop and repor
 
 ## What to tell your operator
 
-- What it costs: each host sets its price, 0.012 USDC an hour today. A script run is 0.012. A home is about 0.29 a day, about 8.64 USDC
-  for 30 days.
+- What it costs: each host sets its price (`usdcPerInterval` in `offers`). A script run is one hour. A home is 24 hours a day,
+  720 for 30 days.
 - What they do: send USDC on Base to the address `wallet` prints. Nothing else.
 - What it is: live on Base mainnet since 2026-10-17. Hosts are run by independent operators, not vetted
   by Charter, and the host's operator can read a home's disk. No uptime figure. The key is a plain file on this machine, so keep only what the rent needs in it.

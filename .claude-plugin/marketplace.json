@@ -9,7 +9,7 @@
     {
       "name": "charter",
       "source": "./plugins/charter",
-      "version": "0.5.2",
+      "version": "0.5.3",
       "description": "Rent Charter compute over x402 in USDC on Base, with the charter CLI or any x402 client: read the offers and each host's record, open a lease, pay it by the interval and collect the output, or rent a home with a kept disk and SSH in. Hosts are run by independent operators.",
       "category": "protocol",
       "keywords": ["charter", "compute", "lease", "x402", "base"]

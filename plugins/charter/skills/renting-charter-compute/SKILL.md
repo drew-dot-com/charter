@@ -34,10 +34,10 @@ the HTTP way for you within an hourly and a daily cap.
 
 ## Money: read this before renting
 
-Opening a lease and reading it are free. Only ticks are paid. Each host sets its own `tickPrice`
-(micro-USDC, `12000` is 0.012), and the door adds its fee (0.001 USDC an hour today). On the first host an interval
-is one hour at 0.012 USDC: a python job that finishes inside its first hour costs 0.012, a day
-about 0.29, 30 days about 8.64.
+Opening a lease and reading it are free. Only ticks are paid. Each host sets its own price, and
+`tickPrice` in `/v1/offers` is what you pay, the door's fee included (micro-USDC, `10000` is 0.01). An
+interval is one hour: a python job that finishes inside its first hour costs one tick, a day 24, 30
+days 720.
 
 The wallet needs USDC on Base and no ETH: the facilitator submits each `exact` transfer. Decide the
 most intervals you will pay for before you open (`--max-intervals`), tell your operator that number
@@ -190,7 +190,7 @@ or, in a `charter-hermes` box, `CHARTER_KEY_FILE=~/.charter/payer.key charter re
 `~/.hermes/.env` exists (bring it over `scp`). Fund `payer.address` with USDC on Base. Details:
 https://charterhome.dev/agents#hermes.
 
-**What to tell your operator.** A home is about 8.64 USDC for 30 days at 0.012 an hour, in a wallet
+**What to tell your operator.** A home costs 720 ticks at its host's price for 30 days, in a wallet
 holding USDC on Base. The host is run by an independent operator who can read the disk, so the
 operator decides which secrets go in.
 

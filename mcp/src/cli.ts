@@ -22,7 +22,7 @@ export const USAGE = `usage:
   charter-mcp grant --id <grantId> --token-file <file>
                                                 free: read your own grant (the full lease id once granted)
 
-One interval is an hour; hosts set their own price (0.012 USDC today). --wait is 10 to 240 seconds (default 40); a job
+One interval is an hour; hosts set their own price (see offers). --wait is 10 to 240 seconds (default 40); a job
 still running then prints its leaseId, and \`lease\` collects the output for free. Hosts are run by
 independent operators, not vetted by Charter.
 Environment: CHARTER_MAX_USDC_PER_HOUR (0.02), CHARTER_MAX_USDC_PER_DAY (0.50), CHARTER_MCP_KEY_FILE,

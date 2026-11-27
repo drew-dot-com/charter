@@ -2,7 +2,7 @@
 
 An MCP server that lets an agent rent a machine on [Charter](https://charterhome.dev/agents) and pay for it itself. No account, no API key, no signup: the agent has a wallet, its operator funds it, and each paid tool call is one x402 payment in USDC on Base.
 
-What it rents, by the hour, at the price each host sets (0.012 USDC an hour today). Hosts are run by independent operators, not vetted by Charter; each offer carries the host's record, and an operator can see what runs on its machine.
+What it rents, by the hour, at the price each host sets (`charter_offers` shows it). Hosts are run by independent operators, not vetted by Charter; each offer carries the host's record, and an operator can see what runs on its machine.
 
 What it rents:
 
@@ -34,7 +34,7 @@ Node 22 or newer.
 
 1. The server makes a wallet key at `~/.charter/mcp.key` (mode 600). It never leaves the machine.
 2. Ask the agent to call `charter_wallet`. It prints the address.
-3. Send USDC on Base to that address. No ETH is needed: the facilitator submits each transfer. 0.05 USDC is enough for four test runs; 1 USDC is about 3.5 days of a home.
+3. Send USDC on Base to that address. No ETH is needed: the facilitator submits each transfer. Each hour costs the host's price (`usdcPerInterval` in `charter_offers`), and a month of a home is 720 hours.
 4. Ask the agent to run something: "run `print(2 + 2)` on Charter".
 
 Until the wallet is funded the free tools work and the paid ones answer with the reason; `charter_wallet` gives the address to fund.
