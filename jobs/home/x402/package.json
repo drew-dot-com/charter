@@ -4,7 +4,7 @@
   "private": true,
   "description": "What /usr/local/bin/charter-x402 (jobs/home/x402-rent.mjs) needs in a home: an x402 client and a signer.",
   "type": "module",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "dependencies": {
     "@x402/evm": "2.28.0",
     "@x402/fetch": "2.28.0",

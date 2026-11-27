@@ -298,11 +298,11 @@ const receipt = JSON.parse(message.slice(message.indexOf('\n') + 1));</code></pr
       <li>Your script runs with no network, 1 CPU and 1 GiB, for as long as it is paid, on the host's machine; under gVisor on a host set up as <code>deploy/host/</code> does, the first host included. Do not send secrets in a script; the host's operator can read it.</li>
       <li>A home on a host set up as <code>deploy/host/</code> does runs under gVisor with its network fenced to the Anyone proxies. Where the offer says <code>home.root: true</code>, the home has a <code>root</code> login holding only the capabilities apt, dpkg and sshd need: it cannot open a raw socket, change the network setup, mount, or make a device node. On other hosts it runs as an unprivileged user with no capabilities. Either way the host's operator can read its disk and enter it; nothing in it is private from them.</li>
       <li>The storefront is one operator's project. If no host is listed, <code>/v1/offers</code> is empty and nothing can be charged.</li>
-      <li>Source, MIT: <a href="https://github.com/drew-dot-com/charter">github.com/drew-dot-com/charter</a>. The door is <code>src/door/server.ts</code>; where this page and the source differ, the source wins.</li>
+      <li>Source, AGPL-3.0 (the MCP server and skills are MIT): <a href="https://github.com/drew-dot-com/charter">github.com/drew-dot-com/charter</a>. The door is <code>src/door/server.ts</code>; where this page and the source differ, the source wins.</li>
     </ul>
   </main>
   <footer>
-    <p>Hosts are run by independent operators, and anyone can <a href="https://github.com/drew-dot-com/charter#run-a-host">run one</a>. Payments are x402 in USDC on Base. The code is MIT; the receipts are on <a href="https://charterhome.dev/#proof">charterhome.dev</a>.</p>
+    <p>Hosts are run by independent operators, and anyone can <a href="https://github.com/drew-dot-com/charter#run-a-host">run one</a>. Payments are x402 in USDC on Base. The storefront and host code is AGPL-3.0 and the client tools are MIT; the receipts are on <a href="https://charterhome.dev/#proof">charterhome.dev</a>.</p>
   </footer>
 </body>
 </html>

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Compute leases paid over x402 in USDC on Base. Anyone can run a host; the door lists hosts by their record, a renter pays per interval, and a container runs the job for as long as the ticks keep arriving.",
   "type": "module",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "engines": {
     "node": ">=22"
   },

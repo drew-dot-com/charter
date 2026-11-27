@@ -172,7 +172,7 @@ The account reads its mentions every 10 minutes and answers once when it has tak
 
 ## Reference
 
-- [Source, MIT](https://github.com/drew-dot-com/charter): the door is `src/door/server.ts`, the host is `src/host/http.ts` and `src/host/server.ts`, the request shapes are `src/tenant/host-api.ts`.
+- [Source, AGPL-3.0; client tools MIT](https://github.com/drew-dot-com/charter): the door is `src/door/server.ts`, the host is `src/host/http.ts` and `src/host/server.ts`, the request shapes are `src/tenant/host-api.ts`.
 - [About and receipts](https://charterhome.dev/): what it is, the price table, every mainnet transaction.
 
 ## Optional

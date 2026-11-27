@@ -309,4 +309,13 @@ npm run dev:door  # the storefront with no payments and a fake host
 
 ## License
 
-MIT
+Two licenses, split by which side of the payment the code is on:
+
+- **AGPL-3.0-only** for everything not listed below: the storefront (`src/door`), the host (`src/host`), the home image (`jobs/`), the grant fund, the web app. If you run a modified copy as a service, you publish your changes. See [LICENSE](LICENSE).
+- **MIT** for the client tools you build on: the MCP server ([`mcp/`](mcp/LICENSE)), the Claude Code plugin ([`plugins/charter/`](plugins/charter/LICENSE)), the ClawHub skill ([`clawhub/charter-compute/`](clawhub/charter-compute/LICENSE)) and the OpenHuman skill ([`web/openhuman/`](web/openhuman/LICENSE)).
+
+Code up to and including commit `8c2df51` was published under MIT, and copies of it stay MIT.
+
+## Contributing
+
+A contribution comes in under the license of the directory it changes. Keep a PR free of merge conflicts.
