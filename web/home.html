@@ -24,7 +24,7 @@
 </header>
 
 <h1>A computer your agent rents and pays for itself.</h1>
-<p class="lede">Charter rents a Linux machine by the hour to an AI agent or the person who runs it. The agent finds a machine, pays one hour at a time in USDC on Base, and needs no account; its human funds the wallet once. A home has a disk and plain SSH (root and apt on hosts that offer it), for about 8.64 USDC a month. Charter is an open compute marketplace: hosts are run by independent operators, anyone can run one, and every payment is x402 in USDC on Base.</p>
+<p class="lede">Charter rents a Linux machine by the hour to an AI agent or the person who runs it. The agent finds a machine, pays one hour at a time in USDC on Base, and needs no account; its human funds the wallet once. A home has a disk and plain SSH (root and apt on hosts that offer it), for on the order of a cent an hour. Charter is an open compute marketplace: hosts are run by independent operators, anyone can run one, and every payment is x402 in USDC on Base.</p>
 <div class="actions">
   <a class="btn" href="https://charterhome.dev/agents">For agents</a>
   <a class="btn alt" href="https://rent.charterhome.dev/">Rent in the browser</a>
@@ -35,7 +35,7 @@
 <h2>What you get</h2>
 <div class="cards">
   <div class="card"><b>A machine, by the interval</b>A container on the host's machine for as long as you keep paying. Stop paying and it ends. If it never boots, nothing is owed.</div>
-  <div class="card"><b>Three jobs today</b>Run your own Python script (NumPy, no network), fetch pages and get back text and a screenshot of each, or rent a home: a Linux box of your own you reach over SSH, as root with apt on hosts that offer it.</div>
+  <div class="card"><b>Three jobs</b>Run your own Python script (NumPy, no network), fetch pages and get back text and a screenshot of each, or rent a home: a Linux box of your own you reach over SSH, as root with apt on hosts that offer it.</div>
   <div class="card"><b>What each side sees</b>Hosts are run by independent operators, not vetted by Charter, and a host's operator can see what runs on its machine. Each offer shows the host's record. The renter is a wallet and pays through the storefront, so on a job the host never sees the renter's address. A home is reached with plain SSH at the host's public address, so the host sees where you connect from.</div>
   <div class="card"><b>One signature, not sixty</b>Your wallet signs once to deposit at least 0.10 USDC into a payment channel. Every interval after that is a voucher the page signs silently. What you do not use comes back when the lease ends.</div>
 </div>
@@ -56,11 +56,11 @@
 <table>
   <tr><th>item</th><th>price</th><th>notes</th></tr>
   <tr><td>open a lease</td><td class="n">free</td><td></td></tr>
-  <tr><td>one hour</td><td class="n">0.012 USDC today</td><td>each host sets its price; the storefront adds its fee, 0.001 today. About 8.64 USDC for 30 days</td></tr>
+  <tr><td>one hour</td><td class="n">the host's price</td><td>each host sets its own, fee included: <code>tickPrice</code> in <a href="/v1/offers">/v1/offers</a>. 30 days is 720 hours</td></tr>
   <tr><td>a status read</td><td class="n">free</td><td></td></tr>
   <tr><td>deposit</td><td class="n">0.10 USDC minimum</td><td>sits in the x402 contract, not with Charter; the unspent part is refunded</td></tr>
 </table>
-<p class="note">An hour costs about a cent and a month about 8.64 USDC. Charter's fee is 0.001 USDC an hour today. Until 2026-11-04 the interval was 30 seconds at 0.005.</p>
+<p class="note">An hour costs on the order of a cent. Hosts set their prices, and the live ones, Charter's fee included, are in <a href="/v1/offers">/v1/offers</a>.</p>
 
 <h2>How a lease runs</h2>
 <ol class="flow">
