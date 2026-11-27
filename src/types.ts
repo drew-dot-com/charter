@@ -59,6 +59,12 @@ export interface Lease {
   paidIntervals: number;
   /** Epoch ms the paid time runs out. */
   paidThrough?: number;
+  /**
+   * Micro USDC as a decimal string: the price of one interval, fixed when the lease opened (or, for a lease
+   * opened before prices were fixed per lease, when the host first ran with this field). A later price rise on
+   * the host never reaches a running lease; a cut does (`leaseTickPrice`).
+   */
+  tickPrice?: string;
   closedReason?: CloseReason;
   outputParts?: number;
   /** Home lease only: the id of the persistent home (from the key set), so a later lease finds the same disk. */

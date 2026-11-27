@@ -69,13 +69,13 @@ async function facilitator() {
   return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, calls, close: () => void server.close() };
 }
 
-async function gated(facilitatorUrl: string) {
+async function gated(facilitatorUrl: string, priceOf: (leaseId: string) => bigint = () => PRICE) {
   const cfg: X402Config = { payTo: PAY_TO, network: NETWORK, facilitatorUrl, claimKey: CLAIM_KEY, channelDir: join(mkdtempSync(join(tmpdir(), 'host-x402-')), 'channels') };
   const schemes = buildSchemes(cfg);
   const handled: string[] = [];
   const app = express();
   app.use(express.json());
-  app.post('/v1/leases/:id/ticks', hostTickGate(cfg, () => PRICE, schemes, () => door.address), (req, res) => {
+  app.post('/v1/leases/:id/ticks', hostTickGate(cfg, priceOf, schemes, () => door.address), (req, res) => {
     handled.push(String(res.locals.payer));
     res.json({ paidIntervals: 1 });
   });
@@ -129,6 +129,24 @@ test('hostTickGate offers batch-settlement only, to payTo, at priceOf()', async 
     assert.equal(a!.maxTimeoutSeconds, MAX_TIMEOUT_SECONDS);
     assert.equal(a!.extra!.withdrawDelay, WITHDRAW_DELAY_SECONDS);
     assert.deepEqual(g.handled, []);
+  } finally {
+    g.close();
+    fac.close();
+  }
+});
+
+test('hostTickGate asks priceOf with the lease id from the path', async () => {
+  const fac = await facilitator();
+  const asked: string[] = [];
+  const g = await gated(fac.url, (id) => {
+    asked.push(id);
+    return 5000n;
+  });
+  try {
+    const r = await g.tick();
+    assert.equal(r.status, 402);
+    assert.equal(unb64<Required>(r.headers.get('payment-required')!).accepts[0]!.amount, '5000');
+    assert.ok(asked.length > 0 && asked.every((id) => id === LEASE), JSON.stringify(asked));
   } finally {
     g.close();
     fac.close();

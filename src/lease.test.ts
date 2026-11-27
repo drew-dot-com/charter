@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FIRST_TICK_GRACE_MS, GRACE_MS, LeaseError, due, newLease, onBootFailed, onBooted, onHomeRestarted, onJobExit, onTick, isHome, tickLeadMs } from './lease.js';
+import { FIRST_TICK_GRACE_MS, GRACE_MS, LeaseError, due, leaseTickPrice, newLease, onBootFailed, onBooted, onHomeRestarted, onJobExit, onTick, isHome, tickLeadMs } from './lease.js';
 import { readFileSync } from 'node:fs';
 import { homeIdOf, homeJob, normalizeSshKeys } from './jobs.js';
 import type { Offer, JobSpec } from './types.js';
@@ -49,6 +49,16 @@ test('newLease starts booting with no paid intervals', () => {
   assert.equal(l.state, 'booting');
   assert.equal(l.createdAt, t0);
   assert.equal(l.paidIntervals, 0);
+  assert.equal(l.tickPrice, offer.tickPrice.toString());
+});
+
+test('leaseTickPrice keeps the price fixed at open through a rise, follows a cut, and falls back to the current price', () => {
+  assert.equal(leaseTickPrice({ tickPrice: '7000' }, 11000n), 7000n);
+  assert.equal(leaseTickPrice({ tickPrice: '7000' }, 5000n), 5000n);
+  assert.equal(leaseTickPrice({ tickPrice: '7000' }, 7000n), 7000n);
+  assert.equal(leaseTickPrice({}, 11000n), 11000n);
+  assert.equal(leaseTickPrice({ tickPrice: 'x' }, 11000n), 11000n);
+  assert.equal(leaseTickPrice({ tickPrice: '-1' }, 11000n), 11000n);
 });
 
 test('onBooted moves to awaiting_first_tick and records bootedAt', () => {

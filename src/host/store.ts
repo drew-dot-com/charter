@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { Lease } from '../types.js';
+import { isLive, leaseTickPrice } from '../lease.js';
+import type { Lease, Micro } from '../types.js';
 
 /**
  * Leases keyed by id. With a file path every read goes back to disk, so the
@@ -43,4 +44,21 @@ export class LeaseStore {
     writeFileSync(tmp, JSON.stringify([...map.values()]), { mode: 0o600 });
     renameSync(tmp, this.file);
   }
+}
+
+/**
+ * Fixes the price of every live lease that has none (opened before prices were fixed per lease) at `current`,
+ * the price this host runs at now. Run at start, before the first tick is gated, so a host that raises its
+ * price after this build keeps those leases at the old one. Deploy this build before raising a price.
+ */
+export function fixTickPrices(store: LeaseStore, current: Micro): void {
+  for (const l of store.all()) if (isLive(l) && l.tickPrice === undefined) store.put({ ...l, tickPrice: current.toString() });
+}
+
+/** What a tick on lease `id` costs: its fixed price (`leaseTickPrice`), or `current()` for a lease the store does not hold. */
+export function leasePrices(store: LeaseStore, current: () => Micro): (id: string) => Micro {
+  return (id) => {
+    const l = store.get(id);
+    return l ? leaseTickPrice(l, current()) : current();
+  };
 }

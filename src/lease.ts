@@ -1,5 +1,5 @@
 import { HOME_IMAGES } from './images.js';
-import type { CloseReason, JobSpec, Lease, Offer } from './types.js';
+import type { CloseReason, JobSpec, Lease, Micro, Offer } from './types.js';
 
 /** How long past the paid time a later tick may be late. */
 export const GRACE_MS = 10_000;
@@ -31,12 +31,23 @@ export class LeaseError extends Error {
 
 /** A home's id comes from the caller: computing it here would pull node:crypto into the browser bundle. */
 export function newLease(id: string, offer: Offer, job: JobSpec, now: number, homeId?: string): Lease {
-  const l: Lease = { id, offerId: offer.id, job, state: 'booting', createdAt: now, paidIntervals: 0 };
+  const l: Lease = { id, offerId: offer.id, job, state: 'booting', createdAt: now, paidIntervals: 0, tickPrice: offer.tickPrice.toString() };
   if (isHome(l)) {
     if (!homeId) throw new Error('homeId required for a home');
     return { ...l, homeId, restarts: 0, access: null };
   }
   return l;
+}
+
+/**
+ * What one interval of this lease costs when the host's price is `current`: the price fixed at open, or
+ * `current` if that is lower. The door refuses to pay more than the price it saw at open, so a host that
+ * asked a running lease for a raised price would stop it. A lease with no fixed price pays `current`.
+ */
+export function leaseTickPrice(l: Pick<Lease, 'tickPrice'>, current: Micro): Micro {
+  if (l.tickPrice === undefined || !/^\d{1,15}$/.test(l.tickPrice)) return current;
+  const fixed = BigInt(l.tickPrice);
+  return fixed < current ? fixed : current;
 }
 
 /** A lease that holds the host now: still booting, waiting for its first tick, or running. */

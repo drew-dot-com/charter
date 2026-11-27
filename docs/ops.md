@@ -436,7 +436,12 @@ his `max_packet_amount` raised past one tick. Neither is started; Drew picks.
 A host's price is its own env: set `CHARTER_TICK_PRICE` (and `CHARTER_INTERVAL_SECONDS` beside it) and
 restart `charter-host`, after checking no lease is only created, not started ("Lease limit"). The door reads
 the new offer within a minute or two; leases already open keep the price they opened with for both renter and
-host, and new leases take the new one. A price above the door's probe cap (0.02 USDC a tick) fails the next
+host, and new leases take the new one. On the host that is the lease's `tickPrice` in `leases.json`, fixed at
+open; a cut reaches open leases, a rise never does (`leaseTickPrice`). The door pays an open lease no more
+than its price at open, so a host that asked more would stop it (`unexpected_payment`, the 2026-11-27 alert on
+the bots' home: hel1 ran a build from before per-lease prices). A live lease from such a build has no
+`tickPrice`; the first start of a newer build fixes it at the price that start runs with. So deploy the build
+at the OLD price, restart, check `tickPrice` is in `leases.json`, and only then raise the price. A price above the door's probe cap (0.02 USDC a tick) fails the next
 probe. Then read `/v1/offers` on the door, and rerun `scripts/bazaar-tick.mjs` once (a paid tick) so PayAI's
 catalog shows the new price.
 

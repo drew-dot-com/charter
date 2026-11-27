@@ -13,7 +13,7 @@ import { HOME_SWEEP_MS, homesFree, OFFER_LIFETIME_MS, homeSweep, reconcile, wind
 import { HomeStore } from './homes.js';
 import { hostHttpApp } from './http.js';
 import { dockerRunner } from './runner.js';
-import { LeaseStore } from './store.js';
+import { fixTickPrices, LeaseStore, leasePrices } from './store.js';
 import { hostTickGate } from './x402.js';
 
 /** How often the host checks whether its free home slots changed, to register again. */
@@ -75,6 +75,7 @@ async function main(argv: string[]): Promise<number> {
 
   mkdirSync(cfg.dataDir, { recursive: true, mode: 0o700 });
   const store = new LeaseStore(join(cfg.dataDir, 'leases.json'));
+  fixTickPrices(store, cfg.offer.tickPrice);
 
   const log = (m: string) => console.error(m);
   const homes = cfg.home ? new HomeStore(join(cfg.dataDir, 'homes.json')) : undefined;
@@ -135,7 +136,7 @@ async function main(argv: string[]): Promise<number> {
     store, runner, offer: cfg.offer, now, maxLeases: cfg.maxLeases, maxHomes: cfg.maxHomes, log, homes, published: deps.published,
     door: watch.door,
     origin: () => origin,
-    tickGate: hostTickGate(x402, () => cfg.offer.tickPrice, schemes, watch.door),
+    tickGate: hostTickGate(x402, leasePrices(store, () => cfg.offer.tickPrice), schemes, watch.door),
     offerJson: () => JSON.parse(offerToJson(offerNow())) as unknown,
   });
   const server = app.listen(cfg.port, '127.0.0.1');
